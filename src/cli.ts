@@ -103,11 +103,11 @@ async function cmdCheck(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // 2) 冻结契约防篡改校验
-  const tampered = contracts.map(verifyFrozen).filter((r) => !r.ok);
-  if (tampered.length) {
-    console.error("✗ 冻结契约被篡改(视为 error,不放行):");
-    for (const t of tampered) console.error(`  - ${t.message}`);
+  // 2) 冻结契约校验
+  const verificationFailures = contracts.map(verifyFrozen).filter((r) => !r.ok);
+  if (verificationFailures.length) {
+    console.error("✗ 冻结契约校验失败(视为 error,不放行):");
+    for (const failure of verificationFailures) console.error(`  - ${failure.message}`);
     process.exit(1);
   }
 
@@ -243,8 +243,11 @@ async function doRun(args: string[], task: string, initialFeedback?: string): Pr
 
   const { contracts, issues } = loadContracts(dir);
   if (issues.length) { for (const i of issues) console.error(`  - ${i.message}`); fail("契约规格有问题,先修复"); }
-  const tampered = contracts.map(verifyFrozen).filter((r) => !r.ok);
-  if (tampered.length) { for (const t of tampered) console.error(`  - ${t.message}`); fail("冻结契约被篡改"); }
+  const verificationFailures = contracts.map(verifyFrozen).filter((r) => !r.ok);
+  if (verificationFailures.length) {
+    for (const failure of verificationFailures) console.error(`  - ${failure.message}`);
+    fail("冻结契约校验失败");
+  }
 
   const selected = values.stage ? selectByStage(contracts, values.stage as string) : contracts;
   const gate = await buildGate(values.properties as string | undefined);

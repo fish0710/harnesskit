@@ -155,13 +155,13 @@ export function freezeContract(c: Contract): Contract {
   };
 }
 
-/** 校验一个已冻结契约的内容是否被篡改(哈希一致)。 */
+/** 校验一个已冻结契约的哈希格式与内容。 */
 export function verifyFrozen(c: Contract): { ok: boolean; message?: string } {
   if (!c.frozen) return { ok: true };
   const expected = typeof c.hash === "string" ? c.hash : undefined;
   if (!expected) return { ok: false, message: `契约 ${c.id} 标记 frozen 但缺少 hash` };
-  const match = /^v2:([0-9a-f]{16})$/.exec(expected);
-  if (!match) {
+  const [version, digest, ...extra] = expected.split(":");
+  if (version !== FROZEN_HASH_VERSION || !digest || extra.length > 0 || !/^[0-9a-f]{16}$/.test(digest)) {
     return {
       ok: false,
       message: `契约 ${c.id} 使用旧版或不支持的冻结哈希格式,必须重新冻结`,
@@ -170,9 +170,9 @@ export function verifyFrozen(c: Contract): { ok: boolean; message?: string } {
 
   try {
     const actual = contractHash(c);
-    return actual === match[1]
+    return actual === digest
       ? { ok: true }
-      : { ok: false, message: `契约 ${c.id} 内容与冻结哈希不符(疑似被改:期望 ${match[1]},实际 ${actual})` };
+      : { ok: false, message: `契约 ${c.id} 内容与冻结哈希不符(疑似被改:期望 ${digest},实际 ${actual})` };
   } catch (error) {
     return {
       ok: false,

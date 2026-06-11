@@ -9,19 +9,19 @@ export function gatherStatus(cwd: string, contractsDir: string): string[] {
 
   const byType: Record<string, number> = {};
   let frozen = 0;
-  const tampered: string[] = [];
+  const verificationFailures: string[] = [];
   for (const c of contracts) {
     byType[c.type] = (byType[c.type] ?? 0) + 1;
     if (c.frozen) {
       frozen++;
       const v = verifyFrozen(c);
-      if (!v.ok) tampered.push(v.message ?? c.id);
+      if (!v.ok) verificationFailures.push(v.message ?? c.id);
     }
   }
 
   out.push(`契约: ${contracts.length} 条 (` + Object.entries(byType).map(([t, n]) => `${t}:${n}`).join(", ") + `)`);
-  out.push(`冻结: ${frozen} 条` + (tampered.length ? `,⚠ 被篡改 ${tampered.length} 条` : ""));
-  for (const t of tampered) out.push(`  ⚠ ${t}`);
+  out.push(`冻结: ${frozen} 条` + (verificationFailures.length ? `,⚠ 校验失败 ${verificationFailures.length} 条` : ""));
+  for (const failure of verificationFailures) out.push(`  ⚠ ${failure}`);
   if (issues.length) out.push(`⚠ 契约规格问题: ${issues.length} 处(运行 harness contract validate 查看)`);
 
   const verdicts = loadVerdicts(cwd);
