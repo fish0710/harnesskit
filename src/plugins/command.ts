@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { executionId, localExecutionTarget } from "../harness/execution.js";
 import type { CalibrationResult, CheckResult, Contract, Plugin, RunContext } from "../types.js";
 
 /**
@@ -9,21 +9,6 @@ import type { CalibrationResult, CheckResult, Contract, Plugin, RunContext } fro
  *
  * 契约字段：{ cmd: string, args?: string[], expectExit?: number=0 }
  */
-function runCommand(
-  cmd: string,
-  args: string[],
-  cwd: string,
-  signal?: AbortSignal,
-): Promise<{ code: number | null; stderr: string; spawnError?: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, signal, shell: false });
-    let stderr = "";
-    child.stderr?.on("data", (d) => (stderr += d.toString()));
-    // 'error' 事件 = 根本没起来（如 ENOENT）= error，而非 fail
-    child.on("error", (e) => resolve({ code: null, stderr, spawnError: e.message }));
-    child.on("close", (code) => resolve({ code, stderr }));
-  });
-}
 
 export const commandPlugin: Plugin = {
   type: "command",
@@ -40,28 +25,42 @@ export const commandPlugin: Plugin = {
       };
     }
 
-    const start = performance.now();
-    const { code, stderr, spawnError } = await runCommand(cmd, args, ctx.cwd, ctx.signal);
-    const durationMs = performance.now() - start;
+    const id = executionId();
+    const evidence = await (ctx.execution ?? localExecutionTarget).execute({
+      executionId: id,
+      command: cmd,
+      args,
+      cwd: ctx.cwd,
+      signal: ctx.signal,
+    });
+    const durationMs = evidence.durationMs;
 
-    // 没跑成 → error
-    if (spawnError) {
+    if (evidence.executionId !== id) {
       return {
         id: contract.id, type: this.type, status: "error", durationMs, violations: [],
-        errorReason: `命令无法启动: ${spawnError}（这不是 fail，是没跑成 ⇒ error）`,
+        errorReason: "执行证据 ID 不匹配，结果不可信 ⇒ error",
+      };
+    }
+    // 没跑成 → error
+    if (evidence.error) {
+      return {
+        id: contract.id, type: this.type, status: "error", durationMs, violations: [],
+        errorReason: `命令无法启动: ${evidence.error}（这不是 fail，是没跑成 ⇒ error）`,
       };
     }
     // 跑了，按退出码判 pass / fail
-    if (code === expectExit) {
+    if (evidence.exitCode === expectExit) {
       return { id: contract.id, type: this.type, status: "pass", durationMs, violations: [] };
     }
     return {
       id: contract.id, type: this.type, status: "fail", durationMs,
       violations: [
         {
-          what: `命令退出码 ${code}，期望 ${expectExit}`,
+          what: `命令退出码 ${evidence.exitCode}，期望 ${expectExit}`,
           why: contract.scenario ? String(contract.scenario) : "命令未达预期退出码",
-          how: stderr.trim() ? `查看 stderr: ${stderr.trim().split("\n").slice(0, 3).join(" / ")}` : "检查命令实现",
+          how: evidence.stderr.trim()
+            ? `查看 stderr: ${evidence.stderr.trim().split("\n").slice(0, 3).join(" / ")}`
+            : "检查命令实现",
           ref: typeof contract.ref === "string" ? contract.ref : undefined,
         },
       ],

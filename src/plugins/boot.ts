@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { executionId, localExecutionTarget } from "../harness/execution.js";
 import type { CheckResult, Contract, Plugin, RunContext } from "../types.js";
 
 /**
@@ -24,17 +24,23 @@ export const bootPlugin: Plugin = {
         errorReason: "契约缺少 cmd 字段 ⇒ error" };
     }
 
-    const start = performance.now();
-    const spawnError = await new Promise<string | undefined>((resolve) => {
-      const child = spawn(cmd, args, { cwd: ctx.cwd, signal: ctx.signal, shell: false });
-      child.on("error", (e) => resolve(e.message));
-      child.on("close", () => resolve(undefined));
+    const id = executionId();
+    const evidence = await (ctx.execution ?? localExecutionTarget).execute({
+      executionId: id,
+      command: cmd,
+      args,
+      cwd: ctx.cwd,
+      signal: ctx.signal,
     });
-    const elapsed = performance.now() - start;
+    const elapsed = evidence.durationMs;
 
-    if (spawnError) {
+    if (evidence.executionId !== id) {
       return { id: contract.id, type: this.type, status: "error", durationMs: elapsed, violations: [],
-        errorReason: `进程无法启动: ${spawnError} ⇒ error` };
+        errorReason: "执行证据 ID 不匹配，结果不可信 ⇒ error" };
+    }
+    if (evidence.error) {
+      return { id: contract.id, type: this.type, status: "error", durationMs: elapsed, violations: [],
+        errorReason: `进程无法启动: ${evidence.error} ⇒ error` };
     }
     if (elapsed <= budget) {
       return { id: contract.id, type: this.type, status: "pass", durationMs: elapsed, violations: [] };

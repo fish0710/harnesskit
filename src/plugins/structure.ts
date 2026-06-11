@@ -1,5 +1,5 @@
+import { executionId, localExecutionTarget } from "../harness/execution.js";
 import type { CheckResult, Contract, Plugin, RunContext, Violation } from "../types.js";
-import { spawnCapture } from "../util/spawn.js";
 
 interface EslintMessage { filePath?: string; messages?: Array<{ line?: number; message?: string; ruleId?: string }>; }
 
@@ -28,29 +28,39 @@ export const structurePlugin: Plugin = {
         errorReason: "契约缺少 tool 字段(要委托哪个分析器?)⇒ error" };
     }
 
-    const start = performance.now();
-    const { code, stdout, stderr, spawnError } = await spawnCapture(tool, args, { cwd: ctx.cwd, signal: ctx.signal });
-    const durationMs = performance.now() - start;
+    const id = executionId();
+    const evidence = await (ctx.execution ?? localExecutionTarget).execute({
+      executionId: id,
+      command: tool,
+      args,
+      cwd: ctx.cwd,
+      signal: ctx.signal,
+    });
+    const durationMs = evidence.durationMs;
 
-    // 工具没装/起不来 ⇒ error(绝不当通过)——跨语言编排最易静默失效的点
-    if (spawnError) {
+    if (evidence.executionId !== id) {
       return { id: c.id, type: this.type, status: "error", durationMs, violations: [],
-        errorReason: `静态分析器无法启动: "${tool}" ${spawnError}(可能未安装)⇒ error,绝不当通过` };
+        errorReason: "执行证据 ID 不匹配，结果不可信 ⇒ error" };
+    }
+    // 工具没装/起不来 ⇒ error(绝不当通过)——跨语言编排最易静默失效的点
+    if (evidence.error) {
+      return { id: c.id, type: this.type, status: "error", durationMs, violations: [],
+        errorReason: `静态分析器无法启动: "${tool}" ${evidence.error}(可能未安装)⇒ error,绝不当通过` };
     }
 
-    if (code === expectExit) {
+    if (evidence.exitCode === expectExit) {
       return { id: c.id, type: this.type, status: "pass", durationMs, violations: [] };
     }
 
     // 非零退出 ⇒ fail。尽量把工具输出解析成结构化违规。
     let violations: Violation[];
     if (parse === "eslint-json") {
-      violations = parseEslintJson(stdout);
+      violations = parseEslintJson(evidence.stdout);
     } else {
-      const out = (stdout + "\n" + stderr).trim();
+      const out = (evidence.stdout + "\n" + evidence.stderr).trim();
       violations = [
         {
-          what: `${tool} 退出码 ${code}(期望 ${expectExit})`,
+          what: `${tool} 退出码 ${evidence.exitCode}(期望 ${expectExit})`,
           why: c.scenario ? String(c.scenario) : "静态分析器报告了违规",
           how: out ? out.split("\n").slice(0, 8).join("\n") : `运行 ${tool} ${args.join(" ")} 查看详情`,
           ref: typeof c.ref === "string" ? c.ref : undefined,

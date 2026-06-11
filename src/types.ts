@@ -1,3 +1,5 @@
+import type { ExecutionTarget } from "./harness/execution.js";
+
 /**
  * gate_core 类型定义 —— 整个内核的契约都在这里。
  *
@@ -85,6 +87,7 @@ export interface RunContext {
   cwd: string;
   verdicts?: Record<string, Verdict>;
   signal?: AbortSignal;
+  execution?: ExecutionTarget;
 }
 
 /** 元测试结果：插件用契约自带的 examples 标定自己是否“没瞎”。 */

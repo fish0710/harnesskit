@@ -1,3 +1,4 @@
+import { executionId, localExecutionTarget } from "../harness/execution.js";
 import type { CheckResult, Contract, Plugin, RunContext } from "../types.js";
 
 interface HttpTrigger {
@@ -7,6 +8,7 @@ interface HttpTrigger {
   path?: string;
   headers?: Record<string, string>;
   body?: unknown;
+  timeoutMs?: number;
 }
 interface HttpExpect {
   status?: number;
@@ -40,6 +42,11 @@ function checkBody(actual: string, expect: Record<string, unknown> | string): st
   return fails;
 }
 
+function headerValue(headers: Record<string, string>, name: string): string | undefined {
+  const expected = name.toLowerCase();
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === expected)?.[1];
+}
+
 /**
  * http 适配器:黑盒打接口,断言可观测结果(状态码/响应体/响应头)。语言无关。
  *   连不上/超时 → error(没跑成,不是 fail)
@@ -60,32 +67,41 @@ export const httpPlugin: Plugin = {
         errorReason: "无法解析请求 URL(请给 trigger.url,或 baseUrl+path)⇒ error" };
     }
 
-    const start = performance.now();
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: t.method ?? "GET",
-        headers: t.headers,
-        body: t.body !== undefined ? JSON.stringify(t.body) : undefined,
-        signal: ctx.signal,
-      });
-    } catch (err) {
+    const id = executionId();
+    const evidence = await (ctx.execution ?? localExecutionTarget).request({
+      executionId: id,
+      url,
+      method: t.method ?? "GET",
+      headers: t.headers,
+      body: t.body !== undefined ? JSON.stringify(t.body) : undefined,
+      timeoutMs: t.timeoutMs,
+      signal: ctx.signal,
+    });
+    const durationMs = evidence.durationMs;
+
+    if (evidence.executionId !== id) {
+      return { id: c.id, type: this.type, status: "error", durationMs, violations: [],
+        errorReason: "执行证据 ID 不匹配，结果不可信 ⇒ error" };
+    }
+    if (evidence.error) {
       // 连不上/超时 = 服务没起来或网络问题 = 没跑成 ⇒ error
-      return { id: c.id, type: this.type, status: "error", durationMs: performance.now() - start, violations: [],
-        errorReason: `请求失败(连不上/超时): ${err instanceof Error ? err.message : String(err)} ⇒ error` };
+      return { id: c.id, type: this.type, status: "error", durationMs, violations: [],
+        errorReason: `请求失败(连不上/超时): ${evidence.error} ⇒ error` };
+    }
+    if (evidence.status === undefined) {
+      return { id: c.id, type: this.type, status: "error", durationMs, violations: [],
+        errorReason: "HTTP 执行证据缺少状态码，结果不可信 ⇒ error" };
     }
 
-    const text = await res.text();
-    const durationMs = performance.now() - start;
     const fails: string[] = [];
 
-    if (e.status !== undefined && res.status !== e.status) {
-      fails.push(`状态码期望 ${e.status},实际 ${res.status}`);
+    if (e.status !== undefined && evidence.status !== e.status) {
+      fails.push(`状态码期望 ${e.status},实际 ${evidence.status}`);
     }
-    if (e.body_contains !== undefined) fails.push(...checkBody(text, e.body_contains));
+    if (e.body_contains !== undefined) fails.push(...checkBody(evidence.body, e.body_contains));
     if (e.headers) {
       for (const [k, v] of Object.entries(e.headers)) {
-        const got = res.headers.get(k);
+        const got = headerValue(evidence.headers, k);
         if (got !== v) fails.push(`响应头 "${k}" 期望 ${v},实际 ${got ?? "(无)"}`);
       }
     }

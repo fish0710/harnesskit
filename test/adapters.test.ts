@@ -22,18 +22,33 @@ function startServer(handler: (req: import("node:http").IncomingMessage, res: im
 }
 
 test("http: 状态码与字段都符 → pass", async () => {
-  const { base, server } = await startServer((_req, res) => {
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error_code: "INVALID_AMOUNT" }));
+  let received = "";
+  const { base, server } = await startServer((req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.headers.authorization, "trusted");
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { received += chunk; });
+    req.on("end", () => {
+      assert.equal(received, JSON.stringify({ amount: -1 }));
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error_code: "INVALID_AMOUNT" }));
+    });
   });
   try {
     const c: Contract = {
       id: "h.pass", type: "http",
-      trigger: { method: "POST", baseUrl: base, path: "/payments", body: { amount: -1 } },
+      trigger: {
+        method: "POST",
+        baseUrl: base,
+        path: "/payments",
+        headers: { authorization: "trusted" },
+        body: { amount: -1 },
+      },
       expect: { status: 400, body_contains: { error_code: "INVALID_AMOUNT" } },
     };
     const r = await httpPlugin.run(c, ctx);
     assert.equal(r.status, "pass");
+    assert.equal(received, JSON.stringify({ amount: -1 }));
   } finally {
     server.close();
   }
