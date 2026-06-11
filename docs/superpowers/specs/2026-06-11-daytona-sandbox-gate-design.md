@@ -207,7 +207,14 @@ fields:
   "baseline": ["smoke.boot"],
   "rules": [],
   "sandbox": {
-    "candidateRoots": ["src", "lib", "test/generated"],
+    "candidateRoots": [
+      "src",
+      "lib",
+      "test/generated",
+      "package.json",
+      "package-lock.json",
+      "tsconfig.json"
+    ],
     "protectedPaths": [
       "contracts",
       ".harness",
