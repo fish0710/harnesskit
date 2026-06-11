@@ -101,6 +101,7 @@ export function loadContracts(dir: string): LoadResult {
 }
 
 type CanonicalJson = null | boolean | number | string | CanonicalJson[] | { [key: string]: CanonicalJson };
+const FROZEN_HASH_VERSION = "v2";
 
 function canonicalize(value: unknown, seen = new WeakSet<object>()): CanonicalJson {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
@@ -146,7 +147,12 @@ export function contractHash(c: Contract): string {
 
 /** 冻结一个契约:打标 frozen、记录时间与内容哈希。 */
 export function freezeContract(c: Contract): Contract {
-  return { ...c, frozen: true, frozen_at: new Date().toISOString(), hash: contractHash(c) };
+  return {
+    ...c,
+    frozen: true,
+    frozen_at: new Date().toISOString(),
+    hash: `${FROZEN_HASH_VERSION}:${contractHash(c)}`,
+  };
 }
 
 /** 校验一个已冻结契约的内容是否被篡改(哈希一致)。 */
@@ -154,8 +160,23 @@ export function verifyFrozen(c: Contract): { ok: boolean; message?: string } {
   if (!c.frozen) return { ok: true };
   const expected = typeof c.hash === "string" ? c.hash : undefined;
   if (!expected) return { ok: false, message: `契约 ${c.id} 标记 frozen 但缺少 hash` };
-  const actual = contractHash(c);
-  return actual === expected
-    ? { ok: true }
-    : { ok: false, message: `契约 ${c.id} 内容与冻结哈希不符(疑似被改:期望 ${expected},实际 ${actual})` };
+  const match = /^v2:([0-9a-f]{16})$/.exec(expected);
+  if (!match) {
+    return {
+      ok: false,
+      message: `契约 ${c.id} 使用旧版或不支持的冻结哈希格式,必须重新冻结`,
+    };
+  }
+
+  try {
+    const actual = contractHash(c);
+    return actual === match[1]
+      ? { ok: true }
+      : { ok: false, message: `契约 ${c.id} 内容与冻结哈希不符(疑似被改:期望 ${match[1]},实际 ${actual})` };
+  } catch (error) {
+    return {
+      ok: false,
+      message: `契约 ${c.id} 无法计算哈希或完成校验: ${(error as Error).message}`,
+    };
+  }
 }

@@ -42,17 +42,50 @@ test("loader: 数组文件 + 子目录递归", () => {
 });
 
 // ---------- freeze / verify ----------
-test("freeze + verify: 冻结后校验通过;篡改内容后校验失败", () => {
+test("freeze + verify: 新冻结使用 v2 哈希且校验通过;篡改内容后校验失败", () => {
   const c: Contract = { id: "f", type: "command", cmd: "true", expectExit: 0 };
   const frozen = freezeContract(c);
   assert.equal(frozen.frozen, true);
-  assert.equal(typeof frozen.hash, "string");
+  assert.match(frozen.hash as string, /^v2:[0-9a-f]{16}$/);
   assert.equal(verifyFrozen(frozen).ok, true);
 
   const tampered: Contract = { ...frozen, expectExit: 1 }; // 改了内容但保留旧 hash
   const res = verifyFrozen(tampered);
   assert.equal(res.ok, false);
   assert.match(res.message ?? "", /被改|不符/);
+});
+
+test("freeze + verify: 拒绝旧版或未知版本哈希并要求重新冻结", () => {
+  for (const hash of ["0123456789abcdef", "v1:0123456789abcdef", "v3:0123456789abcdef"]) {
+    const result = verifyFrozen({
+      id: "unsupported-hash",
+      type: "command",
+      cmd: "true",
+      frozen: true,
+      hash,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.message ?? "", /旧|不支持|重新冻结|old|unsupported|re-freeze/i);
+    assert.doesNotMatch(result.message ?? "", /篡改|被改|不符/);
+  }
+});
+
+test("freeze + verify: 无法哈希的冻结契约返回结构化失败", () => {
+  const contract: Contract = {
+    id: "unhashable",
+    type: "http",
+    expect: new Date("2020-01-01T00:00:00.000Z"),
+    frozen: true,
+    hash: "v2:0123456789abcdef",
+  };
+  let result: ReturnType<typeof verifyFrozen> | undefined;
+
+  assert.doesNotThrow(() => {
+    result = verifyFrozen(contract);
+  });
+  assert.equal(result?.ok, false);
+  assert.match(result?.message ?? "", /无法.*哈希|无法.*校验|cannot.*hash|cannot.*verify/i);
 });
 
 test("freeze + verify: 篡改嵌套 expect 字段后校验失败", () => {
