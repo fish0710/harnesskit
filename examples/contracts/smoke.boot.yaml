@@ -1,0 +1,6 @@
+id: smoke.boot
+type: boot
+scenario: 服务应在 800ms 内启动(这里用 true 占位,接项目时换成你的启动命令)
+cmd: "true"
+expect:
+  startup_ms_lte: 800

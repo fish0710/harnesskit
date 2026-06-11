@@ -1,0 +1,12 @@
+id: payment.reject-negative-amount
+type: http
+scenario: 提交负数金额的支付应被拒绝(接项目时把 baseUrl 指向你的服务)
+owner: spec-team
+trigger:
+  method: POST
+  baseUrl: "http://127.0.0.1:8080"
+  path: /payments
+  body: { amount: -100, currency: "USD" }
+expect:
+  status: 400
+  body_contains: { error_code: "INVALID_AMOUNT" }

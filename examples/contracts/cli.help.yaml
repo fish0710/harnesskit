@@ -1,0 +1,8 @@
+id: cli.help-exits-zero
+type: command
+scenario: 帮助命令应正常退出(示范 command 契约)
+cmd: "true"
+expectExit: 0
+examples:
+  positive: [{ exitCode: 0 }]
+  negative: [{ exitCode: 1 }, { exitCode: 127 }]

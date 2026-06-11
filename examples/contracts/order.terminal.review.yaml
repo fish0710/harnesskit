@@ -1,0 +1,12 @@
+id: order.done-is-terminal
+type: review
+scenario: "订单状态契约失败:done 后再 advance 不再是 no-op"
+question: "“订单不可逆”冻结契约失败了——是回归,还是产品要允许重开订单?"
+focalPoints:
+  - 有没有对应的需求/规格变更?
+  - 若有意改变:先更新冻结契约(走 CODEOWNERS 审批)再放行
+  - 若是回归:done 被改写会污染对账,爆炸半径大,应立即挡回
+options:
+  - { id: intended,   label: "确属变更,更新契约后放行", resolvesTo: pass }
+  - { id: regression, label: "判定为回归,挡回去修",     resolvesTo: fail }
+recommended: regression

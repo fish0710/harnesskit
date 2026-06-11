@@ -1,0 +1,35 @@
+{
+  "name": "@harness/gate-core",
+  "version": "0.2.0",
+  "description": "完整 harness CLI:产出引擎(create/plan/run/fix/review)+ 门禁内核(插件化检查 + 人工决策)",
+  "type": "module",
+  "exports": {
+    ".": "./dist/src/index.js"
+  },
+  "bin": {
+    "harness": "./dist/src/cli.js",
+    "gate-demo": "./dist/demo/run-demo.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "demo": "node dist/demo/run-demo.js",
+    "test": "node --test \"dist/test/**/*.test.js\"",
+    "check": "npm run build && npm run test"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.170",
+    "@arizeai/openinference-instrumentation-claude-agent-sdk": "0.2.6",
+    "@langfuse/otel": "5.4.1",
+    "@opentelemetry/sdk-node": "0.218.0",
+    "js-yaml": "^4.2.0"
+  }
+}

@@ -1,0 +1,8 @@
+# 拷为仓库根的 CODEOWNERS。锁定"判分依据"与"门禁选择",改它们的 PR 强制审批。
+# 这切断了 agent“碍事就改契约/改映射”的作弊路径(改契约 = 改规则)。
+
+/contracts/                 @your-org/spec-team
+/contracts/frozen/          @your-org/spec-team
+/harness.config.json        @your-org/platform
+/.github/workflows/         @your-org/platform
+/CODEOWNERS                 @your-org/platform

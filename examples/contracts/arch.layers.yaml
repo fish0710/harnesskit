@@ -1,0 +1,6 @@
+id: arch.layers
+type: structure
+scenario: 分层依赖不得向上(委托原生工具;接 Swift 时换成 swiftlint/自定义)
+tool: "true"            # 占位:换成 import-linter / dependency-cruiser / swiftlint
+args: []
+expectExit: 0

@@ -1,0 +1,6 @@
+{
+  "baseline": ["smoke.boot", "cli.help-exits-zero", "arch.layers"],
+  "rules": [
+    { "when": ["src/payment/**", "src/payments/**"], "select": ["payment.reject-negative-amount"] }
+  ]
+}
