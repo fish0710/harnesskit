@@ -100,11 +100,47 @@ export function loadContracts(dir: string): LoadResult {
   return { contracts, issues };
 }
 
+type CanonicalJson = null | boolean | number | string | CanonicalJson[] | { [key: string]: CanonicalJson };
+
+function canonicalize(value: unknown, seen = new WeakSet<object>()): CanonicalJson {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("Cannot canonicalize a non-finite number");
+    return value;
+  }
+  if (typeof value !== "object") {
+    throw new TypeError(`Cannot canonicalize value of type ${typeof value}`);
+  }
+  if (seen.has(value)) throw new TypeError("Cannot canonicalize a circular structure");
+  seen.add(value);
+
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => canonicalize(item, seen));
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError("Cannot canonicalize a non-plain object");
+    }
+
+    const result: { [key: string]: CanonicalJson } = {};
+    for (const key of Object.keys(value).sort()) {
+      const item = (value as Record<string, unknown>)[key];
+      if (item !== undefined) result[key] = canonicalize(item, seen);
+    }
+    return result;
+  } finally {
+    seen.delete(value);
+  }
+}
+
 /** 计算契约内容哈希(排除 frozen/frozen_at/hash 自身),用于冻结与防篡改。 */
 export function contractHash(c: Contract): string {
   const { frozen, frozen_at, hash, ...rest } = c as Record<string, unknown>;
   void frozen; void frozen_at; void hash;
-  const canonical = JSON.stringify(rest, Object.keys(rest).sort());
+  const canonical = JSON.stringify(canonicalize(rest));
   return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
 }
 

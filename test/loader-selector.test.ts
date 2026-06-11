@@ -55,6 +55,23 @@ test("freeze + verify: 冻结后校验通过;篡改内容后校验失败", () =>
   assert.match(res.message ?? "", /被改|不符/);
 });
 
+test("freeze + verify: 篡改嵌套 expect 字段后校验失败", () => {
+  const frozen = freezeContract({
+    id: "nested",
+    type: "http",
+    trigger: { method: "GET", path: "/health" },
+    expect: { status: 200, body_contains: { ready: true } },
+  });
+
+  const tampered: Contract = {
+    ...frozen,
+    expect: { status: 500, body_contains: { ready: true } },
+  };
+
+  assert.equal(verifyFrozen(frozen).ok, true);
+  assert.equal(verifyFrozen(tampered).ok, false);
+});
+
 test("hash: 不受 frozen/frozen_at/hash 字段影响(只看内容)", () => {
   const c: Contract = { id: "h", type: "command", cmd: "true" };
   const h1 = contractHash(c);
