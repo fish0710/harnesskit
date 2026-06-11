@@ -72,11 +72,83 @@ test("freeze + verify: 篡改嵌套 expect 字段后校验失败", () => {
   assert.equal(verifyFrozen(tampered).ok, false);
 });
 
+test("freeze + verify: 篡改嵌套 __proto__ 字段后哈希与校验变化", () => {
+  const frozen = freezeContract({
+    id: "special-key",
+    type: "http",
+    trigger: { method: "GET", path: "/health" },
+    expect: JSON.parse('{"__proto__":{"ready":true}}'),
+  });
+
+  const tampered: Contract = {
+    ...frozen,
+    expect: JSON.parse('{"__proto__":{"ready":false}}'),
+  };
+
+  assert.notEqual(contractHash(frozen), contractHash(tampered));
+  assert.equal(verifyFrozen(frozen).ok, true);
+  assert.equal(verifyFrozen(tampered).ok, false);
+});
+
 test("hash: 不受 frozen/frozen_at/hash 字段影响(只看内容)", () => {
   const c: Contract = { id: "h", type: "command", cmd: "true" };
   const h1 = contractHash(c);
   const h2 = contractHash({ ...c, frozen: true, frozen_at: "2020", hash: "deadbeef" });
   assert.equal(h1, h2);
+});
+
+test("hash: 保留数组顺序并递归排序对象键", () => {
+  const first: Contract = {
+    id: "ordered",
+    type: "http",
+    expect: [{ z: 1, nested: { b: 2, a: 1 } }, { value: "second" }],
+  };
+  const sameContent: Contract = {
+    type: "http",
+    expect: [{ nested: { a: 1, b: 2 }, z: 1 }, { value: "second" }],
+    id: "ordered",
+  };
+  const reversed: Contract = {
+    ...sameContent,
+    expect: [{ value: "second" }, { nested: { a: 1, b: 2 }, z: 1 }],
+  };
+
+  assert.equal(contractHash(first), contractHash(sameContent));
+  assert.notEqual(contractHash(first), contractHash(reversed));
+});
+
+test("hash: 忽略对象中的 undefined 值", () => {
+  const omitted: Contract = {
+    id: "undefined",
+    type: "http",
+    expect: { nested: { ready: true } },
+  };
+  const explicit: Contract = {
+    ...omitted,
+    expect: { nested: { ready: true, ignored: undefined }, ignored: undefined },
+  };
+
+  assert.equal(contractHash(omitted), contractHash(explicit));
+});
+
+test("hash: 拒绝不支持的值", () => {
+  const circular: Record<string, unknown> = {};
+  circular.self = circular;
+  const unsupported = [
+    () => undefined,
+    Symbol("unsupported"),
+    1n,
+    Number.NaN,
+    new Date("2020-01-01T00:00:00.000Z"),
+    circular,
+  ];
+
+  for (const value of unsupported) {
+    assert.throws(
+      () => contractHash({ id: "unsupported", type: "http", expect: value }),
+      TypeError,
+    );
+  }
 });
 
 // ---------- selector ----------

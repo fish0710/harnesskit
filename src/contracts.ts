@@ -125,12 +125,12 @@ function canonicalize(value: unknown, seen = new WeakSet<object>()): CanonicalJs
       throw new TypeError("Cannot canonicalize a non-plain object");
     }
 
-    const result: { [key: string]: CanonicalJson } = {};
+    const entries: [string, CanonicalJson][] = [];
     for (const key of Object.keys(value).sort()) {
       const item = (value as Record<string, unknown>)[key];
-      if (item !== undefined) result[key] = canonicalize(item, seen);
+      if (item !== undefined) entries.push([key, canonicalize(item, seen)]);
     }
-    return result;
+    return Object.fromEntries(entries);
   } finally {
     seen.delete(value);
   }
