@@ -72,7 +72,7 @@ export interface RunOutcome {
 }
 
 function diagnostics(report: GateReport): string {
-  return report.results
+  const value = report.results
     .filter((r) => r.status === "fail" || r.status === "error")
     .map((r) =>
       r.status === "error"
@@ -80,6 +80,13 @@ function diagnostics(report: GateReport): string {
         : r.violations.map((v) => `- [${r.id}] ${v.what} | 修复: ${v.how}`).join("\n"),
     )
     .join("\n");
+  const bytes = Buffer.from(value);
+  const limit = 64 * 1024;
+  if (bytes.byteLength <= limit) return value;
+  return Buffer.concat([
+    bytes.subarray(0, limit),
+    Buffer.from("\n[HARNESS FEEDBACK TRUNCATED]"),
+  ]).toString("utf8");
 }
 
 function updateStreaks(state: LoopState, report: GateReport): void {

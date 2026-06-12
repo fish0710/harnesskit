@@ -85,6 +85,11 @@ class RecordingHandle implements SandboxHandle {
       agentPrompts: string[];
       agentRuns: number;
       gateRuns: number;
+      agentStdout: string;
+      candidateMutations: Array<
+        ((files: Map<string, WorkspaceFile>) => void) | undefined
+      >;
+      gateDeleteFails: boolean;
     },
   ) {}
 
@@ -133,7 +138,14 @@ class RecordingHandle implements SandboxHandle {
         "src/a.ts",
         workspaceFile("src/a.ts", Buffer.from(content), false),
       );
-      return { exitCode: 0, stdout: "agent done", stderr: "" };
+      this.provider.candidateMutations[this.provider.agentRuns - 1]?.(
+        this.files,
+      );
+      return {
+        exitCode: 0,
+        stdout: this.provider.agentStdout,
+        stderr: "",
+      };
     }
     if (this.role === "gate" && command.includes("/usr/bin/env")) {
       const exitCode = this.provider.gateExitCodes[
@@ -161,6 +173,9 @@ class RecordingHandle implements SandboxHandle {
   }
 
   async delete(): Promise<void> {
+    if (this.role === "gate" && this.provider.gateDeleteFails) {
+      throw new Error("injected gate cleanup failure");
+    }
     this.deleted++;
   }
 }
@@ -168,9 +183,17 @@ class RecordingHandle implements SandboxHandle {
 function scriptedProvider(options: {
   candidateVersions: string[];
   gateExitCodes: number[];
+  agentStdout?: string;
+  candidateMutations?: Array<
+    ((files: Map<string, WorkspaceFile>) => void) | undefined
+  >;
+  gateDeleteFails?: boolean;
 }): ScriptedProvider {
   const state = {
     ...options,
+    agentStdout: options.agentStdout ?? "agent done",
+    candidateMutations: options.candidateMutations ?? [],
+    gateDeleteFails: options.gateDeleteFails ?? false,
     agentPrompts: [] as string[],
     agentRuns: 0,
     gateRuns: 0,
@@ -246,6 +269,14 @@ test("multiple attempts reuse one agent and create a fresh gate each time", asyn
       .filter((handle) => handle.role === "gate")
       .every((handle) => handle.networkBlocks.includes(true)),
   );
+  const agent = provider.handles.find((handle) => handle.role === "agent")!;
+  const gates = provider.handles.filter((handle) => handle.role === "gate");
+  assert.equal(agent.files.has("contracts/gate.yaml"), false);
+  assert.equal(gates[0]?.files.has(".git/HEAD"), false);
+  assert.equal(
+    gates[0]?.files.get("contracts/gate.yaml")?.content.toString(),
+    "trusted\n",
+  );
 });
 
 test("gate sandboxes receive no model credentials or Claude installation", async () => {
@@ -312,4 +343,127 @@ test("publication uses the evaluated candidate instead of recollecting agent fil
 
   assert.equal(publication.ok, true);
   assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "evaluated\n");
+});
+
+test("agent-reported pass text cannot override failing gate evidence", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["broken\n"],
+    gateExitCodes: [1],
+    agentStdout: "all tests passed",
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "command", command: "fake-agent" },
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget: { ...budget, maxAttempts: 1 },
+  });
+
+  assert.equal(outcome.outcome, "escalated");
+  assert.equal(outcome.report.outcome, "fail");
+  assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "before\n");
+});
+
+test("candidate policy violation becomes gate error and is fed back", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["broken\n", "fixed\n"],
+    gateExitCodes: [0],
+    candidateMutations: [
+      (files) => {
+        files.set(
+          "contracts/forged.yaml",
+          workspaceFile(
+            "contracts/forged.yaml",
+            Buffer.from("forged\n"),
+            false,
+          ),
+        );
+      },
+      (files) => files.delete("contracts/forged.yaml"),
+    ],
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "command", command: "fake-agent" },
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.match(provider.agentPrompts[1]!, /候选|路径|允许|contracts/i);
+});
+
+test("gate cleanup failure prevents publication", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    gateDeleteFails: true,
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "command", command: "fake-agent" },
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget: { ...budget, maxAttempts: 1 },
+  });
+
+  assert.equal(outcome.outcome, "escalated");
+  assert.match(
+    outcome.report.results[0]?.errorReason ?? "",
+    /cleanup|清理|delete/i,
+  );
+  assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "before\n");
+});
+
+test("environment refuses publication when the latest gate did not pass", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["broken\n"],
+    gateExitCodes: [1],
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "command", command: "fake-agent" },
+  });
+  await environment.runTask({ task: "fix it" });
+  const report = await environment.runGate({
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+  });
+
+  assert.equal(report.outcome, "fail");
+  assert.equal((await environment.publish()).ok, false);
+  await environment.close();
+  assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "before\n");
 });
