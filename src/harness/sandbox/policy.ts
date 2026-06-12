@@ -81,7 +81,7 @@ function positiveSafeInteger(value: unknown, field: string): number {
   return value;
 }
 
-export function filesystemPathKey(
+export function protectedFilesystemPathKey(
   value: string,
   platform: NodeJS.Platform = process.platform,
 ): string {
@@ -98,13 +98,19 @@ export function filesystemPathKey(
     .join("/");
 }
 
-export function isPathWithin(
+export function isCandidateWithin(path: string, prefix: string): boolean {
+  // Keep authorization volume-independent: filesystem aliases must never
+  // widen the configured POSIX allowlist.
+  return path === prefix || path.startsWith(`${prefix}/`);
+}
+
+export function isProtectedWithin(
   path: string,
   prefix: string,
   platform: NodeJS.Platform = process.platform,
 ): boolean {
-  const pathKey = filesystemPathKey(path, platform);
-  const prefixKey = filesystemPathKey(prefix, platform);
+  const pathKey = protectedFilesystemPathKey(path, platform);
+  const prefixKey = protectedFilesystemPathKey(prefix, platform);
   return pathKey === prefixKey || pathKey.startsWith(`${prefixKey}/`);
 }
 
@@ -139,10 +145,14 @@ export function validateCandidatePath(
   platform: NodeJS.Platform = process.platform,
 ): string {
   const path = normalizeWorkspacePath(value);
-  if (!policy.candidateRoots.some((root) => isPathWithin(path, root, platform))) {
+  if (!policy.candidateRoots.some((root) => isCandidateWithin(path, root))) {
     throw new Error(`候选路径不在允许范围: ${path}`);
   }
-  if (policy.protectedPaths.some((root) => isPathWithin(path, root, platform))) {
+  if (
+    policy.protectedPaths.some((root) =>
+      isProtectedWithin(path, root, platform)
+    )
+  ) {
     throw new Error(`候选路径属于受保护资产: ${path}`);
   }
   return path;
@@ -227,7 +237,7 @@ export function loadSandboxPolicy(
   if (
     candidateRoots.every((candidateRoot) =>
       protectedPaths.some((protectedPath) =>
-        isPathWithin(candidateRoot, protectedPath, platform),
+        isProtectedWithin(candidateRoot, protectedPath, platform),
       ),
     )
   ) {

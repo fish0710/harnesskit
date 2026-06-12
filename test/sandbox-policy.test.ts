@@ -2,9 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  filesystemPathKey,
   loadSandboxPolicy,
   normalizeWorkspacePath,
+  protectedFilesystemPathKey,
   validateCandidatePath,
 } from "../src/harness/sandbox/policy.js";
 
@@ -116,27 +116,32 @@ test("darwin blocks protected filesystem aliases", () => {
   }
 });
 
-test("darwin candidate roots match host aliases and preserve candidate spelling", () => {
-  const simplePolicy = loadSandboxPolicy({
+test("candidate allowlists stay exact and volume-independent on every platform", () => {
+  // Allowlisting is intentionally narrower than host filesystem aliasing.
+  for (const platform of ["darwin", "win32", "linux"] as const) {
+    const policy = loadSandboxPolicy({
+      sandbox: {
+        candidateRoots: ["src"],
+        protectedPaths: [],
+      },
+    }, platform);
+
+    assert.throws(
+      () => validateCandidatePath("SRC/x", policy, platform),
+      /允许范围/,
+    );
+  }
+
+  const unicodePolicy = loadSandboxPolicy({
     sandbox: {
-      candidateRoots: ["src"],
+      candidateRoots: ["src/café"],
       protectedPaths: [],
     },
   }, "darwin");
-  assert.equal(
-    validateCandidatePath("SRC/x", simplePolicy, "darwin"),
-    "SRC/x",
+  assert.throws(
+    () => validateCandidatePath("src/cafe\u0301/x", unicodePolicy, "darwin"),
+    /允许范围/,
   );
-
-  const candidate = "SRC/cafe\u0301/STRASSE/ς/ſafe.ts";
-  const policy = loadSandboxPolicy({
-    sandbox: {
-      candidateRoots: ["src/CAFÉ/straße/σ"],
-      protectedPaths: [],
-    },
-  }, "darwin");
-
-  assert.equal(validateCandidatePath(candidate, policy, "darwin"), candidate);
 });
 
 test("linux path comparisons remain case and Unicode sensitive", () => {
@@ -179,10 +184,10 @@ test("linux candidate root casing does not match a distinct candidate path", () 
   );
 });
 
-test("filesystem path keys keep accent-distinct APFS names separate", () => {
+test("protected filesystem path keys keep accent-distinct APFS names separate", () => {
   assert.notEqual(
-    filesystemPathKey("src/cafe", "darwin"),
-    filesystemPathKey("src/café", "darwin"),
+    protectedFilesystemPathKey("src/cafe", "darwin"),
+    protectedFilesystemPathKey("src/café", "darwin"),
   );
 
   const policy = loadSandboxPolicy({
