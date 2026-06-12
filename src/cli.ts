@@ -12,7 +12,7 @@
  *   contract freeze <file>                     # 冻结契约(打 hash,写回)
  */
 import { parseArgs } from "node:util";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, extname } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as yaml from "js-yaml";
@@ -29,12 +29,20 @@ import { loadContracts, freezeContract, verifyFrozen, validateContract } from ".
 import { selectByChange, selectByStage, type SelectConfig } from "./selector.js";
 import type { Contract, RunContext } from "./types.js";
 
-import { scaffoldDriver, commandDriver, claudeDriver, type AgentDriver } from "./harness/drivers.js";
+import {
+  scaffoldDriver,
+  selectAgent,
+  type AgentSpec,
+} from "./harness/drivers.js";
 import {
   localRunEnvironment,
   runLoop,
   type GenerationBudget,
+  type RunEnvironment,
 } from "./harness/run.js";
+import { createDaytonaSdkProvider } from "./harness/sandbox/daytona.js";
+import { createDaytonaRunEnvironment } from "./harness/sandbox/environment.js";
+import { loadSandboxPolicy } from "./harness/sandbox/policy.js";
 import { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
 import { writeRunRecord, type RunRecord } from "./harness/record.js";
 import { createProject } from "./harness/scaffold.js";
@@ -215,29 +223,21 @@ function cmdContract(args: string[]): void {
 
 // ---------- 产出引擎命令 ----------
 
-function pickDriver(values: Record<string, unknown>): AgentDriver {
-  const kind = (values.driver as string) ?? "scaffold";
-  if (kind === "command") {
-    const cmd = values["agent-cmd"] as string | undefined;
-    if (!cmd) fail("--driver command 需要 --agent-cmd \"<你的 agent 命令>\"");
-    const [bin, ...args] = (cmd as string).split(/\s+/);
-    return commandDriver(bin!, args);
-  }
-  if (kind === "claude") {
-    return claudeDriver({
-      onObservation: (event, data) => {
-        if (event === "message") return;
-        console.log(`    · ${event}${event === "warning" ? `: ${String(data)}` : ""}`);
-      },
-    });
-  }
-  return scaffoldDriver;
-}
-
-function buildBudget(values: Record<string, unknown>, driverName: string): GenerationBudget {
-  const def = driverName === "scaffold" ? 1 : 5; // 空跑 driver 没必要多轮
+function buildBudget(values: Record<string, unknown>, agent: AgentSpec): GenerationBudget {
+  const def = agent.kind === "scaffold" ? 1 : 5;
   const maxAttempts = values["max-attempts"] ? Number(values["max-attempts"]) : def;
   return { maxAttempts, maxTokens: 1e9, maxMs: 600_000, contextThreshold: 0.9, repeatWallThreshold: 3 };
+}
+
+function loadHarnessConfig(
+  cwd: string,
+  configuredPath: string | undefined,
+): unknown {
+  const path = configuredPath
+    ? resolve(cwd, configuredPath)
+    : resolve(cwd, "harness.config.json");
+  if (!existsSync(path)) return {};
+  return JSON.parse(readFileSync(path, "utf8")) as unknown;
 }
 
 async function doRun(args: string[], task: string, initialFeedback?: string): Promise<void> {
@@ -258,19 +258,51 @@ async function doRun(args: string[], task: string, initialFeedback?: string): Pr
   const ctx: RunContext = { cwd, verdicts: loadVerdicts(cwd) };
   if (values["base-url"]) (ctx as { baseUrl?: string }).baseUrl = values["base-url"] as string;
 
-  const driver = pickDriver(values);
-  const budget = buildBudget(values, driver.name);
+  let agent: AgentSpec;
+  try {
+    agent = selectAgent(values);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+  const config = loadHarnessConfig(
+    cwd,
+    values.config as string | undefined,
+  );
+  const policy = loadSandboxPolicy(config);
+  let environment: RunEnvironment;
+  if (agent.kind === "scaffold") {
+    environment = localRunEnvironment(scaffoldDriver, cwd);
+  } else {
+    environment = createDaytonaRunEnvironment({
+      provider: createDaytonaSdkProvider(process.env),
+      root: cwd,
+      policy,
+      agent,
+      environment: process.env,
+      onObservation(event, data) {
+        console.log(`    · ${event}: ${JSON.stringify(data)}`);
+      },
+    });
+  }
+  const budget = buildBudget(values, agent);
 
-  console.log(`harness run · task="${task}" · driver=${driver.name} · 契约 ${selected.length} 条\n`);
+  console.log(
+    `harness run · task="${task}" · environment=${environment.name}` +
+    ` · 契约 ${selected.length} 条`,
+  );
+  console.log(
+    `sandbox roots=[${policy.candidateRoots.join(", ")}]` +
+    ` protected=[${policy.protectedPaths.join(", ")}]\n`,
+  );
   const outcome = await runLoop({
     task, contracts: selected, gate, ctx,
-    environment: localRunEnvironment(driver, cwd), budget,
+    environment, budget,
     ...(initialFeedback ? { initialFeedback } : {}),
     onLog: (l) => console.log(l),
   });
 
   const rec: RunRecord = {
-    at: new Date().toISOString(), task, driver: driver.name,
+    at: new Date().toISOString(), task, driver: environment.name,
     outcome: outcome.outcome, attempts: outcome.attempts, summary: outcome.report.summary,
     ...(outcome.action ? { action: outcome.action } : {}),
   };
@@ -283,7 +315,7 @@ async function doRun(args: string[], task: string, initialFeedback?: string): Pr
     console.log("◐ 有待人工决策:运行 `harness review` 查看决策重点并裁决,再重跑。");
   } else {
     console.log(`■ 已升级:${outcome.action?.kind} — ${outcome.action?.reason}`);
-    if (driver.name === "scaffold") {
+    if (agent.kind === "scaffold") {
       console.log("  (这是 scaffold 空跑 driver:未产出代码。换 --driver claude 或 --driver command 接真实 agent 即可据上面门禁反馈迭代修复。)");
     }
   }
@@ -299,21 +331,7 @@ async function cmdRun(args: string[]): Promise<void> {
 }
 
 async function cmdFix(args: string[]): Promise<void> {
-  // 先跑一次门禁拿诊断,作为初始反馈喂给 driver(修复导向)
-  const { values } = parse(args);
-  const cwd = process.cwd();
-  const dir = resolve(cwd, values.dir as string);
-  const { contracts } = loadContracts(dir);
-  const selected = values.stage ? selectByStage(contracts, values.stage as string) : contracts;
-  const gate = await buildGate(values.properties as string | undefined);
-  const ctx: RunContext = { cwd, verdicts: loadVerdicts(cwd) };
-  if (values["base-url"]) (ctx as { baseUrl?: string }).baseUrl = values["base-url"] as string;
-  const report = await gate.run(selected, ctx);
-  const feedback = report.results
-    .filter((r) => r.status === "fail" || r.status === "error")
-    .map((r) => (r.status === "error" ? `- [${r.id}] 没跑成: ${r.errorReason}` : r.violations.map((v) => `- [${r.id}] ${v.what} | 修复: ${v.how}`).join("\n")))
-    .join("\n");
-  await doRun(args, "根据门禁反馈修复未通过项", feedback || "(当前门禁无失败项)");
+  await doRun(args, "运行门禁并根据隔离环境反馈修复未通过项");
 }
 
 async function cmdReview(args: string[]): Promise<void> {

@@ -25,6 +25,25 @@ export interface AgentDriver {
   close?(): Promise<void>;
 }
 
+export type AgentSpec =
+  | { kind: "scaffold" }
+  | { kind: "claude" }
+  | { kind: "command"; command: string };
+
+export function selectAgent(values: Record<string, unknown>): AgentSpec {
+  const kind = (values.driver as string | undefined) ?? "scaffold";
+  if (kind === "command") {
+    const command = values["agent-cmd"];
+    if (typeof command !== "string" || command.trim() === "") {
+      throw new Error("--driver command 需要 --agent-cmd");
+    }
+    return { kind: "command", command };
+  }
+  if (kind === "claude") return { kind: "claude" };
+  if (kind === "scaffold") return { kind: "scaffold" };
+  throw new Error(`未知 driver: ${kind}`);
+}
+
 export type ClaudePermissionMode =
   | "default"
   | "acceptEdits"
@@ -161,3 +180,6 @@ export function claudeDriver(opts: ClaudeDriverOptions = {}): AgentDriver {
     },
   };
 }
+
+/** @deprecated Host execution is unsafe for mutating agent work. */
+export const unsafeLocalClaudeDriver = claudeDriver;

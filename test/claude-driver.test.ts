@@ -1,8 +1,25 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildClaudeQueryOptions, claudeDriver } from "../src/harness/drivers.js";
+import {
+  buildClaudeQueryOptions,
+  claudeDriver,
+  selectAgent,
+} from "../src/harness/drivers.js";
 import type { ClaudeSdkModule, StartLangfuseOptions } from "../src/harness/langfuse.js";
+
+test("claude and command selections produce isolated execution specs", () => {
+  assert.deepEqual(selectAgent({ driver: "claude" }), { kind: "claude" });
+  assert.deepEqual(
+    selectAgent({ driver: "command", "agent-cmd": "my-agent --flag" }),
+    { kind: "command", command: "my-agent --flag" },
+  );
+  assert.deepEqual(selectAgent({}), { kind: "scaffold" });
+  assert.throws(
+    () => selectAgent({ driver: "command" }),
+    /agent-cmd/,
+  );
+});
 
 test("claude driver 默认允许 Bash/Edit/Write 且不询问权限", () => {
   const options = buildClaudeQueryOptions();

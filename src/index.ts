@@ -15,7 +15,9 @@ export { decideEscalation, type LoopState, type EscalationAction } from "./agent
 
 // 产出引擎(完整 harness CLI 的核心层)
 export {
-  scaffoldDriver, commandDriver, claudeDriver, buildClaudeQueryOptions,
+  scaffoldDriver, commandDriver, claudeDriver, unsafeLocalClaudeDriver,
+  selectAgent, buildClaudeQueryOptions,
+  type AgentSpec,
   type AgentDriver, type AgentTaskInput, type AgentTaskResult,
   type ClaudeDriverOptions, type ClaudeDriverDependencies, type ClaudePermissionMode,
 } from "./harness/drivers.js";
@@ -29,6 +31,25 @@ export {
   type RunEnvironment, type EnvironmentTaskInput,
   type RunOptions, type RunOutcome, type GenerationBudget,
 } from "./harness/run.js";
+export {
+  localExecutionTarget,
+  type ExecutionTarget,
+  type CommandExecutionEvidence,
+  type HttpExecutionEvidence,
+} from "./harness/execution.js";
+export {
+  loadSandboxPolicy,
+  validateCandidatePath,
+} from "./harness/sandbox/policy.js";
+export {
+  createDaytonaRunEnvironment,
+  type DaytonaRunEnvironmentOptions,
+  type SandboxAgentSpec,
+} from "./harness/sandbox/environment.js";
+export {
+  createDaytonaSdkProvider,
+  createDaytonaExecutionTarget,
+} from "./harness/sandbox/daytona.js";
 export { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
 export { writeRunRecord, lastRunRecord, type RunRecord } from "./harness/record.js";
 export { createProject, type CreateResult } from "./harness/scaffold.js";
