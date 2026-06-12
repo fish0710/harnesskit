@@ -118,7 +118,11 @@ function isInvalidPortableSegment(segment: string): boolean {
   return (
     /[\u0000-\u001f<>:"|?*]/.test(segment) ||
     /[. ]$/.test(segment) ||
-    /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(segment)
+    // Static policy cannot resolve actual NTFS 8.3 mappings, so reject every
+    // short-name-shaped segment even though this can produce false positives.
+    /~[0-9]+/.test(segment) ||
+    /^(?:con|prn|aux|nul|com(?:[1-9]|[¹²³])|lpt(?:[1-9]|[¹²³]))(?:\.|$)/i
+      .test(segment)
   );
 }
 

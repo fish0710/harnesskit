@@ -113,6 +113,29 @@ test("normalization rejects Windows reserved device basenames with extensions", 
   }
 });
 
+test("normalization rejects possible NTFS 8.3 short-name aliases", () => {
+  for (const path of [
+    "src/SECRET~1.JSO",
+    "src/foo~1.txt",
+    "src/archive~123/data.json",
+  ]) {
+    assert.throws(() => normalizeWorkspacePath(path), /非法路径/);
+  }
+});
+
+test("normalization rejects superscript Windows device basenames", () => {
+  for (const path of [
+    "COM¹",
+    "com².txt",
+    "src/COM³.log",
+    "src/LPT¹",
+    "src/lpt².txt",
+    "src/LpT³.json",
+  ]) {
+    assert.throws(() => normalizeWorkspacePath(path), /非法路径/);
+  }
+});
+
 test("normalization accepts portable near-miss names", () => {
   for (const path of [
     "console.ts",
@@ -122,6 +145,9 @@ test("normalization accepts portable near-miss names", () => {
     "src/com10",
     "src/lpt10.log",
     "src/com1extra.txt",
+    "src/plain~name.txt",
+    "src/trailing~",
+    "src/foo~bar1.txt",
   ]) {
     assert.equal(normalizeWorkspacePath(path), path);
   }
