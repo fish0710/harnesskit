@@ -20,11 +20,15 @@ import {
   agentVisibleFiles,
   captureWorkspace,
   collectCandidate,
+  deriveCandidateOperations,
   workspaceFile,
   type RemoteFileEntry,
   type RemoteWorkspace,
 } from "../src/harness/sandbox/workspace.js";
-import { publishCandidate } from "../src/harness/sandbox/publish.js";
+import {
+  publishCandidate,
+  type PublishHooks,
+} from "../src/harness/sandbox/publish.js";
 import type {
   CandidateSnapshot,
   SandboxPolicy,
@@ -177,9 +181,13 @@ function candidateReplacing(
     Buffer.from(content),
     executable ?? before.executable,
   );
+  const files = new Map(
+    agentVisibleFiles(baseline, policy()).map((item) => [item.path, item]),
+  );
+  files.set(path, file);
   return {
-    files: new Map([[path, file]]),
-    operations: [{ kind: "modify", before, file }],
+    files,
+    operations: deriveCandidateOperations(baseline, files, policy()),
   };
 }
 
@@ -275,6 +283,19 @@ test("capture rejects a tracked symbolic link", () => {
   assert.throws(
     () => captureWorkspace(root, policy()),
     /符号链接|文件类型/,
+  );
+});
+
+test("capture rejects tracked files beneath a symlinked parent", () => {
+  const root = createGitFixture({ "src/nested/a.ts": "inside\n" });
+  const outside = createTemporaryDirectory();
+  writeFixtureFile(outside, "a.ts", "outside\n");
+  rmSync(join(root, "src/nested"), { recursive: true });
+  symlinkSync(outside, join(root, "src/nested"));
+
+  assert.throws(
+    () => captureWorkspace(root, policy()),
+    /父路径|符号链接|工作区外/,
   );
 });
 
@@ -661,11 +682,20 @@ test("publisher preflights every operation before writing any candidate", () => 
     "src/b.ts": "before-b\n",
   });
   const baseline = captureWorkspace(root, policy());
-  const first = candidateReplacing(baseline, "src/a.ts", "accepted-a\n");
-  const second = candidateReplacing(baseline, "src/b.ts", "accepted-b\n");
+  const files = new Map(
+    agentVisibleFiles(baseline, policy()).map((file) => [file.path, file]),
+  );
+  files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("accepted-a\n"), false),
+  );
+  files.set(
+    "src/b.ts",
+    workspaceFile("src/b.ts", Buffer.from("accepted-b\n"), false),
+  );
   const candidate: CandidateSnapshot = {
-    files: new Map([...first.files, ...second.files]),
-    operations: [...first.operations, ...second.operations],
+    files,
+    operations: deriveCandidateOperations(baseline, files, policy()),
   };
   writeFixtureFile(root, "src/b.ts", "concurrent-b\n");
 
@@ -790,17 +820,152 @@ test("publisher rejects malformed, duplicate, protected, and outside operations"
   }
 });
 
+test("publisher rejects operations that diverge from evaluated candidate files", () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const baseline = captureWorkspace(root, policy());
+  const accepted = candidateReplacing(baseline, "src/a.ts", "accepted\n");
+  const forged = workspaceFile("src/a.ts", Buffer.from("forged\n"), false);
+
+  const divergentBytes: CandidateSnapshot = {
+    files: accepted.files,
+    operations: [{
+      kind: "modify",
+      before: baseline.files.get("src/a.ts")!,
+      file: forged,
+    }],
+  };
+  const missingOperation: CandidateSnapshot = {
+    files: accepted.files,
+    operations: [],
+  };
+  const extra = workspaceFile("src/new.ts", Buffer.from("extra\n"), false);
+  const extraOperation: CandidateSnapshot = {
+    files: accepted.files,
+    operations: [
+      ...accepted.operations,
+      { kind: "add", file: extra },
+    ],
+  };
+
+  for (const candidate of [
+    divergentBytes,
+    missingOperation,
+    extraOperation,
+  ]) {
+    const result = publishCandidate(baseline, candidate, policy());
+    assert.equal(result.ok, false);
+    assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "before\n");
+    assert.equal(
+      lstatSync(join(root, "src/new.ts"), { throwIfNoEntry: false }),
+      undefined,
+    );
+  }
+});
+
+test("publisher reruns host preflight after staging", () => {
+  const root = createGitFixture({
+    "src/a.ts": "before-a\n",
+    "src/b.ts": "before-b\n",
+  });
+  const baseline = captureWorkspace(root, policy());
+  const files = new Map(
+    agentVisibleFiles(baseline, policy()).map((file) => [file.path, file]),
+  );
+  files.set("src/a.ts", workspaceFile("src/a.ts", Buffer.from("after-a\n"), false));
+  files.set("src/b.ts", workspaceFile("src/b.ts", Buffer.from("after-b\n"), false));
+  const candidate: CandidateSnapshot = {
+    files,
+    operations: deriveCandidateOperations(baseline, files, policy()),
+  };
+  const hooks: PublishHooks = {
+    afterStage() {
+      writeFixtureFile(root, "src/b.ts", "concurrent-b\n");
+    },
+  };
+
+  const result = publishCandidate(baseline, candidate, policy(), hooks);
+
+  assert.equal(result.ok, false);
+  assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "before-a\n");
+  assert.equal(readFileSync(join(root, "src/b.ts"), "utf8"), "concurrent-b\n");
+});
+
+test("publisher rolls back earlier installs when a later install fails", () => {
+  const root = createGitFixture({
+    "src/a.ts": "before-a\n",
+    "src/b.ts": "before-b\n",
+  });
+  const baseline = captureWorkspace(root, policy());
+  const files = new Map(
+    agentVisibleFiles(baseline, policy()).map((file) => [file.path, file]),
+  );
+  files.set("src/a.ts", workspaceFile("src/a.ts", Buffer.from("after-a\n"), false));
+  files.set("src/b.ts", workspaceFile("src/b.ts", Buffer.from("after-b\n"), false));
+  const candidate: CandidateSnapshot = {
+    files,
+    operations: deriveCandidateOperations(baseline, files, policy()),
+  };
+
+  const result = publishCandidate(baseline, candidate, policy(), {
+    beforeInstall(_path, index) {
+      if (index === 1) throw new Error("injected second install failure");
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "before-a\n");
+  assert.equal(readFileSync(join(root, "src/b.ts"), "utf8"), "before-b\n");
+  assert.equal(
+    readdirSync(join(root, "src")).some((name) => name.includes(".harness-")),
+    false,
+  );
+});
+
+test("publisher never overwrites an add destination created during commit", () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const baseline = captureWorkspace(root, policy());
+  const files = new Map(
+    agentVisibleFiles(baseline, policy()).map((file) => [file.path, file]),
+  );
+  files.set("src/new.ts", workspaceFile("src/new.ts", Buffer.from("candidate\n"), false));
+  const candidate: CandidateSnapshot = {
+    files,
+    operations: deriveCandidateOperations(baseline, files, policy()),
+  };
+
+  const result = publishCandidate(baseline, candidate, policy(), {
+    beforeInstall(path) {
+      if (path === "src/new.ts") {
+        writeFixtureFile(root, path, "racer\n");
+      }
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(readFileSync(join(root, "src/new.ts"), "utf8"), "racer\n");
+  assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "before\n");
+});
+
 test("publisher cleans staged temporary siblings when a later write fails", () => {
   const root = createGitFixture({
     "src/a.ts": "before-a\n",
     "src/locked/b.ts": "before-b\n",
   });
   const baseline = captureWorkspace(root, policy());
-  const first = candidateReplacing(baseline, "src/a.ts", "accepted-a\n");
-  const second = candidateReplacing(baseline, "src/locked/b.ts", "accepted-b\n");
+  const files = new Map(
+    agentVisibleFiles(baseline, policy()).map((file) => [file.path, file]),
+  );
+  files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("accepted-a\n"), false),
+  );
+  files.set(
+    "src/locked/b.ts",
+    workspaceFile("src/locked/b.ts", Buffer.from("accepted-b\n"), false),
+  );
   const candidate: CandidateSnapshot = {
-    files: new Map([...first.files, ...second.files]),
-    operations: [...first.operations, ...second.operations],
+    files,
+    operations: deriveCandidateOperations(baseline, files, policy()),
   };
   chmodSync(join(root, "src/locked"), 0o555);
 

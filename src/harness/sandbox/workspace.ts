@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
 import {
@@ -62,6 +62,53 @@ function isMissingFile(error: unknown): boolean {
   );
 }
 
+function assertPathInsideRoot(
+  root: string,
+  destination: string,
+  path: string,
+): void {
+  const rel = relative(root, destination);
+  if (
+    rel === "" ||
+    rel.startsWith("../") ||
+    rel === ".." ||
+    resolve(root, rel) !== destination
+  ) {
+    throw new Error(`工作区路径越界: ${path}`);
+  }
+}
+
+function assertSafeHostPath(
+  workspaceRoot: string,
+  realWorkspaceRoot: string,
+  path: string,
+): void {
+  const destination = join(workspaceRoot, path);
+  assertPathInsideRoot(workspaceRoot, destination, path);
+
+  let current = workspaceRoot;
+  for (const part of path.split("/").slice(0, -1)) {
+    current = join(current, part);
+    const stat = lstatSync(current);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`工作区父路径包含符号链接: ${path}`);
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`工作区父路径不是目录: ${path}`);
+    }
+  }
+
+  const realParent = realpathSync(dirname(destination));
+  const parentRelative = relative(realWorkspaceRoot, realParent);
+  if (
+    parentRelative === ".." ||
+    parentRelative.startsWith("../") ||
+    resolve(realWorkspaceRoot, parentRelative) !== realParent
+  ) {
+    throw new Error(`工作区文件位于工作区外: ${path}`);
+  }
+}
+
 export function workspaceFile(
   path: string,
   content: Buffer,
@@ -107,6 +154,7 @@ export function captureWorkspace(
   if (realpathSync(workspaceRoot) !== realpathSync(gitRoot)) {
     throw new Error(`captureWorkspace 必须使用 Git 工作树根目录: ${root}`);
   }
+  const realWorkspaceRoot = realpathSync(workspaceRoot);
 
   let listed: Buffer;
   try {
@@ -156,6 +204,7 @@ export function captureWorkspace(
       }
       throw error;
     }
+    assertSafeHostPath(workspaceRoot, realWorkspaceRoot, path);
     if (stat.isSymbolicLink()) {
       throw new Error(`工作区包含符号链接: ${path}`);
     }
@@ -202,6 +251,37 @@ export function agentVisibleFiles(
     .sort((left, right) => comparePaths(left.path, right.path));
 }
 
+export function deriveCandidateOperations(
+  baseline: WorkspaceSnapshot,
+  files: Map<string, WorkspaceFile>,
+  policy: SandboxPolicy,
+): CandidateOperation[] {
+  const baselineFiles = new Map(
+    agentVisibleFiles(baseline, policy).map((file) => [file.path, file]),
+  );
+  const paths = new Set([...baselineFiles.keys(), ...files.keys()]);
+  const operations: CandidateOperation[] = [];
+
+  for (const path of [...paths].sort(comparePaths)) {
+    const before = baselineFiles.get(path);
+    const file = files.get(path);
+    if (!before && file) {
+      operations.push({ kind: "add", file });
+    } else if (before && !file) {
+      operations.push({ kind: "delete", before });
+    } else if (
+      before &&
+      file &&
+      (before.sha256 !== file.sha256 ||
+        before.executable !== file.executable ||
+        !before.content.equals(file.content))
+    ) {
+      operations.push({ kind: "modify", before, file });
+    }
+  }
+  return operations;
+}
+
 function validateRemoteMetadata(entry: RemoteFileEntry): void {
   if (!Number.isSafeInteger(entry.size) || entry.size < 0) {
     throw new Error(`候选文件大小必须是非负安全整数: ${entry.path}`);
@@ -209,12 +289,6 @@ function validateRemoteMetadata(entry: RemoteFileEntry): void {
   if (typeof entry.executable !== "boolean") {
     throw new Error(`候选文件 executable 必须是布尔值: ${entry.path}`);
   }
-}
-
-function operationPath(operation: CandidateOperation): string {
-  return operation.kind === "delete"
-    ? operation.before.path
-    : operation.file.path;
 }
 
 export async function collectCandidate(
@@ -270,31 +344,6 @@ export async function collectCandidate(
     files.set(path, workspaceFile(path, content, entry.executable));
   }
 
-  const baselineFiles = new Map(
-    agentVisibleFiles(baseline, policy).map((file) => [file.path, file]),
-  );
-  const paths = new Set([...baselineFiles.keys(), ...files.keys()]);
-  const operations: CandidateOperation[] = [];
-
-  for (const path of [...paths].sort(comparePaths)) {
-    const before = baselineFiles.get(path);
-    const file = files.get(path);
-    if (!before && file) {
-      operations.push({ kind: "add", file });
-    } else if (before && !file) {
-      operations.push({ kind: "delete", before });
-    } else if (
-      before &&
-      file &&
-      (before.sha256 !== file.sha256 ||
-        before.executable !== file.executable)
-    ) {
-      operations.push({ kind: "modify", before, file });
-    }
-  }
-
-  operations.sort((left, right) =>
-    comparePaths(operationPath(left), operationPath(right))
-  );
+  const operations = deriveCandidateOperations(baseline, files, policy);
   return { operations, files };
 }

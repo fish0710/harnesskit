@@ -1,21 +1,27 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
   type Stats,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 import {
   protectedFilesystemPathKey,
   validateCandidatePath,
 } from "./policy.js";
+import {
+  agentVisibleFiles,
+  deriveCandidateOperations,
+} from "./workspace.js";
 import type {
   CandidateOperation,
   CandidateSnapshot,
@@ -30,6 +36,12 @@ export interface PublicationResult {
   conflict?: string;
 }
 
+/** Test-only synchronization points for deterministic race/failure coverage. */
+export interface PublishHooks {
+  afterStage?(): void;
+  beforeInstall?(path: string, index: number): void;
+}
+
 interface PreparedOperation {
   operation: CandidateOperation;
   path: string;
@@ -37,8 +49,22 @@ interface PreparedOperation {
 }
 
 interface StagedWrite {
+  path: string;
   temporary: string;
   destination: string;
+}
+
+interface InstalledWrite {
+  destination: string;
+  device: number;
+  inode: number;
+}
+
+interface Backup {
+  path: string;
+  backup: string;
+  destination: string;
+  before: WorkspaceFile;
 }
 
 function comparePaths(left: string, right: string): number {
@@ -72,10 +98,10 @@ function validateWorkspaceFile(
   label: string,
   policy: SandboxPolicy,
 ): WorkspaceFile {
-  if (!isRecord(value) || !hasExactKeys(
-    value,
-    ["path", "content", "executable", "sha256"],
-  )) {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["path", "content", "executable", "sha256"])
+  ) {
     throw new Error(`${label}文件记录格式无效`);
   }
   if (typeof value.path !== "string") {
@@ -110,6 +136,34 @@ function workspaceFilesEqual(
   );
 }
 
+function operationPath(operation: CandidateOperation): string {
+  return operation.kind === "delete"
+    ? operation.before.path
+    : operation.file.path;
+}
+
+function operationsEqual(
+  left: CandidateOperation,
+  right: CandidateOperation,
+): boolean {
+  if (left.kind !== right.kind || operationPath(left) !== operationPath(right)) {
+    return false;
+  }
+  if (left.kind === "add" && right.kind === "add") {
+    return workspaceFilesEqual(left.file, right.file);
+  }
+  if (left.kind === "delete" && right.kind === "delete") {
+    return workspaceFilesEqual(left.before, right.before);
+  }
+  if (left.kind === "modify" && right.kind === "modify") {
+    return (
+      workspaceFilesEqual(left.before, right.before) &&
+      workspaceFilesEqual(left.file, right.file)
+    );
+  }
+  return false;
+}
+
 function lstatIfPresent(path: string): Stats | undefined {
   try {
     return lstatSync(path);
@@ -126,25 +180,41 @@ function lstatIfPresent(path: string): Stats | undefined {
   }
 }
 
+function assertInsideRoot(root: string, destination: string, path: string): void {
+  const rel = relative(root, destination);
+  if (
+    rel.startsWith("../") ||
+    rel === ".." ||
+    resolve(root, rel) !== destination
+  ) {
+    throw new Error(`发布路径越界: ${path}`);
+  }
+}
+
 function assertSafeParents(root: string, path: string): void {
   const rootStat = lstatIfPresent(root);
   if (!rootStat || rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
     throw new Error(`工作区根目录类型冲突: ${root}`);
   }
+  const realRoot = realpathSync(root);
+  const destination = join(root, path);
+  assertInsideRoot(root, destination, path);
 
-  const parts = path.split("/");
   let current = root;
-  for (const part of parts.slice(0, -1)) {
+  for (const part of path.split("/").slice(0, -1)) {
     current = join(current, part);
     const stat = lstatIfPresent(current);
-    if (!stat) {
-      return;
-    }
+    if (!stat) return;
     if (stat.isSymbolicLink()) {
       throw new Error(`父路径包含符号链接: ${path}`);
     }
     if (!stat.isDirectory()) {
       throw new Error(`父路径不是目录: ${path}`);
+    }
+    const realCurrent = realpathSync(current);
+    const rel = relative(realRoot, realCurrent);
+    if (rel === ".." || rel.startsWith("../")) {
+      throw new Error(`父路径位于工作区外: ${path}`);
     }
   }
 }
@@ -154,9 +224,7 @@ function assertCurrentMatches(
   before: WorkspaceFile,
 ): void {
   const stat = lstatIfPresent(destination);
-  if (!stat) {
-    throw new Error(`主机文件已不存在: ${before.path}`);
-  }
+  if (!stat) throw new Error(`主机文件已不存在: ${before.path}`);
   if (stat.isSymbolicLink()) {
     throw new Error(`主机文件变为符号链接: ${before.path}`);
   }
@@ -173,91 +241,125 @@ function assertCurrentMatches(
   }
 }
 
-function prepareOperations(
-  baseline: WorkspaceSnapshot,
+function validateCandidateFiles(
   candidate: CandidateSnapshot,
   policy: SandboxPolicy,
-): PreparedOperation[] {
-  if (!isRecord(candidate) || !Array.isArray(candidate.operations)) {
-    throw new Error("候选操作列表格式无效");
+): Map<string, WorkspaceFile> {
+  if (!(candidate.files instanceof Map)) {
+    throw new Error("候选文件映射格式无效");
   }
+  const validated = new Map<string, WorkspaceFile>();
+  const aliases = new Set<string>();
+  let totalBytes = 0;
+  for (const [key, rawFile] of candidate.files.entries()) {
+    if (typeof key !== "string") throw new Error("候选文件映射键格式无效");
+    const file = validateWorkspaceFile(rawFile, "候选", policy);
+    if (key !== file.path) {
+      throw new Error(`候选文件映射键与路径不一致: ${key}`);
+    }
+    const alias = protectedFilesystemPathKey(file.path);
+    if (validated.has(file.path) || aliases.has(alias)) {
+      throw new Error(`候选文件映射包含重复或别名路径: ${file.path}`);
+    }
+    if (file.content.byteLength > policy.limits.maxFileBytes) {
+      throw new Error(`候选文件超过大小限制: ${file.path}`);
+    }
+    if (file.content.byteLength > policy.limits.maxTotalBytes - totalBytes) {
+      throw new Error("候选文件总大小超过限制");
+    }
+    totalBytes += file.content.byteLength;
+    if (validated.size + 1 > policy.limits.maxFiles) {
+      throw new Error("候选文件数量超过限制");
+    }
+    validated.set(file.path, file);
+    aliases.add(alias);
+  }
+  return validated;
+}
 
-  const prepared: PreparedOperation[] = [];
-  const pathKeys = new Set<string>();
-
-  for (const value of candidate.operations as unknown[]) {
+function validateSuppliedOperations(
+  operations: unknown,
+  policy: SandboxPolicy,
+): CandidateOperation[] {
+  if (!Array.isArray(operations)) throw new Error("候选操作列表格式无效");
+  const validated: CandidateOperation[] = [];
+  for (const value of operations) {
     if (!isRecord(value) || typeof value.kind !== "string") {
       throw new Error("候选操作格式无效");
     }
-
-    let operation: CandidateOperation;
-    let path: string;
-    if (value.kind === "add") {
-      if (!hasExactKeys(value, ["kind", "file"])) {
-        throw new Error("add 候选操作格式无效");
-      }
-      const file = validateWorkspaceFile(value.file, "新增", policy);
-      path = file.path;
-      if (baseline.files.has(path)) {
-        throw new Error(`新增操作与基线冲突: ${path}`);
-      }
-      operation = { kind: "add", file };
-    } else if (value.kind === "modify") {
-      if (!hasExactKeys(value, ["kind", "before", "file"])) {
-        throw new Error("modify 候选操作格式无效");
-      }
+    if (value.kind === "add" && hasExactKeys(value, ["kind", "file"])) {
+      validated.push({
+        kind: "add",
+        file: validateWorkspaceFile(value.file, "新增", policy),
+      });
+    } else if (
+      value.kind === "modify" &&
+      hasExactKeys(value, ["kind", "before", "file"])
+    ) {
       const before = validateWorkspaceFile(value.before, "修改前", policy);
       const file = validateWorkspaceFile(value.file, "修改后", policy);
       if (before.path !== file.path) {
         throw new Error(`修改操作路径不一致: ${before.path}`);
       }
-      const baselineFile = baseline.files.get(before.path);
-      if (
-        !baselineFile ||
-        !workspaceFilesEqual(
-          validateWorkspaceFile(baselineFile, "基线", policy),
-          before,
-        )
-      ) {
-        throw new Error(`修改操作 before 与基线不一致: ${before.path}`);
-      }
-      path = file.path;
-      operation = { kind: "modify", before, file };
-    } else if (value.kind === "delete") {
-      if (!hasExactKeys(value, ["kind", "before"])) {
-        throw new Error("delete 候选操作格式无效");
-      }
-      const before = validateWorkspaceFile(value.before, "删除前", policy);
-      const baselineFile = baseline.files.get(before.path);
-      if (
-        !baselineFile ||
-        !workspaceFilesEqual(
-          validateWorkspaceFile(baselineFile, "基线", policy),
-          before,
-        )
-      ) {
-        throw new Error(`删除操作 before 与基线不一致: ${before.path}`);
-      }
-      path = before.path;
-      operation = { kind: "delete", before };
+      validated.push({ kind: "modify", before, file });
+    } else if (
+      value.kind === "delete" &&
+      hasExactKeys(value, ["kind", "before"])
+    ) {
+      validated.push({
+        kind: "delete",
+        before: validateWorkspaceFile(value.before, "删除前", policy),
+      });
     } else {
-      throw new Error(`未知候选操作: ${value.kind}`);
+      throw new Error(`未知或格式无效的候选操作: ${value.kind}`);
     }
+  }
+  return validated.sort((left, right) =>
+    comparePaths(operationPath(left), operationPath(right))
+  );
+}
 
-    const pathKey = protectedFilesystemPathKey(path);
-    if (pathKeys.has(pathKey)) {
+function prepareOperations(
+  baseline: WorkspaceSnapshot,
+  candidate: CandidateSnapshot,
+  policy: SandboxPolicy,
+): PreparedOperation[] {
+  if (!isRecord(candidate)) throw new Error("候选快照格式无效");
+  const files = validateCandidateFiles(candidate, policy);
+  const expected = deriveCandidateOperations(baseline, files, policy);
+  const supplied = validateSuppliedOperations(candidate.operations, policy);
+  if (
+    expected.length !== supplied.length ||
+    expected.some((operation, index) =>
+      !operationsEqual(operation, supplied[index]!)
+    )
+  ) {
+    throw new Error("候选操作与已评估候选文件不一致");
+  }
+
+  const baselineMutable = new Map(
+    agentVisibleFiles(baseline, policy).map((file) => [file.path, file]),
+  );
+  const aliases = new Set<string>();
+  return expected.map((operation) => {
+    const path = operationPath(operation);
+    const alias = protectedFilesystemPathKey(path);
+    if (aliases.has(alias)) {
       throw new Error(`候选操作包含重复或别名路径: ${path}`);
     }
-    pathKeys.add(pathKey);
-    prepared.push({
+    aliases.add(alias);
+    if (operation.kind !== "add") {
+      const baselineFile = baselineMutable.get(path);
+      if (!baselineFile || !workspaceFilesEqual(baselineFile, operation.before)) {
+        throw new Error(`候选操作 before 与基线不一致: ${path}`);
+      }
+    }
+    return {
       operation,
       path,
       destination: join(baseline.root, path),
-    });
-  }
-
-  prepared.sort((left, right) => comparePaths(left.path, right.path));
-  return prepared;
+    };
+  });
 }
 
 function preflightHost(
@@ -277,14 +379,87 @@ function preflightHost(
 }
 
 function failure(error: unknown): PublicationResult {
-  const message = error instanceof Error ? error.message : String(error);
-  return { ok: false, changedFiles: [], conflict: message };
+  return {
+    ok: false,
+    changedFiles: [],
+    conflict: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function removeIfPresent(path: string): void {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Cleanup is best effort; the primary failure is preserved.
+  }
+}
+
+function removeInstalledWrites(installed: InstalledWrite[]): string[] {
+  const failures: string[] = [];
+  for (const item of [...installed].reverse()) {
+    const stat = lstatIfPresent(item.destination);
+    if (!stat) continue;
+    if (stat.dev !== item.device || stat.ino !== item.inode) {
+      failures.push(`发布目标被并发替换，未删除: ${item.destination}`);
+      continue;
+    }
+    try {
+      unlinkSync(item.destination);
+    } catch (error) {
+      failures.push(
+        `无法移除已发布文件 ${item.destination}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return failures;
+}
+
+function restoreBackups(backups: Backup[]): string[] {
+  const failures: string[] = [];
+  for (const item of [...backups].reverse()) {
+    if (lstatIfPresent(item.destination)) {
+      failures.push(
+        `无法恢复 ${item.path}，原始内容保留在 ${item.backup}`,
+      );
+      continue;
+    }
+    try {
+      renameSync(item.backup, item.destination);
+    } catch (error) {
+      failures.push(
+        `无法恢复 ${item.path}，原始内容保留在 ${item.backup}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return failures;
+}
+
+function rollbackFailure(
+  error: unknown,
+  installed: InstalledWrite[],
+  backups: Backup[],
+): PublicationResult {
+  const rollbackFailures = [
+    ...removeInstalledWrites(installed),
+    ...restoreBackups(backups),
+  ];
+  const primary = error instanceof Error ? error.message : String(error);
+  return failure(
+    rollbackFailures.length === 0
+      ? primary
+      : `${primary}; 回滚未完全完成: ${rollbackFailures.join("; ")}`,
+  );
 }
 
 export function publishCandidate(
   baseline: WorkspaceSnapshot,
   candidate: CandidateSnapshot,
   policy: SandboxPolicy,
+  hooks: PublishHooks = {},
 ): PublicationResult {
   let prepared: PreparedOperation[];
   try {
@@ -295,41 +470,67 @@ export function publishCandidate(
   }
 
   const staged: StagedWrite[] = [];
+  const backups: Backup[] = [];
+  const installed: InstalledWrite[] = [];
   try {
     for (const item of prepared) {
       if (item.operation.kind === "delete") continue;
-
+      assertSafeParents(baseline.root, item.path);
       mkdirSync(dirname(item.destination), { recursive: true });
-      const temporary =
-        `${item.destination}.harness-${randomUUID()}.tmp`;
-      staged.push({ temporary, destination: item.destination });
+      const temporary = `${item.destination}.harness-${randomUUID()}.tmp`;
       const mode = item.operation.file.executable ? 0o755 : 0o644;
       writeFileSync(temporary, item.operation.file.content, {
         flag: "wx",
         mode,
       });
       chmodSync(temporary, mode);
+      staged.push({
+        path: item.path,
+        temporary,
+        destination: item.destination,
+      });
     }
 
-    for (const item of staged) {
-      renameSync(item.temporary, item.destination);
-    }
+    hooks.afterStage?.();
+    preflightHost(baseline, prepared);
+
     for (const item of prepared) {
-      if (item.operation.kind === "delete") {
-        unlinkSync(item.destination);
-      }
+      if (item.operation.kind === "add") continue;
+      assertSafeParents(baseline.root, item.path);
+      assertCurrentMatches(item.destination, item.operation.before);
+      const backup = `${item.destination}.harness-${randomUUID()}.bak`;
+      renameSync(item.destination, backup);
+      const record: Backup = {
+        path: item.path,
+        backup,
+        destination: item.destination,
+        before: item.operation.before,
+      };
+      backups.push(record);
+      assertCurrentMatches(backup, item.operation.before);
+    }
+
+    let installIndex = 0;
+    for (const stagedWrite of staged) {
+      hooks.beforeInstall?.(stagedWrite.path, installIndex++);
+      assertSafeParents(baseline.root, stagedWrite.path);
+      linkSync(stagedWrite.temporary, stagedWrite.destination);
+      const installedStat = lstatSync(stagedWrite.destination);
+      installed.push({
+        destination: stagedWrite.destination,
+        device: installedStat.dev,
+        inode: installedStat.ino,
+      });
+      unlinkSync(stagedWrite.temporary);
     }
   } catch (error) {
-    for (const item of staged) {
-      try {
-        rmSync(item.temporary, { force: true });
-      } catch {
-        // Preserve the primary publication failure.
-      }
-    }
-    return failure(error);
+    const result = rollbackFailure(error, installed, backups);
+    for (const item of staged) removeIfPresent(item.temporary);
+    return result;
   }
 
+  for (const item of backups) removeIfPresent(item.backup);
+  for (const item of staged) removeIfPresent(item.temporary);
   return {
     ok: true,
     changedFiles: prepared.map((item) => item.path),
