@@ -42,7 +42,9 @@ const LIMIT_FIELDS = new Set([
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (typeof value !== "object" || value === null) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function hasOwn(value: Record<string, unknown>, field: string): boolean {
@@ -79,8 +81,14 @@ function positiveSafeInteger(value: unknown, field: string): number {
   return value;
 }
 
+function securityKey(value: string): string {
+  return value.normalize("NFC").toLocaleLowerCase("en-US");
+}
+
 function isWithin(path: string, prefix: string): boolean {
-  return path === prefix || path.startsWith(`${prefix}/`);
+  const pathKey = securityKey(path);
+  const prefixKey = securityKey(prefix);
+  return pathKey === prefixKey || pathKey.startsWith(`${prefixKey}/`);
 }
 
 export function normalizeWorkspacePath(value: string): string {
@@ -124,7 +132,7 @@ export function validateCandidatePath(
 
 function loadLimits(value: unknown): SandboxLimits {
   if (!isRecord(value)) {
-    throw new TypeError("sandbox.limits 配置必须是对象");
+    throw new TypeError("sandbox.limits 配置必须是普通对象");
   }
   rejectUnknownFields(value, LIMIT_FIELDS, "sandbox.limits");
 
@@ -143,7 +151,7 @@ function loadLimits(value: unknown): SandboxLimits {
 
 export function loadSandboxPolicy(config: unknown): SandboxPolicy {
   if (!isRecord(config)) {
-    throw new TypeError("Harness 配置必须是对象");
+    throw new TypeError("Harness 配置必须是普通对象");
   }
 
   if (!hasOwn(config, "sandbox")) {
@@ -158,7 +166,7 @@ export function loadSandboxPolicy(config: unknown): SandboxPolicy {
   }
   const sandboxValue = config.sandbox;
   if (!isRecord(sandboxValue)) {
-    throw new TypeError("sandbox 配置必须是对象");
+    throw new TypeError("sandbox 配置必须是普通对象");
   }
   rejectUnknownFields(sandboxValue, SANDBOX_FIELDS, "sandbox");
 

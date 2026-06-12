@@ -92,6 +92,66 @@ test("protected prefix checks are path-boundary aware", () => {
   );
 });
 
+test("protected paths block case aliases in either direction", () => {
+  for (const [protectedPath, candidatePath] of [
+    ["src/Gates", "src/gates/file.ts"],
+    ["src/gates", "src/Gates/file.ts"],
+  ] as const) {
+    const policy = loadSandboxPolicy({
+      sandbox: {
+        candidateRoots: ["src"],
+        protectedPaths: [protectedPath],
+      },
+    });
+
+    assert.throws(
+      () => validateCandidatePath(candidatePath, policy),
+      /受保护/,
+    );
+  }
+});
+
+test("protected paths block canonically equivalent Unicode aliases", () => {
+  const policy = loadSandboxPolicy({
+    sandbox: {
+      candidateRoots: ["src"],
+      protectedPaths: ["src/café"],
+    },
+  });
+  const nfdCandidate = "src/cafe\u0301/file.ts";
+
+  assert.throws(
+    () => validateCandidatePath(nfdCandidate, policy),
+    /受保护/,
+  );
+});
+
+test("allowed roots match case and Unicode aliases while preserving candidate spelling", () => {
+  const caseCandidate = "src/gates/File.ts";
+  const casePolicy = loadSandboxPolicy({
+    sandbox: {
+      candidateRoots: ["SRC/Gates"],
+      protectedPaths: [],
+    },
+  });
+  assert.equal(
+    validateCandidatePath(caseCandidate, casePolicy),
+    caseCandidate,
+  );
+
+  const nfdCandidate = "src/cafe\u0301/file.ts";
+  const unicodePolicy = loadSandboxPolicy({
+    sandbox: {
+      candidateRoots: ["SRC/CAFÉ"],
+      protectedPaths: [],
+    },
+  });
+  assert.equal(
+    validateCandidatePath(nfdCandidate, unicodePolicy),
+    nfdCandidate,
+  );
+});
+
 test("loadSandboxPolicy returns conservative defaults", () => {
   assert.deepEqual(loadSandboxPolicy({}), {
     candidateRoots: [
@@ -216,6 +276,65 @@ test("loadSandboxPolicy rejects wrong field types", () => {
   }
 });
 
+test("loadSandboxPolicy requires plain or null-prototype records", () => {
+  class ConfigInstance {
+    sandbox = {};
+  }
+
+  class SandboxInstance {
+    candidateRoots = ["src"];
+  }
+
+  class LimitsInstance {
+    maxFiles = 10;
+  }
+
+  const inheritedSandbox = Object.create({ protectedPaths: [] }) as Record<
+    string,
+    unknown
+  >;
+  inheritedSandbox.candidateRoots = ["src"];
+
+  const invalidConfigs: unknown[] = [
+    new Date(),
+    new ConfigInstance(),
+    { sandbox: new Date() },
+    { sandbox: new SandboxInstance() },
+    { sandbox: inheritedSandbox },
+    { sandbox: { limits: new Date() } },
+    { sandbox: { limits: new LimitsInstance() } },
+  ];
+
+  for (const config of invalidConfigs) {
+    assert.throws(
+      () => loadSandboxPolicy(config),
+      /配置必须是普通对象/,
+    );
+  }
+
+  const nullPrototypeConfig = Object.create(null) as Record<string, unknown>;
+  const nullPrototypeSandbox = Object.create(null) as Record<string, unknown>;
+  const nullPrototypeLimits = Object.create(null) as Record<string, unknown>;
+  nullPrototypeLimits.maxFiles = 5;
+  nullPrototypeSandbox.candidateRoots = ["src"];
+  nullPrototypeSandbox.protectedPaths = [];
+  nullPrototypeSandbox.limits = nullPrototypeLimits;
+  nullPrototypeConfig.sandbox = nullPrototypeSandbox;
+
+  assert.equal(loadSandboxPolicy(nullPrototypeConfig).limits.maxFiles, 5);
+});
+
+test("loadSandboxPolicy rejects an own JSON __proto__ sandbox field", () => {
+  const config = JSON.parse(
+    '{"sandbox":{"candidateRoots":["src"],"__proto__":{"protectedPaths":[]}}}',
+  ) as unknown;
+
+  assert.throws(
+    () => loadSandboxPolicy(config),
+    /未知 sandbox 字段: __proto__/,
+  );
+});
+
 test("loadSandboxPolicy requires non-empty candidate roots", () => {
   assert.throws(
     () =>
@@ -259,6 +378,30 @@ test("loadSandboxPolicy rejects candidate roots fully covered by protection", ()
         sandbox: {
           candidateRoots: ["src", "lib/generated"],
           protectedPaths: ["src", "lib"],
+        },
+      }),
+    /所有 candidateRoots.*受保护/,
+  );
+});
+
+test("overlap checks use case and Unicode comparison keys", () => {
+  assert.throws(
+    () =>
+      loadSandboxPolicy({
+        sandbox: {
+          candidateRoots: ["SRC/Gates"],
+          protectedPaths: ["src/gates"],
+        },
+      }),
+    /所有 candidateRoots.*受保护/,
+  );
+
+  assert.throws(
+    () =>
+      loadSandboxPolicy({
+        sandbox: {
+          candidateRoots: ["src/cafe\u0301"],
+          protectedPaths: ["SRC/CAFÉ"],
         },
       }),
     /所有 candidateRoots.*受保护/,
