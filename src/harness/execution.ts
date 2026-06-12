@@ -45,6 +45,17 @@ export interface ExecutionTarget {
   request(request: HttpExecutionRequest): Promise<HttpExecutionEvidence>;
 }
 
+function durationEvidenceError(durationMs: unknown): string | undefined {
+  if (
+    typeof durationMs !== "number" ||
+    !Number.isFinite(durationMs) ||
+    durationMs < 0
+  ) {
+    return "执行证据缺少有效耗时，结果不可信";
+  }
+  return undefined;
+}
+
 export function commandEvidenceError(
   expectedId: string,
   evidence: CommandExecutionEvidence,
@@ -55,6 +66,8 @@ export function commandEvidenceError(
   if (evidence.error !== undefined) {
     return `执行目标错误: ${evidence.error || "(空错误信息)"}`;
   }
+  const durationError = durationEvidenceError(evidence.durationMs);
+  if (durationError) return durationError;
   const exitCode = evidence.exitCode;
   if (
     typeof exitCode !== "number" ||
@@ -76,6 +89,8 @@ export function httpEvidenceError(
   if (evidence.error !== undefined) {
     return `执行目标错误: ${evidence.error || "(空错误信息)"}`;
   }
+  const durationError = durationEvidenceError(evidence.durationMs);
+  if (durationError) return durationError;
   const status = evidence.status;
   if (
     typeof status !== "number" ||

@@ -320,6 +320,60 @@ test("boot plugin rejects invalid finite exit code domains", async (t) => {
   }
 });
 
+test("boot plugin rejects invalid duration evidence domains", async (t) => {
+  const invalidDurations: unknown[] = [-1, Infinity, NaN, "1"];
+  for (const durationMs of invalidDurations) {
+    await t.test(String(durationMs), async () => {
+      const execution: ExecutionTarget = {
+        async execute(request) {
+          return {
+            executionId: request.executionId,
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+            durationMs: durationMs as number,
+          };
+        },
+        request: unusedRequest,
+      };
+
+      const result = await bootPlugin.run(
+        {
+          id: `boot.invalid-duration.${String(durationMs)}`,
+          type: "boot",
+          cmd: "service",
+          expect: { startup_ms_lte: 100 },
+        },
+        { cwd: "/workspace/candidate", execution },
+      );
+
+      assert.equal(result.status, "error");
+    });
+  }
+});
+
+test("boot plugin accepts fractional nonnegative duration evidence", async () => {
+  const execution: ExecutionTarget = {
+    async execute(request) {
+      return {
+        executionId: request.executionId,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 0.5,
+      };
+    },
+    request: unusedRequest,
+  };
+
+  const result = await bootPlugin.run(
+    { id: "boot.fractional-duration", type: "boot", cmd: "service" },
+    { cwd: "/workspace/candidate", execution },
+  );
+
+  assert.equal(result.status, "pass");
+});
+
 test("structure plugin uses remote stdout in host diagnostics", async () => {
   const execution: ExecutionTarget = {
     async execute(request) {
@@ -527,4 +581,26 @@ test("http plugin rejects mismatched evidence id and target errors", async (t) =
       assert.equal(result.status, "error");
     });
   }
+
+  await t.test("invalid duration", async () => {
+    const execution: ExecutionTarget = {
+      execute: unusedExecute,
+      async request(request) {
+        return {
+          executionId: request.executionId,
+          status: 200,
+          headers: {},
+          body: "ok",
+          durationMs: -1,
+        };
+      },
+    };
+
+    const result = await httpPlugin.run(
+      { id: "http.invalid-duration", type: "http", trigger: { url: "https://candidate.example" } },
+      { cwd: "/workspace/candidate", execution },
+    );
+
+    assert.equal(result.status, "error");
+  });
 });
