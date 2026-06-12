@@ -126,6 +126,21 @@ function isInvalidPortableSegment(segment: string): boolean {
   );
 }
 
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (index + 1 >= value.length) return true;
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      index++;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function normalizeWorkspacePath(value: string): string {
   if (typeof value !== "string") {
     throw new TypeError("工作区路径必须是字符串");
@@ -141,6 +156,7 @@ export function normalizeWorkspacePath(value: string): string {
   const parts = value.split("/");
   if (
     value.length === 0 ||
+    hasUnpairedSurrogate(value) ||
     value.includes("\\") ||
     value.includes("//") ||
     parts.some((part) =>

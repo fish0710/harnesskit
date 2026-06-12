@@ -85,6 +85,22 @@ test("normalization rejects every ASCII control character", () => {
   }
 });
 
+test("normalization rejects unpaired UTF-16 surrogates", () => {
+  for (const path of [
+    "src/lone-high-\ud800",
+    "src/lone-\ud800.ts",
+    "src/lone-\udc00.ts",
+    "src/broken-\ud800x.ts",
+  ]) {
+    assert.throws(() => normalizeWorkspacePath(path), /非法路径/);
+  }
+});
+
+test("normalization accepts valid supplementary Unicode code points", () => {
+  const path = "src/emoji-😀.ts";
+  assert.equal(normalizeWorkspacePath(path), path);
+});
+
 test("normalization rejects segments ending in dot or ASCII space", () => {
   for (const path of [
     "src/file.",
