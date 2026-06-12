@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 
 import { GateCore } from "../src/gate.js";
 import { reviewPlugin } from "../src/plugins/review.js";
-import { runLoop, type GenerationBudget } from "../src/harness/run.js";
+import {
+  localRunEnvironment,
+  runLoop,
+  type GenerationBudget,
+  type RunEnvironment,
+} from "../src/harness/run.js";
 import type { AgentDriver } from "../src/harness/drivers.js";
 import { loadVerdicts, recordVerdict } from "../src/harness/verdicts.js";
 import type { CheckResult, Contract, Plugin, RunContext } from "../src/types.js";
@@ -33,7 +38,7 @@ test("runLoop: 失败→driver 修复→就绪(2 轮)", async () => {
   let calls = 0;
   const driver: AgentDriver = { name: "fix", async runTask() { calls++; if (calls >= 2) state.fixed = true; return { summary: "改了", changedFiles: [] }; } };
   const gate = new GateCore().use(flakyPlugin(state));
-  const out = await runLoop({ task: "t", cwd: ".", contracts: [{ id: "c1", type: "flaky" }], gate, ctx, driver, budget: budget() });
+  const out = await runLoop({ task: "t", contracts: [{ id: "c1", type: "flaky" }], gate, ctx, environment: localRunEnvironment(driver, "."), budget: budget() });
   assert.equal(out.outcome, "ready_for_mr");
   assert.equal(out.attempts, 2);
 });
@@ -42,7 +47,7 @@ test("runLoop: driver 永不修复 → 预算耗尽升级 stop_for_human", async
   const state = { fixed: false };
   const driver: AgentDriver = { name: "noop", async runTask() { return { summary: "空跑", changedFiles: [] }; } };
   const gate = new GateCore().use(flakyPlugin(state));
-  const out = await runLoop({ task: "t", cwd: ".", contracts: [{ id: "c1", type: "flaky" }], gate, ctx, driver, budget: budget({ maxAttempts: 2 }) });
+  const out = await runLoop({ task: "t", contracts: [{ id: "c1", type: "flaky" }], gate, ctx, environment: localRunEnvironment(driver, "."), budget: budget({ maxAttempts: 2 }) });
   assert.equal(out.outcome, "escalated");
   assert.equal(out.action?.kind, "stop_for_human");
 });
@@ -51,7 +56,7 @@ test("runLoop: 反复撞同一墙 → 升级 human_review_contract", async () =>
   const state = { fixed: false };
   const driver: AgentDriver = { name: "noop", async runTask() { return { summary: "空跑", changedFiles: [] }; } };
   const gate = new GateCore().use(flakyPlugin(state));
-  const out = await runLoop({ task: "t", cwd: ".", contracts: [{ id: "c1", type: "flaky" }], gate, ctx, driver, budget: budget({ maxAttempts: 10, repeatWallThreshold: 3 }) });
+  const out = await runLoop({ task: "t", contracts: [{ id: "c1", type: "flaky" }], gate, ctx, environment: localRunEnvironment(driver, "."), budget: budget({ maxAttempts: 10, repeatWallThreshold: 3 }) });
   assert.equal(out.outcome, "escalated");
   assert.equal(out.action?.kind, "human_review_contract");
 });
@@ -59,7 +64,7 @@ test("runLoop: 反复撞同一墙 → 升级 human_review_contract", async () =>
 test("runLoop: 只有 needs_review → blocked,立即返回不迭代", async () => {
   const driver: AgentDriver = { name: "noop", async runTask() { return { summary: "x", changedFiles: [] }; } };
   const gate = new GateCore().use(reviewPlugin);
-  const out = await runLoop({ task: "t", cwd: ".", contracts: [{ id: "r1", type: "review", scenario: "s" }], gate, ctx, driver, budget: budget() });
+  const out = await runLoop({ task: "t", contracts: [{ id: "r1", type: "review", scenario: "s" }], gate, ctx, environment: localRunEnvironment(driver, "."), budget: budget() });
   assert.equal(out.outcome, "blocked");
   assert.equal(out.attempts, 1);
 });
@@ -76,11 +81,10 @@ test("runLoop: 完成后关闭 driver", async () => {
 
   const out = await runLoop({
     task: "t",
-    cwd: ".",
     contracts: [{ id: "c1", type: "flaky" }],
     gate,
     ctx,
-    driver,
+    environment: localRunEnvironment(driver, "."),
     budget: budget(),
   });
 
@@ -100,15 +104,54 @@ test("runLoop: driver 抛错时仍关闭 driver", async () => {
   await assert.rejects(
     () => runLoop({
       task: "t",
-      cwd: ".",
       contracts: [{ id: "c1", type: "flaky" }],
       gate,
       ctx,
-      driver,
+      environment: localRunEnvironment(driver, "."),
       budget: budget(),
     }),
     /driver failed/,
   );
+  assert.equal(closes, 1);
+});
+
+test("runLoop: 门禁通过但发布冲突时升级且仍关闭环境", async () => {
+  let publishes = 0;
+  let closes = 0;
+  const environment: RunEnvironment = {
+    name: "publication-conflict",
+    async runTask() {
+      return { summary: "done", changedFiles: [] };
+    },
+    async runGate({ contracts, gate, ctx }) {
+      return gate.run(contracts, ctx);
+    },
+    async publish() {
+      publishes++;
+      return {
+        ok: false,
+        changedFiles: [],
+        conflict: "host changed concurrently",
+      };
+    },
+    async close() {
+      closes++;
+    },
+  };
+
+  const out = await runLoop({
+    task: "t",
+    contracts: [{ id: "c1", type: "flaky" }],
+    gate: new GateCore().use(flakyPlugin({ fixed: true })),
+    ctx,
+    environment,
+    budget: budget(),
+  });
+
+  assert.equal(out.outcome, "escalated");
+  assert.equal(out.action?.kind, "stop_for_human");
+  assert.match(out.action?.reason ?? "", /host changed/);
+  assert.equal(publishes, 1);
   assert.equal(closes, 1);
 });
 

@@ -30,7 +30,11 @@ import { selectByChange, selectByStage, type SelectConfig } from "./selector.js"
 import type { Contract, RunContext } from "./types.js";
 
 import { scaffoldDriver, commandDriver, claudeDriver, type AgentDriver } from "./harness/drivers.js";
-import { runLoop, type GenerationBudget } from "./harness/run.js";
+import {
+  localRunEnvironment,
+  runLoop,
+  type GenerationBudget,
+} from "./harness/run.js";
 import { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
 import { writeRunRecord, type RunRecord } from "./harness/record.js";
 import { createProject } from "./harness/scaffold.js";
@@ -259,7 +263,8 @@ async function doRun(args: string[], task: string, initialFeedback?: string): Pr
 
   console.log(`harness run · task="${task}" · driver=${driver.name} · 契约 ${selected.length} 条\n`);
   const outcome = await runLoop({
-    task, cwd, contracts: selected, gate, ctx, driver, budget,
+    task, contracts: selected, gate, ctx,
+    environment: localRunEnvironment(driver, cwd), budget,
     ...(initialFeedback ? { initialFeedback } : {}),
     onLog: (l) => console.log(l),
   });

@@ -52,16 +52,20 @@ export interface SandboxCommandResult {
 export interface SandboxHandle {
   readonly id: string;
   upload(files: WorkspaceFile[], remoteRoot: string): Promise<void>;
+  remove(paths: string[], remoteRoot: string): Promise<void>;
   workspace(remoteRoot: string, maxEntries?: number): RemoteWorkspace;
   execute(
     command: string,
     cwd: string,
     env?: Record<string, string>,
+    timeoutMs?: number,
   ): Promise<SandboxCommandResult>;
   runPty(
     command: string,
     cwd: string,
     env: Record<string, string>,
+    timeoutMs?: number,
+    signal?: AbortSignal,
   ): Promise<SandboxCommandResult>;
   setNetworkBlocked(blocked: boolean): Promise<void>;
   delete(): Promise<void>;

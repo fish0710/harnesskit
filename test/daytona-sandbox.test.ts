@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { FileInfo } from "@daytona/sdk";
 
 import {
+  createDaytonaExecutionTarget,
   createDaytonaManager,
   createDaytonaSdkProviderFromClient,
 } from "../src/harness/sandbox/daytona.js";
@@ -309,6 +310,69 @@ test("SDK handle toggles sandbox network blocking", async () => {
   assert.deepEqual(sdkSandbox.calls.networkBlocked, [true, false]);
 });
 
+test("remote execution target preserves trusted argv and host execution id", async () => {
+  const commands: Array<{
+    command: string;
+    cwd: string;
+    env?: Record<string, string>;
+    timeoutMs?: number;
+  }> = [];
+  const handle = {
+    ...recordingHandle("execution"),
+    async runPty(
+      command: string,
+      cwd: string,
+      env?: Record<string, string>,
+      timeoutMs?: number,
+    ) {
+      commands.push({ command, cwd, env, timeoutMs });
+      return { exitCode: 7, stdout: "out", stderr: "err" };
+    },
+  };
+  const target = createDaytonaExecutionTarget(
+    handle,
+    "/workspace/candidate",
+  );
+
+  const evidence = await target.execute({
+    executionId: "host-id",
+    command: "node",
+    args: ["test file.js", "a'b"],
+    cwd: "/workspace/candidate",
+    timeoutMs: 2500,
+  });
+
+  assert.equal(evidence.executionId, "host-id");
+  assert.equal(evidence.exitCode, 7);
+  assert.match(commands[0]?.command ?? "", /^'\/usr\/bin\/env' '--'/);
+  assert.match(commands[0]?.command ?? "", /'test file\.js'/);
+  assert.match(commands[0]?.command ?? "", /'a'\"'\"'b'/);
+  assert.equal(commands[0]?.timeoutMs, 2500);
+});
+
+test("remote HTTP target converts malformed envelopes into error evidence", async () => {
+  const handle = {
+    ...recordingHandle("http"),
+    async execute() {
+      return { exitCode: 0, stdout: "not-json", stderr: "" };
+    },
+  };
+  const target = createDaytonaExecutionTarget(
+    handle,
+    "/workspace/candidate",
+  );
+
+  const evidence = await target.request({
+    executionId: "http-id",
+    url: "http://127.0.0.1:3000/health",
+    method: "GET",
+  });
+
+  assert.equal(evidence.executionId, "http-id");
+  assert.ok(evidence.error);
+  assert.equal(evidence.status, undefined);
+});
+
 test("SDK handle deletes the underlying sandbox", async () => {
   const sdkSandbox = fakeSdkSandbox();
   const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
@@ -346,6 +410,7 @@ function recordingHandle(id: string) {
   return {
     id,
     async upload() {},
+    async remove() {},
     workspace() {
       return {
         async list() { return []; },
@@ -407,6 +472,7 @@ function fakeSdkSandbox(options: {
       async createFolder(path: string, mode: string) {
         calls.createdFolders.push([path, mode]);
       },
+      async deleteFile() {},
       async uploadFiles(
         files: Array<{ source: Buffer; destination: string }>,
       ) {

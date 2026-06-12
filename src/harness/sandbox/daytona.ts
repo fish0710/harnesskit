@@ -3,6 +3,11 @@ import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
 import type {
+  CommandExecutionEvidence,
+  ExecutionTarget,
+  HttpExecutionEvidence,
+} from "../execution.js";
+import type {
   RemoteFileEntry,
   RemoteWorkspace,
 } from "./workspace.js";
@@ -28,6 +33,45 @@ const LOCAL_DAYTONA_NO_PROXY_HOSTS = [
   ".localhost",
   "proxy.localhost",
 ] as const;
+const MAX_EVIDENCE_BYTES = 1024 * 1024;
+const HTTP_EVIDENCE_SCRIPT = `
+const request = JSON.parse(process.env.HARNESS_HTTP_REQUEST);
+try {
+  const response = await fetch(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: request.body,
+    signal: AbortSignal.timeout(request.timeoutMs ?? 30000),
+  });
+  const reader = response.body?.getReader();
+  const chunks = [];
+  let size = 0;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > ${MAX_EVIDENCE_BYTES}) {
+        throw new Error("HTTP response body exceeded evidence limit");
+      }
+      chunks.push(value);
+    }
+  }
+  const body = new TextDecoder().decode(
+    chunks.length === 0
+      ? new Uint8Array()
+      : Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))),
+  );
+  process.stdout.write(JSON.stringify({
+    status: response.status,
+    headers: Object.fromEntries(response.headers.entries()),
+    body,
+  }));
+} catch (error) {
+  process.stderr.write(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}
+`.trim();
 
 export const CLAUDE_ENVIRONMENT_VARIABLES = [
   "ANTHROPIC_AUTH_TOKEN",
@@ -67,6 +111,7 @@ export interface DaytonaSdkSandbox {
   readonly id: string;
   readonly fs: {
     createFolder(path: string, mode: string): Promise<void>;
+    deleteFile(path: string, recursive?: boolean): Promise<void>;
     downloadFile(path: string): Promise<Buffer>;
     getFileDetails(path: string): Promise<FileInfo>;
     listFiles(path: string): Promise<FileInfo[]>;
@@ -83,6 +128,7 @@ export interface DaytonaSdkSandbox {
       command: string,
       cwd?: string,
       env?: Record<string, string>,
+      timeout?: number,
     ): Promise<{ exitCode: number; result: string }>;
     createPty(options: {
       id: string;
@@ -150,6 +196,38 @@ export function getClaudeEnvironment(
   return Object.fromEntries(
     CLAUDE_ENVIRONMENT_VARIABLES.map((name) => [name, environment[name]!]),
   ) as ClaudeEnvironment;
+}
+
+function quotePosix(value: string): string {
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
+function commandLine(command: string, args: string[]): string {
+  return ["/usr/bin/env", "--", command, ...args]
+    .map(quotePosix)
+    .join(" ");
+}
+
+function boundedEvidence(value: string): string {
+  const bytes = Buffer.from(value);
+  if (bytes.byteLength <= MAX_EVIDENCE_BYTES) return value;
+  return Buffer.concat([
+    bytes.subarray(0, MAX_EVIDENCE_BYTES),
+    Buffer.from("\n[HARNESS OUTPUT TRUNCATED]"),
+  ]).toString("utf8");
+}
+
+function assertRemoteCwd(remoteRoot: string, cwd: string): void {
+  const normalizedRoot = posix.normalize(remoteRoot);
+  const normalizedCwd = posix.normalize(cwd);
+  const relative = posix.relative(normalizedRoot, normalizedCwd);
+  if (
+    relative === ".." ||
+    relative.startsWith("../") ||
+    posix.isAbsolute(relative)
+  ) {
+    throw new Error(`Remote execution cwd escapes workspace: ${cwd}`);
+  }
 }
 
 function fileKind(info: FileInfo): RemoteFileEntry["kind"] {
@@ -299,6 +377,18 @@ class DaytonaSandboxHandle implements SandboxHandle {
     }
   }
 
+  async remove(paths: string[], remoteRoot: string): Promise<void> {
+    const root = posix.normalize(remoteRoot);
+    for (const rawPath of paths) {
+      const path = normalizeWorkspacePath(rawPath);
+      const destination = posix.join(root, path);
+      if (relativeRemotePath(root, destination) !== path) {
+        throw new Error(`Removal path escapes remote workspace: ${rawPath}`);
+      }
+      await this.sandbox.fs.deleteFile(destination, false);
+    }
+  }
+
   workspace(remoteRoot: string, maxEntries = 10_000): RemoteWorkspace {
     if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0) {
       throw new Error("maxEntries must be a positive safe integer");
@@ -314,8 +404,17 @@ class DaytonaSandboxHandle implements SandboxHandle {
     command: string,
     cwd: string,
     env: Record<string, string> = {},
+    timeoutMs?: number,
   ): Promise<SandboxCommandResult> {
-    const result = await this.sandbox.process.executeCommand(command, cwd, env);
+    const timeoutSeconds = timeoutMs === undefined
+      ? undefined
+      : Math.max(1, Math.ceil(timeoutMs / 1000));
+    const result = await this.sandbox.process.executeCommand(
+      command,
+      cwd,
+      env,
+      timeoutSeconds,
+    );
     return {
       exitCode: result.exitCode,
       stdout: result.result,
@@ -327,13 +426,17 @@ class DaytonaSandboxHandle implements SandboxHandle {
     command: string,
     cwd: string,
     env: Record<string, string>,
+    timeoutMs = 30 * 60 * 1000,
+    signal?: AbortSignal,
   ): Promise<SandboxCommandResult> {
     const maxOutputBytes = 16 * 1024 * 1024;
-    const timeoutMs = 30 * 60 * 1000;
     const chunks: Buffer[] = [];
     let outputBytes = 0;
     let terminalError: Error | undefined;
     let pty: DaytonaSdkPty | undefined;
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error("PTY execution aborted");
+    }
     pty = await this.sandbox.process.createPty({
       id: `harness-${randomUUID()}`,
       cwd,
@@ -357,6 +460,13 @@ class DaytonaSandboxHandle implements SandboxHandle {
       void pty?.kill();
     }, timeoutMs);
     timer.unref();
+    const abort = () => {
+      terminalError = signal?.reason instanceof Error
+        ? signal.reason
+        : new Error("PTY execution aborted");
+      void pty?.kill();
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     try {
       await pty.waitForConnection();
       const executable = command.startsWith("exec ") ? command : `exec ${command}`;
@@ -370,6 +480,7 @@ class DaytonaSandboxHandle implements SandboxHandle {
       };
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
       await pty.disconnect();
     }
   }
@@ -381,6 +492,133 @@ class DaytonaSandboxHandle implements SandboxHandle {
   async delete(): Promise<void> {
     await this.client.delete(this.sandbox);
   }
+}
+
+function commandErrorEvidence(
+  executionId: string,
+  startedAt: number,
+  error: unknown,
+): CommandExecutionEvidence {
+  return {
+    executionId,
+    exitCode: null,
+    stdout: "",
+    stderr: "",
+    durationMs: performance.now() - startedAt,
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function httpErrorEvidence(
+  executionId: string,
+  startedAt: number,
+  error: unknown,
+): HttpExecutionEvidence {
+  return {
+    executionId,
+    headers: {},
+    body: "",
+    durationMs: performance.now() - startedAt,
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
+export function createDaytonaExecutionTarget(
+  handle: SandboxHandle,
+  remoteRoot: string,
+): ExecutionTarget {
+  return {
+    async execute(request) {
+      const startedAt = performance.now();
+      try {
+        if (request.signal?.aborted) {
+          throw request.signal.reason ?? new Error("Execution aborted");
+        }
+        assertRemoteCwd(remoteRoot, request.cwd);
+        const env = Object.fromEntries(
+          Object.entries(request.env ?? {})
+            .filter((entry): entry is [string, string] =>
+              typeof entry[1] === "string"
+            ),
+        );
+        const result = await handle.runPty(
+          commandLine(request.command, request.args),
+          request.cwd,
+          env,
+          request.timeoutMs,
+          request.signal,
+        );
+        return {
+          executionId: request.executionId,
+          exitCode: result.exitCode,
+          stdout: boundedEvidence(result.stdout),
+          stderr: boundedEvidence(result.stderr),
+          durationMs: performance.now() - startedAt,
+        };
+      } catch (error) {
+        return commandErrorEvidence(request.executionId, startedAt, error);
+      }
+    },
+
+    async request(request) {
+      const startedAt = performance.now();
+      try {
+        if (request.signal?.aborted) {
+          throw request.signal.reason ?? new Error("Execution aborted");
+        }
+        const result = await handle.execute(
+          commandLine("node", ["-e", HTTP_EVIDENCE_SCRIPT]),
+          remoteRoot,
+          {
+            HARNESS_HTTP_REQUEST: JSON.stringify({
+              url: request.url,
+              method: request.method,
+              headers: request.headers,
+              body: request.body,
+              timeoutMs: request.timeoutMs,
+            }),
+          },
+          request.timeoutMs,
+        );
+        if (result.exitCode !== 0) {
+          throw new Error(
+            boundedEvidence(result.stderr || result.stdout) ||
+            `HTTP evidence process exited ${result.exitCode}`,
+          );
+        }
+        const parsed: unknown = JSON.parse(result.stdout);
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          !("status" in parsed) ||
+          typeof parsed.status !== "number" ||
+          !("headers" in parsed) ||
+          typeof parsed.headers !== "object" ||
+          parsed.headers === null ||
+          Array.isArray(parsed.headers) ||
+          !("body" in parsed) ||
+          typeof parsed.body !== "string"
+        ) {
+          throw new Error("HTTP evidence envelope is malformed");
+        }
+        const headers = Object.fromEntries(
+          Object.entries(parsed.headers)
+            .filter((entry): entry is [string, string] =>
+              typeof entry[1] === "string"
+            ),
+        );
+        return {
+          executionId: request.executionId,
+          status: parsed.status,
+          headers,
+          body: boundedEvidence(parsed.body),
+          durationMs: performance.now() - startedAt,
+        };
+      } catch (error) {
+        return httpErrorEvidence(request.executionId, startedAt, error);
+      }
+    },
+  };
 }
 
 class DaytonaSdkProvider implements SandboxProvider {

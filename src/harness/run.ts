@@ -1,7 +1,12 @@
 import type { Contract, GateReport, RunContext } from "../types.js";
 import type { GateCore } from "../gate.js";
 import { decideEscalation, type EscalationAction, type LoopState } from "../agent/escalation.js";
-import type { AgentDriver } from "./drivers.js";
+import type {
+  AgentDriver,
+  AgentTaskInput,
+  AgentTaskResult,
+} from "./drivers.js";
+import type { PublicationResult } from "./sandbox/publish.js";
 
 export interface GenerationBudget {
   maxAttempts: number;
@@ -13,15 +18,49 @@ export interface GenerationBudget {
 
 export interface RunOptions {
   task: string;
-  cwd: string;
   contracts: Contract[];
   gate: GateCore;
   ctx: RunContext;
-  driver: AgentDriver;
+  environment: RunEnvironment;
   budget: GenerationBudget;
   initialFeedback?: string;
   contextUsedRatio?: () => number;
   onLog?: (line: string) => void;
+}
+
+export type EnvironmentTaskInput = Omit<AgentTaskInput, "cwd">;
+
+export interface RunEnvironment {
+  readonly name: string;
+  runTask(input: EnvironmentTaskInput): Promise<AgentTaskResult>;
+  runGate(input: {
+    contracts: Contract[];
+    gate: GateCore;
+    ctx: RunContext;
+  }): Promise<GateReport>;
+  publish(): Promise<PublicationResult>;
+  close(): Promise<void>;
+}
+
+export function localRunEnvironment(
+  driver: AgentDriver,
+  cwd: string,
+): RunEnvironment {
+  return {
+    name: driver.name,
+    runTask(input) {
+      return driver.runTask({ ...input, cwd });
+    },
+    runGate({ contracts, gate, ctx }) {
+      return gate.run(contracts, ctx);
+    },
+    async publish() {
+      return { ok: true, changedFiles: [] };
+    },
+    async close() {
+      await driver.close?.();
+    },
+  };
 }
 
 export interface RunOutcome {
@@ -86,14 +125,33 @@ export async function runLoop(o: RunOptions): Promise<RunOutcome> {
   try {
     while (true) {
       state.attempts++;
-      log(`第 ${state.attempts} 轮 · driver=${o.driver.name}`);
-      const act = await o.driver.runTask({ task: o.task, cwd: o.cwd, feedback });
+      log(`第 ${state.attempts} 轮 · environment=${o.environment.name}`);
+      const act = await o.environment.runTask({ task: o.task, feedback });
       log(`  driver: ${act.summary}`);
 
-      const report = await o.gate.run(o.contracts, o.ctx);
+      const report = await o.environment.runGate({
+        contracts: o.contracts,
+        gate: o.gate,
+        ctx: o.ctx,
+      });
       log(`  门禁: ${report.outcome}(pass ${report.summary.pass}/${report.summary.total}, fail ${report.summary.fail}, error ${report.summary.error}, review ${report.summary.needsReview})`);
 
       if (report.outcome === "pass") {
+        const publication = await o.environment.publish();
+        if (!publication.ok) {
+          const action = {
+            kind: "stop_for_human" as const,
+            reason: publication.conflict ?? "候选发布失败",
+          };
+          log(`  发布失败,升级: ${action.reason}`);
+          return {
+            outcome: "escalated",
+            attempts: state.attempts,
+            report,
+            action,
+            logs,
+          };
+        }
         log("  ✓ 就绪:可开 MR(注意:绿不算放行,合入裁决在 CI 隔离环境)");
         return { outcome: "ready_for_mr", attempts: state.attempts, report, logs };
       }
@@ -120,6 +178,6 @@ export async function runLoop(o: RunOptions): Promise<RunOutcome> {
       log("  未通过 → 把诊断反馈给 driver,重试");
     }
   } finally {
-    await o.driver.close?.();
+    await o.environment.close();
   }
 }

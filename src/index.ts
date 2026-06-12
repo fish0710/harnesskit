@@ -24,7 +24,11 @@ export {
   type ClaudeQuery, type ClaudeSdkModule, type LangfuseDependencies,
   type LangfuseObservability, type StartLangfuseOptions,
 } from "./harness/langfuse.js";
-export { runLoop, type RunOptions, type RunOutcome, type GenerationBudget } from "./harness/run.js";
+export {
+  runLoop, localRunEnvironment,
+  type RunEnvironment, type EnvironmentTaskInput,
+  type RunOptions, type RunOutcome, type GenerationBudget,
+} from "./harness/run.js";
 export { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
 export { writeRunRecord, lastRunRecord, type RunRecord } from "./harness/record.js";
 export { createProject, type CreateResult } from "./harness/scaffold.js";
