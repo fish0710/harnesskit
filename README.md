@@ -1,1 +1,36 @@
 # harnesskit
+
+Harness runs mutating `claude` and `command` agents in Daytona by default.
+The agent works in one persistent sandbox. Every gate attempt runs in a new
+agent-free sandbox, while contracts, aggregation, retry, escalation, and
+publication remain in the host process.
+
+## Run
+
+Configure `DAYTONA_API_KEY` and the Anthropic variables listed in
+`docs/daytona-local-claude-code-runbook.md`, then run:
+
+```bash
+npm run build
+node dist/src/cli.js run "implement the task" --driver claude
+```
+
+`--driver command --agent-cmd "..."` uses the same Daytona isolation.
+There is no silent fallback to host execution. `--driver scaffold` is the only
+local mode and performs no mutations.
+
+Candidate roots, protected paths, setup commands, and byte limits are read
+from `harness.config.json`. A passing gate publishes only the exact candidate
+bytes evaluated by the fresh gate sandbox.
+
+Unit tests do not require Daytona:
+
+```bash
+npm run check
+```
+
+The real integration flow is explicit:
+
+```bash
+npm run test:daytona
+```

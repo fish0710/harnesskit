@@ -33,7 +33,35 @@ function projectFiles(): FileSpec[] {
     {
       path: "harness.config.json",
       content: JSON.stringify(
-        { baseline: ["smoke.boot"], rules: [{ when: ["src/**"], select: [] }] },
+        {
+          baseline: ["smoke.boot"],
+          rules: [{ when: ["src/**"], select: [] }],
+          sandbox: {
+            candidateRoots: [
+              "src",
+              "test/generated",
+              "package.json",
+              "package-lock.json",
+              "tsconfig.json",
+            ],
+            protectedPaths: [
+              "contracts",
+              ".harness",
+              "harness.config.json",
+              ".github/workflows",
+              "CODEOWNERS",
+              "test/gates",
+            ],
+            agentSetup: [],
+            gateSetup: [],
+            limits: {
+              maxFiles: 10_000,
+              maxFileBytes: 10 * 1024 * 1024,
+              maxTotalBytes: 200 * 1024 * 1024,
+            },
+            retainOnFailure: false,
+          },
+        },
         null,
         2,
       ),

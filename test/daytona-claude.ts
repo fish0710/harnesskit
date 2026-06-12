@@ -1,54 +1,125 @@
+import { spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import {
-  CLAUDE_COMMAND,
-  CLAUDE_INSTALL_COMMAND,
-  createDaytonaManager,
-  getClaudeEnvironment,
-} from "../src/harness/sandbox/daytona.js";
+import { GateCore } from "../src/gate.js";
+import { runLoop } from "../src/harness/run.js";
+import { createDaytonaSdkProvider } from "../src/harness/sandbox/daytona.js";
+import { createDaytonaRunEnvironment } from "../src/harness/sandbox/environment.js";
+import { loadSandboxPolicy } from "../src/harness/sandbox/policy.js";
+import type {
+  SandboxCreateRequest,
+  SandboxProvider,
+} from "../src/harness/sandbox/types.js";
+import { commandPlugin } from "../src/plugins/command.js";
 
-export async function runClaudeInDaytona(
+function createGitFixture(): string {
+  const root = mkdtempSync(join(tmpdir(), "harness-daytona-integration-"));
+  const destination = join(root, "src/result.txt");
+  mkdirSync(dirname(destination), { recursive: true });
+  writeFileSync(destination, "broken\n");
+  spawnSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  spawnSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+  spawnSync(
+    "git",
+    [
+      "-c", "user.name=Harness Integration",
+      "-c", "user.email=harness@example.invalid",
+      "commit", "-m", "fixture",
+    ],
+    { cwd: root, stdio: "ignore" },
+  );
+  return root;
+}
+
+export async function runDaytonaIntegration(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  const manager = createDaytonaManager({ environment });
-  const sandbox = await manager.createAgentSandbox();
-
-  try {
-    const installation = await sandbox.execute(
-      CLAUDE_INSTALL_COMMAND,
-      "/workspace",
+  if (environment.RUN_DAYTONA_INTEGRATION !== "1") {
+    console.log(
+      "SKIP Daytona integration: set RUN_DAYTONA_INTEGRATION=1",
     );
-    if (installation.exitCode !== 0) {
-      throw new Error(
-        `Failed to install Claude Code (exit ${installation.exitCode}): ` +
-        `${installation.stderr || installation.stdout}`,
-      );
-    }
-
-    const result = await sandbox.runPty(
-      CLAUDE_COMMAND,
-      "/workspace",
-      {
-        HARNESS_PROMPT: "write a dad joke about penguins",
-        ...getClaudeEnvironment(environment),
-      },
-    );
-    process.stdout.write(result.stdout);
-    process.stderr.write(result.stderr);
-    if (result.exitCode !== 0) {
-      throw new Error(`Claude Code exited with code ${result.exitCode}`);
-    }
-  } finally {
-    await sandbox.delete();
+    return;
   }
+
+  const roles: SandboxCreateRequest["role"][] = [];
+  const sdkProvider = createDaytonaSdkProvider(environment);
+  const provider: SandboxProvider = {
+    async create(request) {
+      roles.push(request.role);
+      return sdkProvider.create(request);
+    },
+  };
+  const root = createGitFixture();
+  const policy = loadSandboxPolicy({
+    sandbox: {
+      candidateRoots: ["src"],
+      protectedPaths: ["contracts", ".harness"],
+      retainOnFailure: false,
+    },
+  });
+  const runEnvironment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy,
+    agent: { kind: "claude" },
+    environment,
+  });
+
+  const outcome = await runLoop({
+    task: "Replace src/result.txt with exactly the text passed followed by one newline.",
+    contracts: [{
+      id: "integration.result",
+      type: "command",
+      cmd: "node",
+      args: [
+        "-e",
+        "const fs=require('fs');process.exit(fs.readFileSync('src/result.txt','utf8')==='passed\\n'?0:1)",
+      ],
+    }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment: runEnvironment,
+    budget: {
+      maxAttempts: 1,
+      maxTokens: 1e9,
+      maxMs: 10 * 60 * 1000,
+      contextThreshold: 0.99,
+      repeatWallThreshold: 3,
+    },
+  });
+
+  if (outcome.outcome !== "ready_for_mr") {
+    throw new Error(
+      `Daytona integration failed: ${outcome.outcome} ${
+        outcome.action?.reason ?? ""
+      }`,
+    );
+  }
+  if (roles.filter((role) => role === "agent").length !== 1) {
+    throw new Error(`Expected one agent sandbox, got ${roles.join(",")}`);
+  }
+  if (roles.filter((role) => role === "gate").length !== 1) {
+    throw new Error(`Expected one gate sandbox, got ${roles.join(",")}`);
+  }
+  console.log("PASS Daytona agent/gate integration");
 }
 
 const entrypoint = process.argv[1];
 if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
   try {
-    await runClaudeInDaytona();
+    await runDaytonaIntegration();
   } catch (error) {
-    console.error("Failed to run Claude Code in Daytona sandbox:", error);
+    console.error(
+      "Daytona integration failed:",
+      error instanceof Error ? error.message : String(error),
+    );
     process.exitCode = 1;
   }
 }
