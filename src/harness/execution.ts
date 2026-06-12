@@ -45,8 +45,51 @@ export interface ExecutionTarget {
   request(request: HttpExecutionRequest): Promise<HttpExecutionEvidence>;
 }
 
+export function commandEvidenceError(
+  expectedId: string,
+  evidence: CommandExecutionEvidence,
+): string | undefined {
+  if (evidence.executionId !== expectedId) {
+    return "执行证据 ID 不匹配，结果不可信";
+  }
+  if (evidence.error !== undefined) {
+    return `执行目标错误: ${evidence.error || "(空错误信息)"}`;
+  }
+  if (typeof evidence.exitCode !== "number" || !Number.isFinite(evidence.exitCode)) {
+    return "执行证据缺少有效退出码，结果不可信";
+  }
+  return undefined;
+}
+
+export function httpEvidenceError(
+  expectedId: string,
+  evidence: HttpExecutionEvidence,
+): string | undefined {
+  if (evidence.executionId !== expectedId) {
+    return "执行证据 ID 不匹配，结果不可信";
+  }
+  if (evidence.error !== undefined) {
+    return `执行目标错误: ${evidence.error || "(空错误信息)"}`;
+  }
+  if (typeof evidence.status !== "number" || !Number.isFinite(evidence.status)) {
+    return "HTTP 执行证据缺少有效状态码，结果不可信";
+  }
+  return undefined;
+}
+
 export function executionId(): string {
   return randomUUID();
+}
+
+function executionSignal(
+  signal: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+): AbortSignal | undefined {
+  const timeoutSignal = timeoutMs !== undefined
+    ? AbortSignal.timeout(timeoutMs)
+    : undefined;
+  if (signal && timeoutSignal) return AbortSignal.any([signal, timeoutSignal]);
+  return signal ?? timeoutSignal;
 }
 
 export const localExecutionTarget: ExecutionTarget = {
@@ -55,7 +98,7 @@ export const localExecutionTarget: ExecutionTarget = {
     const result = await spawnCapture(request.command, request.args, {
       cwd: request.cwd,
       env: request.env,
-      signal: request.signal,
+      signal: executionSignal(request.signal, request.timeoutMs),
     });
     return {
       executionId: request.executionId,
@@ -70,16 +113,11 @@ export const localExecutionTarget: ExecutionTarget = {
   async request(request) {
     const start = performance.now();
     try {
-      const timeoutSignal = request.timeoutMs !== undefined
-        ? AbortSignal.timeout(request.timeoutMs)
-        : undefined;
       const response = await fetch(request.url, {
         method: request.method,
         headers: request.headers,
         body: request.body,
-        signal: request.signal && timeoutSignal
-          ? AbortSignal.any([request.signal, timeoutSignal])
-          : request.signal ?? timeoutSignal,
+        signal: executionSignal(request.signal, request.timeoutMs),
       });
       return {
         executionId: request.executionId,

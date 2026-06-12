@@ -1,4 +1,8 @@
-import { executionId, localExecutionTarget } from "../harness/execution.js";
+import {
+  commandEvidenceError,
+  executionId,
+  localExecutionTarget,
+} from "../harness/execution.js";
 import type { CheckResult, Contract, Plugin, RunContext } from "../types.js";
 
 /**
@@ -18,6 +22,7 @@ export const bootPlugin: Plugin = {
     const args = Array.isArray(contract.args) ? contract.args.map(String) : [];
     const expect = (contract.expect ?? {}) as { startup_ms_lte?: number };
     const budget = typeof expect.startup_ms_lte === "number" ? expect.startup_ms_lte : 800;
+    const timeoutMs = typeof contract.timeoutMs === "number" ? contract.timeoutMs : undefined;
 
     if (!cmd) {
       return { id: contract.id, type: this.type, status: "error", durationMs: 0, violations: [],
@@ -30,17 +35,15 @@ export const bootPlugin: Plugin = {
       command: cmd,
       args,
       cwd: ctx.cwd,
+      timeoutMs,
       signal: ctx.signal,
     });
     const elapsed = evidence.durationMs;
 
-    if (evidence.executionId !== id) {
+    const evidenceError = commandEvidenceError(id, evidence);
+    if (evidenceError) {
       return { id: contract.id, type: this.type, status: "error", durationMs: elapsed, violations: [],
-        errorReason: "执行证据 ID 不匹配，结果不可信 ⇒ error" };
-    }
-    if (evidence.error) {
-      return { id: contract.id, type: this.type, status: "error", durationMs: elapsed, violations: [],
-        errorReason: `进程无法启动: ${evidence.error} ⇒ error` };
+        errorReason: `进程无法启动或执行证据不可信: ${evidenceError} ⇒ error` };
     }
     if (elapsed <= budget) {
       return { id: contract.id, type: this.type, status: "pass", durationMs: elapsed, violations: [] };

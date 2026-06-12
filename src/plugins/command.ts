@@ -1,4 +1,8 @@
-import { executionId, localExecutionTarget } from "../harness/execution.js";
+import {
+  commandEvidenceError,
+  executionId,
+  localExecutionTarget,
+} from "../harness/execution.js";
 import type { CalibrationResult, CheckResult, Contract, Plugin, RunContext } from "../types.js";
 
 /**
@@ -10,6 +14,19 @@ import type { CalibrationResult, CheckResult, Contract, Plugin, RunContext } fro
  * 契约字段：{ cmd: string, args?: string[], expectExit?: number=0 }
  */
 
+function boundedCommandOutput(stderr: string, stdout: string): string | undefined {
+  const sections: string[] = [];
+  const add = (label: string, value: string) => {
+    const text = value.trim();
+    if (!text) return;
+    const bounded = text.split("\n").slice(0, 4).join("\n").slice(0, 1000);
+    sections.push(`${label}:\n${bounded}`);
+  };
+  add("stderr", stderr);
+  add("stdout", stdout);
+  return sections.length > 0 ? sections.join("\n") : undefined;
+}
+
 export const commandPlugin: Plugin = {
   type: "command",
 
@@ -17,6 +34,7 @@ export const commandPlugin: Plugin = {
     const cmd = String(contract.cmd ?? "");
     const args = Array.isArray(contract.args) ? contract.args.map(String) : [];
     const expectExit = typeof contract.expectExit === "number" ? contract.expectExit : 0;
+    const timeoutMs = typeof contract.timeoutMs === "number" ? contract.timeoutMs : undefined;
 
     if (!cmd) {
       return {
@@ -31,21 +49,16 @@ export const commandPlugin: Plugin = {
       command: cmd,
       args,
       cwd: ctx.cwd,
+      timeoutMs,
       signal: ctx.signal,
     });
     const durationMs = evidence.durationMs;
 
-    if (evidence.executionId !== id) {
+    const evidenceError = commandEvidenceError(id, evidence);
+    if (evidenceError) {
       return {
         id: contract.id, type: this.type, status: "error", durationMs, violations: [],
-        errorReason: "执行证据 ID 不匹配，结果不可信 ⇒ error",
-      };
-    }
-    // 没跑成 → error
-    if (evidence.error) {
-      return {
-        id: contract.id, type: this.type, status: "error", durationMs, violations: [],
-        errorReason: `命令无法启动: ${evidence.error}（这不是 fail，是没跑成 ⇒ error）`,
+        errorReason: `命令无法启动或执行证据不可信: ${evidenceError} ⇒ error`,
       };
     }
     // 跑了，按退出码判 pass / fail
@@ -58,9 +71,7 @@ export const commandPlugin: Plugin = {
         {
           what: `命令退出码 ${evidence.exitCode}，期望 ${expectExit}`,
           why: contract.scenario ? String(contract.scenario) : "命令未达预期退出码",
-          how: evidence.stderr.trim()
-            ? `查看 stderr: ${evidence.stderr.trim().split("\n").slice(0, 3).join(" / ")}`
-            : "检查命令实现",
+          how: boundedCommandOutput(evidence.stderr, evidence.stdout) ?? "检查命令实现",
           ref: typeof contract.ref === "string" ? contract.ref : undefined,
         },
       ],

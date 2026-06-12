@@ -1,4 +1,8 @@
-import { executionId, localExecutionTarget } from "../harness/execution.js";
+import {
+  executionId,
+  httpEvidenceError,
+  localExecutionTarget,
+} from "../harness/execution.js";
 import type { CheckResult, Contract, Plugin, RunContext } from "../types.js";
 
 interface HttpTrigger {
@@ -79,18 +83,10 @@ export const httpPlugin: Plugin = {
     });
     const durationMs = evidence.durationMs;
 
-    if (evidence.executionId !== id) {
+    const evidenceError = httpEvidenceError(id, evidence);
+    if (evidenceError) {
       return { id: c.id, type: this.type, status: "error", durationMs, violations: [],
-        errorReason: "执行证据 ID 不匹配，结果不可信 ⇒ error" };
-    }
-    if (evidence.error) {
-      // 连不上/超时 = 服务没起来或网络问题 = 没跑成 ⇒ error
-      return { id: c.id, type: this.type, status: "error", durationMs, violations: [],
-        errorReason: `请求失败(连不上/超时): ${evidence.error} ⇒ error` };
-    }
-    if (evidence.status === undefined) {
-      return { id: c.id, type: this.type, status: "error", durationMs, violations: [],
-        errorReason: "HTTP 执行证据缺少状态码，结果不可信 ⇒ error" };
+        errorReason: `请求失败或执行证据不可信: ${evidenceError} ⇒ error` };
     }
 
     const fails: string[] = [];

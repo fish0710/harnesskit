@@ -1,4 +1,8 @@
-import { executionId, localExecutionTarget } from "../harness/execution.js";
+import {
+  commandEvidenceError,
+  executionId,
+  localExecutionTarget,
+} from "../harness/execution.js";
 import type { CheckResult, Contract, Plugin, RunContext, Violation } from "../types.js";
 
 interface EslintMessage { filePath?: string; messages?: Array<{ line?: number; message?: string; ruleId?: string }>; }
@@ -22,6 +26,7 @@ export const structurePlugin: Plugin = {
     const args = Array.isArray(c.args) ? c.args.map(String) : [];
     const expectExit = typeof c.expectExit === "number" ? c.expectExit : 0;
     const parse = c.parse === "eslint-json" ? "eslint-json" : "exit";
+    const timeoutMs = typeof c.timeoutMs === "number" ? c.timeoutMs : undefined;
 
     if (!tool) {
       return { id: c.id, type: this.type, status: "error", durationMs: 0, violations: [],
@@ -34,18 +39,16 @@ export const structurePlugin: Plugin = {
       command: tool,
       args,
       cwd: ctx.cwd,
+      timeoutMs,
       signal: ctx.signal,
     });
     const durationMs = evidence.durationMs;
 
-    if (evidence.executionId !== id) {
-      return { id: c.id, type: this.type, status: "error", durationMs, violations: [],
-        errorReason: "执行证据 ID 不匹配，结果不可信 ⇒ error" };
-    }
+    const evidenceError = commandEvidenceError(id, evidence);
     // 工具没装/起不来 ⇒ error(绝不当通过)——跨语言编排最易静默失效的点
-    if (evidence.error) {
+    if (evidenceError) {
       return { id: c.id, type: this.type, status: "error", durationMs, violations: [],
-        errorReason: `静态分析器无法启动: "${tool}" ${evidence.error}(可能未安装)⇒ error,绝不当通过` };
+        errorReason: `静态分析器无法启动或执行证据不可信: "${tool}" ${evidenceError} ⇒ error,绝不当通过` };
     }
 
     if (evidence.exitCode === expectExit) {

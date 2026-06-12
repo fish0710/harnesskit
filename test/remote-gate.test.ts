@@ -6,6 +6,7 @@ import type {
   ExecutionTarget,
   HttpExecutionRequest,
 } from "../src/harness/execution.js";
+import { localExecutionTarget } from "../src/harness/execution.js";
 import { bootPlugin } from "../src/plugins/boot.js";
 import { commandPlugin } from "../src/plugins/command.js";
 import { httpPlugin } from "../src/plugins/http.js";
@@ -36,7 +37,13 @@ test("command plugin sends trusted execution request and host classifies exit 0 
   };
 
   const result = await commandPlugin.run(
-    { id: "command.remote", type: "command", cmd: "node", args: ["trusted-test.js"] },
+    {
+      id: "command.remote",
+      type: "command",
+      cmd: "node",
+      args: ["trusted-test.js"],
+      timeoutMs: 2500,
+    },
     { cwd: "/workspace/candidate", execution },
   );
 
@@ -46,6 +53,7 @@ test("command plugin sends trusted execution request and host classifies exit 0 
   assert.equal(call.command, "node");
   assert.deepEqual(call.args, ["trusted-test.js"]);
   assert.equal(call.cwd, "/workspace/candidate");
+  assert.equal(call.timeoutMs, 2500);
 });
 
 test("command plugin rejects mismatched evidence execution id", async () => {
@@ -95,6 +103,69 @@ test("command plugin classifies execution target error as error", async () => {
   assert.match(result.errorReason ?? "", /remote spawn failed/);
 });
 
+test("command plugin rejects null exit code without an execution error", async () => {
+  const execution: ExecutionTarget = {
+    async execute(request) {
+      return {
+        executionId: request.executionId,
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        durationMs: 3,
+      };
+    },
+    request: unusedRequest,
+  };
+
+  const result = await commandPlugin.run(
+    { id: "command.incomplete", type: "command", cmd: "node" },
+    { cwd: "/workspace/candidate", execution },
+  );
+
+  assert.equal(result.status, "error");
+  assert.match(result.errorReason ?? "", /退出码|证据|不可信/);
+});
+
+test("command failure diagnostics include stdout when stderr is empty", async () => {
+  const execution: ExecutionTarget = {
+    async execute(request) {
+      return {
+        executionId: request.executionId,
+        exitCode: 1,
+        stdout: "assertion failed in trusted test",
+        stderr: "",
+        durationMs: 4,
+      };
+    },
+    request: unusedRequest,
+  };
+
+  const result = await commandPlugin.run(
+    { id: "command.stdout", type: "command", cmd: "node" },
+    { cwd: "/workspace/candidate", execution },
+  );
+
+  assert.equal(result.status, "fail");
+  assert.match(result.violations[0]?.how ?? "", /assertion failed in trusted test/);
+});
+
+test("local command execution enforces timeout as error evidence", async () => {
+  const start = performance.now();
+  const evidence = await localExecutionTarget.execute({
+    executionId: "local-timeout",
+    command: process.execPath,
+    args: ["-e", "setTimeout(() => {}, 1000)"],
+    cwd: process.cwd(),
+    timeoutMs: 20,
+  });
+  const elapsed = performance.now() - start;
+
+  assert.equal(evidence.executionId, "local-timeout");
+  assert.ok(evidence.error);
+  assert.equal(evidence.exitCode, null);
+  assert.ok(elapsed < 500, `timeout took ${elapsed.toFixed(0)}ms`);
+});
+
 test("local command execution preserves RunContext cancellation", async () => {
   const controller = new AbortController();
   controller.abort();
@@ -131,6 +202,28 @@ test("boot plugin classifies remote duration on the host", async () => {
   assert.match(result.violations[0]?.what ?? "", /25ms/);
 });
 
+test("boot plugin rejects null exit code even within startup budget", async () => {
+  const execution: ExecutionTarget = {
+    async execute(request) {
+      return {
+        executionId: request.executionId,
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        durationMs: 1,
+      };
+    },
+    request: unusedRequest,
+  };
+
+  const result = await bootPlugin.run(
+    { id: "boot.incomplete", type: "boot", cmd: "service", expect: { startup_ms_lte: 100 } },
+    { cwd: "/workspace/candidate", execution },
+  );
+
+  assert.equal(result.status, "error");
+});
+
 test("structure plugin uses remote stdout in host diagnostics", async () => {
   const execution: ExecutionTarget = {
     async execute(request) {
@@ -152,6 +245,28 @@ test("structure plugin uses remote stdout in host diagnostics", async () => {
 
   assert.equal(result.status, "fail");
   assert.match(result.violations[0]?.how ?? "", /forbidden import/);
+});
+
+test("structure plugin rejects null exit code without an execution error", async () => {
+  const execution: ExecutionTarget = {
+    async execute(request) {
+      return {
+        executionId: request.executionId,
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        durationMs: 2,
+      };
+    },
+    request: unusedRequest,
+  };
+
+  const result = await structurePlugin.run(
+    { id: "structure.incomplete", type: "structure", tool: "import-linter" },
+    { cwd: "/workspace/candidate", execution },
+  );
+
+  assert.equal(result.status, "error");
 });
 
 test("http plugin sends resolved trusted request and host classifies raw evidence", async () => {
@@ -243,5 +358,27 @@ test("http plugin rejects mismatched evidence id and target errors", async (t) =
 
     assert.equal(result.status, "error");
     assert.match(result.errorReason ?? "", /remote timeout/);
+  });
+
+  await t.test("nonnumeric status", async () => {
+    const execution: ExecutionTarget = {
+      execute: unusedExecute,
+      async request(request) {
+        return {
+          executionId: request.executionId,
+          status: null as unknown as number,
+          headers: {},
+          body: "ok",
+          durationMs: 1,
+        };
+      },
+    };
+
+    const result = await httpPlugin.run(
+      { id: "http.incomplete", type: "http", trigger: { url: "https://candidate.example" } },
+      { cwd: "/workspace/candidate", execution },
+    );
+
+    assert.equal(result.status, "error");
   });
 });
