@@ -81,13 +81,30 @@ function positiveSafeInteger(value: unknown, field: string): number {
   return value;
 }
 
-function securityKey(value: string): string {
-  return value.normalize("NFC").toLocaleLowerCase("en-US");
+export function filesystemPathKey(
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "darwin" && platform !== "win32") return value;
+
+  // Fold each segment like case-insensitive host filesystems without ever
+  // transforming "/" boundaries. The upper/lower pair handles multi-codepoint
+  // aliases such as ß/SS, ſ/s, and final-sigma/sigma; NFD handles APFS aliases.
+  return value
+    .split("/")
+    .map((segment) =>
+      segment.normalize("NFD").toUpperCase().toLowerCase().normalize("NFD")
+    )
+    .join("/");
 }
 
-function isWithin(path: string, prefix: string): boolean {
-  const pathKey = securityKey(path);
-  const prefixKey = securityKey(prefix);
+export function isPathWithin(
+  path: string,
+  prefix: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const pathKey = filesystemPathKey(path, platform);
+  const prefixKey = filesystemPathKey(prefix, platform);
   return pathKey === prefixKey || pathKey.startsWith(`${prefixKey}/`);
 }
 
@@ -119,12 +136,13 @@ export function normalizeWorkspacePath(value: string): string {
 export function validateCandidatePath(
   value: string,
   policy: SandboxPolicy,
+  platform: NodeJS.Platform = process.platform,
 ): string {
   const path = normalizeWorkspacePath(value);
-  if (!policy.candidateRoots.some((root) => isWithin(path, root))) {
+  if (!policy.candidateRoots.some((root) => isPathWithin(path, root, platform))) {
     throw new Error(`候选路径不在允许范围: ${path}`);
   }
-  if (policy.protectedPaths.some((root) => isWithin(path, root))) {
+  if (policy.protectedPaths.some((root) => isPathWithin(path, root, platform))) {
     throw new Error(`候选路径属于受保护资产: ${path}`);
   }
   return path;
@@ -149,7 +167,10 @@ function loadLimits(value: unknown): SandboxLimits {
   };
 }
 
-export function loadSandboxPolicy(config: unknown): SandboxPolicy {
+export function loadSandboxPolicy(
+  config: unknown,
+  platform: NodeJS.Platform = process.platform,
+): SandboxPolicy {
   if (!isRecord(config)) {
     throw new TypeError("Harness 配置必须是普通对象");
   }
@@ -206,7 +227,7 @@ export function loadSandboxPolicy(config: unknown): SandboxPolicy {
   if (
     candidateRoots.every((candidateRoot) =>
       protectedPaths.some((protectedPath) =>
-        isWithin(candidateRoot, protectedPath),
+        isPathWithin(candidateRoot, protectedPath, platform),
       ),
     )
   ) {

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  filesystemPathKey,
   loadSandboxPolicy,
   normalizeWorkspacePath,
   validateCandidatePath,
@@ -92,63 +93,107 @@ test("protected prefix checks are path-boundary aware", () => {
   );
 });
 
-test("protected paths block case aliases in either direction", () => {
+test("darwin blocks protected filesystem aliases", () => {
   for (const [protectedPath, candidatePath] of [
     ["src/Gates", "src/gates/file.ts"],
     ["src/gates", "src/Gates/file.ts"],
+    ["src/café", "src/cafe\u0301/file.ts"],
+    ["src/σ", "src/ς/file.ts"],
+    ["src/straße", "src/STRASSE/file.ts"],
+    ["src/ſafe", "src/safe/file.ts"],
   ] as const) {
     const policy = loadSandboxPolicy({
       sandbox: {
         candidateRoots: ["src"],
         protectedPaths: [protectedPath],
       },
-    });
+    }, "darwin");
 
     assert.throws(
-      () => validateCandidatePath(candidatePath, policy),
+      () => validateCandidatePath(candidatePath, policy, "darwin"),
       /受保护/,
     );
   }
 });
 
-test("protected paths block canonically equivalent Unicode aliases", () => {
-  const policy = loadSandboxPolicy({
+test("darwin candidate roots match host aliases and preserve candidate spelling", () => {
+  const simplePolicy = loadSandboxPolicy({
     sandbox: {
       candidateRoots: ["src"],
-      protectedPaths: ["src/café"],
+      protectedPaths: [],
     },
-  });
-  const nfdCandidate = "src/cafe\u0301/file.ts";
+  }, "darwin");
+  assert.equal(
+    validateCandidatePath("SRC/x", simplePolicy, "darwin"),
+    "SRC/x",
+  );
 
+  const candidate = "SRC/cafe\u0301/STRASSE/ς/ſafe.ts";
+  const policy = loadSandboxPolicy({
+    sandbox: {
+      candidateRoots: ["src/CAFÉ/straße/σ"],
+      protectedPaths: [],
+    },
+  }, "darwin");
+
+  assert.equal(validateCandidatePath(candidate, policy, "darwin"), candidate);
+});
+
+test("linux path comparisons remain case and Unicode sensitive", () => {
+  const policy = loadSandboxPolicy({
+    sandbox: {
+      candidateRoots: ["src", "SRC"],
+      protectedPaths: ["src/Gates", "src/café"],
+    },
+  }, "linux");
+
+  assert.equal(validateCandidatePath("src/gates/x", policy, "linux"), "src/gates/x");
+  assert.equal(validateCandidatePath("SRC/x", policy, "linux"), "SRC/x");
   assert.throws(
-    () => validateCandidatePath(nfdCandidate, policy),
-    /受保护/,
+    () =>
+      validateCandidatePath(
+        "src/cafe\u0301/x",
+        loadSandboxPolicy({
+          sandbox: {
+            candidateRoots: ["src/café"],
+            protectedPaths: [],
+          },
+        }, "linux"),
+        "linux",
+      ),
+    /允许范围/,
   );
 });
 
-test("allowed roots match case and Unicode aliases while preserving candidate spelling", () => {
-  const caseCandidate = "src/gates/File.ts";
-  const casePolicy = loadSandboxPolicy({
+test("linux candidate root casing does not match a distinct candidate path", () => {
+  const policy = loadSandboxPolicy({
     sandbox: {
-      candidateRoots: ["SRC/Gates"],
+      candidateRoots: ["src"],
       protectedPaths: [],
     },
-  });
-  assert.equal(
-    validateCandidatePath(caseCandidate, casePolicy),
-    caseCandidate,
+  }, "linux");
+
+  assert.throws(
+    () => validateCandidatePath("SRC/x", policy, "linux"),
+    /允许范围/,
+  );
+});
+
+test("filesystem path keys keep accent-distinct APFS names separate", () => {
+  assert.notEqual(
+    filesystemPathKey("src/cafe", "darwin"),
+    filesystemPathKey("src/café", "darwin"),
   );
 
-  const nfdCandidate = "src/cafe\u0301/file.ts";
-  const unicodePolicy = loadSandboxPolicy({
+  const policy = loadSandboxPolicy({
     sandbox: {
-      candidateRoots: ["SRC/CAFÉ"],
+      candidateRoots: ["src/cafe"],
       protectedPaths: [],
     },
-  });
-  assert.equal(
-    validateCandidatePath(nfdCandidate, unicodePolicy),
-    nfdCandidate,
+  }, "darwin");
+  assert.throws(
+    () => validateCandidatePath("src/café/x", policy, "darwin"),
+    /允许范围/,
   );
 });
 
@@ -392,7 +437,7 @@ test("overlap checks use case and Unicode comparison keys", () => {
           candidateRoots: ["SRC/Gates"],
           protectedPaths: ["src/gates"],
         },
-      }),
+      }, "darwin"),
     /所有 candidateRoots.*受保护/,
   );
 
@@ -403,8 +448,19 @@ test("overlap checks use case and Unicode comparison keys", () => {
           candidateRoots: ["src/cafe\u0301"],
           protectedPaths: ["SRC/CAFÉ"],
         },
-      }),
+      }, "darwin"),
     /所有 candidateRoots.*受保护/,
+  );
+});
+
+test("linux overlap checks keep distinct path spellings separate", () => {
+  assert.doesNotThrow(() =>
+    loadSandboxPolicy({
+      sandbox: {
+        candidateRoots: ["src/gates"],
+        protectedPaths: ["src/Gates"],
+      },
+    }, "linux"),
   );
 });
 
