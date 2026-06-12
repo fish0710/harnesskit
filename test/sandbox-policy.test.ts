@@ -60,6 +60,73 @@ test("normalization rejects Windows drive and UNC paths", () => {
   }
 });
 
+test("normalization rejects Windows alternate data streams", () => {
+  assert.throws(
+    () => normalizeWorkspacePath("src/secret.txt::$DATA"),
+    /非法路径/,
+  );
+});
+
+test("normalization rejects Windows-invalid characters in any segment", () => {
+  for (const character of ["<", ">", ":", "\"", "|", "?", "*"]) {
+    assert.throws(
+      () => normalizeWorkspacePath(`src/a${character}b/file.ts`),
+      /非法路径/,
+    );
+  }
+});
+
+test("normalization rejects every ASCII control character", () => {
+  for (let code = 0; code <= 0x1f; code++) {
+    assert.throws(
+      () => normalizeWorkspacePath(`src/a${String.fromCharCode(code)}b.ts`),
+      /非法路径/,
+    );
+  }
+});
+
+test("normalization rejects segments ending in dot or ASCII space", () => {
+  for (const path of [
+    "src/file.",
+    "src/dir./file.ts",
+    "src/file ",
+    "src/dir /file.ts",
+  ]) {
+    assert.throws(() => normalizeWorkspacePath(path), /非法路径/);
+  }
+});
+
+test("normalization rejects Windows reserved device basenames with extensions", () => {
+  const reservedPaths = [
+    "con",
+    "CON.txt",
+    "src/prn",
+    "src/AUX.json",
+    "src/nul.log",
+  ];
+  for (let number = 1; number <= 9; number++) {
+    reservedPaths.push(`src/com${number}`, `src/LPT${number}.log`);
+  }
+
+  for (const path of reservedPaths) {
+    assert.throws(() => normalizeWorkspacePath(path), /非法路径/);
+  }
+});
+
+test("normalization accepts portable near-miss names", () => {
+  for (const path of [
+    "console.ts",
+    "src/printer",
+    "src/auxiliary.json",
+    "src/null.log",
+    "src/com10",
+    "src/lpt10.log",
+    "src/com1extra.txt",
+  ]) {
+    assert.equal(normalizeWorkspacePath(path), path);
+  }
+});
+
 test("candidate root prefix checks are path-boundary aware", () => {
   const policy = loadSandboxPolicy({
     sandbox: {

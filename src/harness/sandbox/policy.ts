@@ -114,6 +114,14 @@ export function isProtectedWithin(
   return pathKey === prefixKey || pathKey.startsWith(`${prefixKey}/`);
 }
 
+function isInvalidPortableSegment(segment: string): boolean {
+  return (
+    /[\u0000-\u001f<>:"|?*]/.test(segment) ||
+    /[. ]$/.test(segment) ||
+    /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(segment)
+  );
+}
+
 export function normalizeWorkspacePath(value: string): string {
   if (typeof value !== "string") {
     throw new TypeError("工作区路径必须是字符串");
@@ -129,10 +137,14 @@ export function normalizeWorkspacePath(value: string): string {
   const parts = value.split("/");
   if (
     value.length === 0 ||
-    value.includes("\0") ||
     value.includes("\\") ||
     value.includes("//") ||
-    parts.some((part) => part === "" || part === "." || part === "..")
+    parts.some((part) =>
+      part === "" ||
+      part === "." ||
+      part === ".." ||
+      isInvalidPortableSegment(part)
+    )
   ) {
     throw new Error(`非法路径或越界路径: ${value}`);
   }
