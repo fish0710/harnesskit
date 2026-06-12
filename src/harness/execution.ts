@@ -55,7 +55,12 @@ export function commandEvidenceError(
   if (evidence.error !== undefined) {
     return `执行目标错误: ${evidence.error || "(空错误信息)"}`;
   }
-  if (typeof evidence.exitCode !== "number" || !Number.isFinite(evidence.exitCode)) {
+  const exitCode = evidence.exitCode;
+  if (
+    typeof exitCode !== "number" ||
+    !Number.isSafeInteger(exitCode) ||
+    exitCode < 0
+  ) {
     return "执行证据缺少有效退出码，结果不可信";
   }
   return undefined;
@@ -71,7 +76,13 @@ export function httpEvidenceError(
   if (evidence.error !== undefined) {
     return `执行目标错误: ${evidence.error || "(空错误信息)"}`;
   }
-  if (typeof evidence.status !== "number" || !Number.isFinite(evidence.status)) {
+  const status = evidence.status;
+  if (
+    typeof status !== "number" ||
+    !Number.isInteger(status) ||
+    status < 100 ||
+    status > 599
+  ) {
     return "HTTP 执行证据缺少有效状态码，结果不可信";
   }
   return undefined;

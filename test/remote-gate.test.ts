@@ -6,7 +6,10 @@ import type {
   ExecutionTarget,
   HttpExecutionRequest,
 } from "../src/harness/execution.js";
-import { localExecutionTarget } from "../src/harness/execution.js";
+import {
+  commandEvidenceError,
+  localExecutionTarget,
+} from "../src/harness/execution.js";
 import { bootPlugin } from "../src/plugins/boot.js";
 import { commandPlugin } from "../src/plugins/command.js";
 import { httpPlugin } from "../src/plugins/http.js";
@@ -19,6 +22,22 @@ function unusedRequest(): Promise<never> {
 function unusedExecute(): Promise<never> {
   return Promise.reject(new Error("command execution was not expected"));
 }
+
+test("command evidence accepts large safe codes and rejects unsafe integers", () => {
+  const evidence = {
+    executionId: "domain",
+    exitCode: 512,
+    stdout: "",
+    stderr: "",
+    durationMs: 1,
+  };
+
+  assert.equal(commandEvidenceError("domain", evidence), undefined);
+  assert.ok(commandEvidenceError("domain", {
+    ...evidence,
+    exitCode: Number.MAX_SAFE_INTEGER + 1,
+  }));
+});
 
 test("command plugin sends trusted execution request and host classifies exit 0 as pass", async () => {
   let call: CommandExecutionRequest | undefined;
@@ -126,6 +145,32 @@ test("command plugin rejects null exit code without an execution error", async (
   assert.match(result.errorReason ?? "", /退出码|证据|不可信/);
 });
 
+test("command plugin rejects invalid finite exit code domains", async (t) => {
+  for (const exitCode of [-1, 0.5]) {
+    await t.test(String(exitCode), async () => {
+      const execution: ExecutionTarget = {
+        async execute(request) {
+          return {
+            executionId: request.executionId,
+            exitCode,
+            stdout: "",
+            stderr: "",
+            durationMs: 1,
+          };
+        },
+        request: unusedRequest,
+      };
+
+      const result = await commandPlugin.run(
+        { id: `command.invalid.${exitCode}`, type: "command", cmd: "node" },
+        { cwd: "/workspace/candidate", execution },
+      );
+
+      assert.equal(result.status, "error");
+    });
+  }
+});
+
 test("command failure diagnostics include stdout when stderr is empty", async () => {
   const execution: ExecutionTarget = {
     async execute(request) {
@@ -179,6 +224,26 @@ test("local command execution preserves RunContext cancellation", async () => {
   assert.match(result.errorReason ?? "", /abort/i);
 });
 
+test("local command execution returns error evidence when cancelled after start", async () => {
+  const controller = new AbortController();
+  const start = performance.now();
+  const pending = localExecutionTarget.execute({
+    executionId: "local-cancel-mid-execution",
+    command: process.execPath,
+    args: ["-e", "setTimeout(() => {}, 1000)"],
+    cwd: process.cwd(),
+    signal: controller.signal,
+  });
+  setTimeout(() => controller.abort(), 20);
+
+  const evidence = await pending;
+  const elapsed = performance.now() - start;
+
+  assert.ok(evidence.error);
+  assert.equal(evidence.exitCode, null);
+  assert.ok(elapsed < 500, `cancellation took ${elapsed.toFixed(0)}ms`);
+});
+
 test("boot plugin classifies remote duration on the host", async () => {
   const execution: ExecutionTarget = {
     async execute(request) {
@@ -224,6 +289,37 @@ test("boot plugin rejects null exit code even within startup budget", async () =
   assert.equal(result.status, "error");
 });
 
+test("boot plugin rejects invalid finite exit code domains", async (t) => {
+  for (const exitCode of [-1, 0.5]) {
+    await t.test(String(exitCode), async () => {
+      const execution: ExecutionTarget = {
+        async execute(request) {
+          return {
+            executionId: request.executionId,
+            exitCode,
+            stdout: "",
+            stderr: "",
+            durationMs: 1,
+          };
+        },
+        request: unusedRequest,
+      };
+
+      const result = await bootPlugin.run(
+        {
+          id: `boot.invalid.${exitCode}`,
+          type: "boot",
+          cmd: "service",
+          expect: { startup_ms_lte: 100 },
+        },
+        { cwd: "/workspace/candidate", execution },
+      );
+
+      assert.equal(result.status, "error");
+    });
+  }
+});
+
 test("structure plugin uses remote stdout in host diagnostics", async () => {
   const execution: ExecutionTarget = {
     async execute(request) {
@@ -267,6 +363,32 @@ test("structure plugin rejects null exit code without an execution error", async
   );
 
   assert.equal(result.status, "error");
+});
+
+test("structure plugin rejects invalid finite exit code domains", async (t) => {
+  for (const exitCode of [-1, 0.5]) {
+    await t.test(String(exitCode), async () => {
+      const execution: ExecutionTarget = {
+        async execute(request) {
+          return {
+            executionId: request.executionId,
+            exitCode,
+            stdout: "",
+            stderr: "",
+            durationMs: 1,
+          };
+        },
+        request: unusedRequest,
+      };
+
+      const result = await structurePlugin.run(
+        { id: `structure.invalid.${exitCode}`, type: "structure", tool: "import-linter" },
+        { cwd: "/workspace/candidate", execution },
+      );
+
+      assert.equal(result.status, "error");
+    });
+  }
 });
 
 test("http plugin sends resolved trusted request and host classifies raw evidence", async () => {
@@ -381,4 +503,28 @@ test("http plugin rejects mismatched evidence id and target errors", async (t) =
 
     assert.equal(result.status, "error");
   });
+
+  for (const status of [99, 200.5, 600]) {
+    await t.test(`invalid status ${status}`, async () => {
+      const execution: ExecutionTarget = {
+        execute: unusedExecute,
+        async request(request) {
+          return {
+            executionId: request.executionId,
+            status,
+            headers: {},
+            body: "ok",
+            durationMs: 1,
+          };
+        },
+      };
+
+      const result = await httpPlugin.run(
+        { id: `http.invalid.${status}`, type: "http", trigger: { url: "https://candidate.example" } },
+        { cwd: "/workspace/candidate", execution },
+      );
+
+      assert.equal(result.status, "error");
+    });
+  }
 });
