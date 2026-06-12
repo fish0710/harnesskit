@@ -1,3 +1,5 @@
+import type { RemoteWorkspace } from "./workspace.js";
+
 export interface SandboxLimits {
   maxFiles: number;
   maxFileBytes: number;
@@ -33,4 +35,38 @@ export type CandidateOperation =
 export interface CandidateSnapshot {
   operations: CandidateOperation[];
   files: Map<string, WorkspaceFile>;
+}
+
+export interface SandboxCreateRequest {
+  role: "agent" | "gate";
+  envVars: Record<string, string>;
+  ephemeral: boolean;
+}
+
+export interface SandboxCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+export interface SandboxHandle {
+  readonly id: string;
+  upload(files: WorkspaceFile[], remoteRoot: string): Promise<void>;
+  workspace(remoteRoot: string, maxEntries?: number): RemoteWorkspace;
+  execute(
+    command: string,
+    cwd: string,
+    env?: Record<string, string>,
+  ): Promise<SandboxCommandResult>;
+  runPty(
+    command: string,
+    cwd: string,
+    env: Record<string, string>,
+  ): Promise<SandboxCommandResult>;
+  setNetworkBlocked(blocked: boolean): Promise<void>;
+  delete(): Promise<void>;
+}
+
+export interface SandboxProvider {
+  create(request: SandboxCreateRequest): Promise<SandboxHandle>;
 }
