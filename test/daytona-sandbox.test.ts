@@ -225,6 +225,52 @@ test("remote workspace recursively lists entries and maps unknown modes to speci
   ]);
 });
 
+test("remote workspace only descends into watched candidate and protected roots", async () => {
+  const sdkSandbox = fakeSdkSandbox({
+    listings: new Map<string, FileInfo[]>([
+      ["/workspace/candidate", [
+        fileInfo("src", true, "drwxr-xr-x"),
+        fileInfo("contracts", true, "drwxr-xr-x"),
+        fileInfo("node_modules", true, "drwxr-xr-x"),
+      ]],
+      ["/workspace/candidate/src", [
+        fileInfo("index.ts", false, "-rw-r--r--", 3),
+      ]],
+      ["/workspace/candidate/contracts", [
+        fileInfo("gate.yaml", false, "-rw-r--r--", 3),
+      ]],
+      ["/workspace/candidate/node_modules", [
+        fileInfo("pkg", true, "drwxr-xr-x"),
+      ]],
+    ]),
+  });
+  const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
+  const handle = await provider.create({
+    role: "agent",
+    envVars: modelEnvironment,
+    ephemeral: false,
+  });
+
+  const entries = await handle.workspace(
+    "/workspace/candidate",
+    100,
+    ["src", "contracts"],
+  ).list("/workspace/candidate");
+
+  assert.deepEqual(entries.map((entry) => entry.path), [
+    "src",
+    "src/index.ts",
+    "contracts",
+    "contracts/gate.yaml",
+    "node_modules",
+  ]);
+  assert.deepEqual(sdkSandbox.calls.listed, [
+    "/workspace/candidate",
+    "/workspace/candidate/src",
+    "/workspace/candidate/contracts",
+  ]);
+});
+
 test("remote workspace downloads regular file bytes through the SDK", async () => {
   const sdkSandbox = fakeSdkSandbox({
     listings: new Map([
@@ -254,6 +300,44 @@ test("remote workspace downloads regular file bytes through the SDK", async () =
   assert.deepEqual(sdkSandbox.calls.downloaded, [
     "/workspace/candidate/src/index.ts",
   ]);
+});
+
+test("SDK handle verifies host-controlled bytes and metadata", async () => {
+  const content = Buffer.from("trusted\n");
+  const sdkSandbox = fakeSdkSandbox({
+    listings: new Map([
+      ["/workspace/candidate/contracts", [
+        fileInfo("gate.yaml", false, "-rw-r--r--", content.byteLength),
+      ]],
+    ]),
+    downloads: new Map([
+      ["/workspace/candidate/contracts/gate.yaml", content],
+    ]),
+  });
+  const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
+  const handle = await provider.create({
+    role: "gate",
+    envVars: {},
+    ephemeral: true,
+  });
+  const expected = {
+    path: "contracts/gate.yaml",
+    content,
+    executable: false,
+    sha256: sha256(content),
+  };
+
+  await handle.verify([expected], "/workspace/candidate");
+  sdkSandbox.calls.downloaded.length = 0;
+  sdkSandbox.options.downloads?.set(
+    "/workspace/candidate/contracts/gate.yaml",
+    Buffer.from("tampered"),
+  );
+
+  await assert.rejects(
+    () => handle.verify([expected], "/workspace/candidate"),
+    /bytes changed/,
+  );
 });
 
 test("SDK handle runs commands in a PTY, captures output, and disconnects", async () => {
@@ -411,6 +495,7 @@ function recordingHandle(id: string) {
     id,
     async upload() {},
     async remove() {},
+    async verify() {},
     workspace() {
       return {
         async list() { return []; },
@@ -468,6 +553,7 @@ function fakeSdkSandbox(options: {
   return {
     id: "sdk-sandbox",
     calls,
+    options,
     fs: {
       async createFolder(path: string, mode: string) {
         calls.createdFolders.push([path, mode]);

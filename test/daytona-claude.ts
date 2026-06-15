@@ -73,7 +73,7 @@ export async function runDaytonaIntegration(
   });
 
   const outcome = await runLoop({
-    task: "Replace src/result.txt with exactly the text passed followed by one newline.",
+    task: "Replace src/result.txt with exactly: passed followed by one newline.",
     contracts: [{
       id: "integration.result",
       type: "command",

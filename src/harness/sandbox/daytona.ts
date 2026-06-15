@@ -1,5 +1,5 @@
 import { Daytona, type FileInfo } from "@daytona/sdk";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
 import type {
@@ -11,7 +11,10 @@ import type {
   RemoteFileEntry,
   RemoteWorkspace,
 } from "./workspace.js";
-import { normalizeWorkspacePath } from "./policy.js";
+import {
+  normalizeWorkspacePath,
+  protectedFilesystemPathKey,
+} from "./policy.js";
 import type {
   SandboxCommandResult,
   SandboxCreateRequest,
@@ -271,6 +274,7 @@ class DaytonaRemoteWorkspace implements RemoteWorkspace {
     private readonly sandbox: DaytonaSdkSandbox,
     private readonly remoteRoot: string,
     private readonly maxEntries: number,
+    private readonly watchedRoots?: string[],
   ) {}
 
   async list(root: string): Promise<RemoteFileEntry[]> {
@@ -329,8 +333,29 @@ class DaytonaRemoteWorkspace implements RemoteWorkspace {
       if (entries.length > this.maxEntries) {
         throw new Error(`Remote workspace exceeds ${this.maxEntries} entries`);
       }
-      if (kind === "directory") await this.walk(destination, entries);
+      if (
+        kind === "directory" &&
+        this.shouldTraverse(path)
+      ) {
+        await this.walk(destination, entries);
+      }
     }
+  }
+
+  private shouldTraverse(path: string): boolean {
+    if (!this.watchedRoots) return true;
+    const pathKey = protectedFilesystemPathKey(path);
+    return this.watchedRoots.some((root) => {
+      const rootKey = protectedFilesystemPathKey(root);
+      return (
+        path === root ||
+        path.startsWith(`${root}/`) ||
+        root.startsWith(`${path}/`) ||
+        pathKey === rootKey ||
+        pathKey.startsWith(`${rootKey}/`) ||
+        rootKey.startsWith(`${pathKey}/`)
+      );
+    });
   }
 }
 
@@ -389,7 +414,35 @@ class DaytonaSandboxHandle implements SandboxHandle {
     }
   }
 
-  workspace(remoteRoot: string, maxEntries = 10_000): RemoteWorkspace {
+  async verify(files: WorkspaceFile[], remoteRoot: string): Promise<void> {
+    const root = posix.normalize(remoteRoot);
+    for (const file of files) {
+      const path = normalizeWorkspacePath(file.path);
+      const destination = posix.join(root, path);
+      if (relativeRemotePath(root, destination) !== path) {
+        throw new Error(`Verification path escapes remote workspace: ${path}`);
+      }
+      const details = await this.sandbox.fs.getFileDetails(destination);
+      if (
+        fileKind(details) !== "file" ||
+        details.size !== file.content.byteLength ||
+        isExecutable(details) !== file.executable
+      ) {
+        throw new Error(`Host-controlled file metadata changed: ${path}`);
+      }
+      const content = await this.sandbox.fs.downloadFile(destination);
+      const hash = createHash("sha256").update(content).digest("hex");
+      if (hash !== file.sha256 || !content.equals(file.content)) {
+        throw new Error(`Host-controlled file bytes changed: ${path}`);
+      }
+    }
+  }
+
+  workspace(
+    remoteRoot: string,
+    maxEntries = 10_000,
+    watchedRoots?: string[],
+  ): RemoteWorkspace {
     if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0) {
       throw new Error("maxEntries must be a positive safe integer");
     }
@@ -397,6 +450,7 @@ class DaytonaSandboxHandle implements SandboxHandle {
       this.sandbox,
       posix.normalize(remoteRoot),
       maxEntries,
+      watchedRoots?.map(normalizeWorkspacePath),
     );
   }
 

@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { loadSandboxPolicy } from "../src/harness/sandbox/policy.js";
@@ -257,6 +257,13 @@ test("capture includes dirty and untracked bytes but excludes ignored outputs", 
     [...snapshot.files.keys()].some((path) => path.startsWith(".git/")),
     false,
   );
+});
+
+test("capture stores the resolved Git root for relative input", () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const snapshot = captureWorkspace(relative(process.cwd(), root), policy());
+
+  assert.equal(snapshot.root, root);
 });
 
 test("capture rejects a non-Git directory", () => {
@@ -581,7 +588,7 @@ test("collector rejects duplicate and host-aliased normalized paths", async () =
   }
 });
 
-test("collector rejects protected and outside candidate paths", async () => {
+test("collector rejects protected and escaping paths", async () => {
   const baseline = captureWorkspace(
     createGitFixture({ "src/a.ts": "a" }),
     policy(),
@@ -590,7 +597,6 @@ test("collector rejects protected and outside candidate paths", async () => {
   for (const path of [
     "src/protected/gate.ts",
     "contracts/gate.yaml",
-    "README.md",
     "../escape.ts",
   ]) {
     await assert.rejects(
@@ -598,6 +604,26 @@ test("collector rejects protected and outside candidate paths", async () => {
       /受保护|允许范围|越界/,
     );
   }
+});
+
+test("collector ignores runtime files outside candidate and protected roots", async () => {
+  const baseline = captureWorkspace(
+    createGitFixture({ "src/a.ts": "a" }),
+    policy(),
+  );
+
+  const candidate = await collectCandidate(
+    fakeRemoteFiles({
+      "src/a.ts": "updated",
+      "README.md": "runtime change",
+      "node_modules/pkg/index.js": "generated dependency",
+    }),
+    baseline,
+    policy(),
+  );
+
+  assert.deepEqual(operationPaths(candidate), [["modify", "src/a.ts"]]);
+  assert.deepEqual([...candidate.files.keys()], ["src/a.ts"]);
 });
 
 test("collector records executable-mode-only modifications", async () => {
@@ -918,6 +944,38 @@ test("publisher rolls back earlier installs when a later install fails", () => {
   assert.equal(
     readdirSync(join(root, "src")).some((name) => name.includes(".harness-")),
     false,
+  );
+});
+
+test("publisher removes empty parent directories created before failure", () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const baseline = captureWorkspace(root, policy());
+  const files = new Map(
+    agentVisibleFiles(baseline, policy()).map((file) => [file.path, file]),
+  );
+  files.set(
+    "src/generated/deep/new.ts",
+    workspaceFile(
+      "src/generated/deep/new.ts",
+      Buffer.from("candidate\n"),
+      false,
+    ),
+  );
+  const candidate: CandidateSnapshot = {
+    files,
+    operations: deriveCandidateOperations(baseline, files, policy()),
+  };
+
+  const result = publishCandidate(baseline, candidate, policy(), {
+    beforeInstall() {
+      throw new Error("injected install failure");
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(
+    lstatSync(join(root, "src/generated"), { throwIfNoEntry: false }),
+    undefined,
   );
 });
 

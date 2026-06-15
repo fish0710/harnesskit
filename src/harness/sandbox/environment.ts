@@ -176,6 +176,10 @@ export function createDaytonaRunEnvironment(
               Number.MAX_SAFE_INTEGER,
               options.policy.limits.maxFiles * 2,
             ),
+            [
+              ...options.policy.candidateRoots,
+              ...options.policy.protectedPaths,
+            ],
           ),
           baseline,
           options.policy,
@@ -220,12 +224,14 @@ export function createDaytonaRunEnvironment(
             .some((mutable) => mutable.path === file.path)
         );
         await gateHandle.upload(protectedFiles, REMOTE_ROOT);
+        await gateHandle.verify(protectedFiles, REMOTE_ROOT);
         await gateHandle.setNetworkBlocked(true);
         report = await gate.run(contracts, {
           ...ctx,
           cwd: REMOTE_ROOT,
           execution: createDaytonaExecutionTarget(gateHandle, REMOTE_ROOT),
         });
+        await gateHandle.verify(protectedFiles, REMOTE_ROOT);
         observe("gate.result", {
           id: gateHandle.id,
           outcome: report.outcome,

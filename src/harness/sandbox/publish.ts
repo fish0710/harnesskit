@@ -7,12 +7,13 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   unlinkSync,
   writeFileSync,
   type Stats,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import {
   protectedFilesystemPathKey,
@@ -65,6 +66,10 @@ interface Backup {
   backup: string;
   destination: string;
   before: WorkspaceFile;
+}
+
+interface CreatedDirectory {
+  path: string;
 }
 
 function comparePaths(left: string, right: string): number {
@@ -416,6 +421,59 @@ function removeInstalledWrites(installed: InstalledWrite[]): string[] {
   return failures;
 }
 
+function removeCreatedDirectories(
+  directories: CreatedDirectory[],
+): string[] {
+  const failures: string[] = [];
+  for (const item of [...directories].reverse()) {
+    try {
+      rmdirSync(item.path);
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error.code === "ENOENT" || error.code === "ENOTEMPTY")
+      ) {
+        continue;
+      }
+      failures.push(
+        `无法移除发布创建的目录 ${item.path}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return failures;
+}
+
+function ensureParentDirectories(
+  root: string,
+  path: string,
+  created: CreatedDirectory[],
+): void {
+  let current = root;
+  for (const part of path.split("/").slice(0, -1)) {
+    current = join(current, part);
+    const existing = lstatIfPresent(current);
+    if (existing) {
+      if (existing.isSymbolicLink() || !existing.isDirectory()) {
+        throw new Error(`父路径不是安全目录: ${path}`);
+      }
+      continue;
+    }
+    try {
+      mkdirSync(current);
+      created.push({ path: current });
+    } catch (error) {
+      const raced = lstatIfPresent(current);
+      if (!raced || raced.isSymbolicLink() || !raced.isDirectory()) {
+        throw error;
+      }
+    }
+  }
+}
+
 function restoreBackups(backups: Backup[]): string[] {
   const failures: string[] = [];
   for (const item of [...backups].reverse()) {
@@ -442,10 +500,12 @@ function rollbackFailure(
   error: unknown,
   installed: InstalledWrite[],
   backups: Backup[],
+  createdDirectories: CreatedDirectory[],
 ): PublicationResult {
   const rollbackFailures = [
     ...removeInstalledWrites(installed),
     ...restoreBackups(backups),
+    ...removeCreatedDirectories(createdDirectories),
   ];
   const primary = error instanceof Error ? error.message : String(error);
   return failure(
@@ -472,11 +532,16 @@ export function publishCandidate(
   const staged: StagedWrite[] = [];
   const backups: Backup[] = [];
   const installed: InstalledWrite[] = [];
+  const createdDirectories: CreatedDirectory[] = [];
   try {
     for (const item of prepared) {
       if (item.operation.kind === "delete") continue;
       assertSafeParents(baseline.root, item.path);
-      mkdirSync(dirname(item.destination), { recursive: true });
+      ensureParentDirectories(
+        baseline.root,
+        item.path,
+        createdDirectories,
+      );
       const temporary = `${item.destination}.harness-${randomUUID()}.tmp`;
       const mode = item.operation.file.executable ? 0o755 : 0o644;
       writeFileSync(temporary, item.operation.file.content, {
@@ -524,8 +589,13 @@ export function publishCandidate(
       unlinkSync(stagedWrite.temporary);
     }
   } catch (error) {
-    const result = rollbackFailure(error, installed, backups);
     for (const item of staged) removeIfPresent(item.temporary);
+    const result = rollbackFailure(
+      error,
+      installed,
+      backups,
+      createdDirectories,
+    );
     return result;
   }
 

@@ -190,6 +190,24 @@ export function validateCandidatePath(
   return path;
 }
 
+export function classifyWorkspacePath(
+  value: string,
+  policy: SandboxPolicy,
+  platform: NodeJS.Platform = process.platform,
+): "candidate" | "protected" | "ignored" {
+  const path = normalizeWorkspacePath(value);
+  if (
+    policy.protectedPaths.some((root) =>
+      isProtectedWithin(path, root, platform)
+    )
+  ) {
+    return "protected";
+  }
+  return policy.candidateRoots.some((root) => isCandidateWithin(path, root))
+    ? "candidate"
+    : "ignored";
+}
+
 function loadLimits(value: unknown): SandboxLimits {
   if (!isRecord(value)) {
     throw new TypeError("sandbox.limits 配置必须是普通对象");

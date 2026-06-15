@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
 import {
+  classifyWorkspacePath,
   normalizeWorkspacePath,
   protectedFilesystemPathKey,
   validateCandidatePath,
@@ -232,7 +233,7 @@ export function captureWorkspace(
     pathKeys.add(pathKey);
   }
 
-  return { root, files };
+  return { root: workspaceRoot, files };
 }
 
 export function agentVisibleFiles(
@@ -309,7 +310,12 @@ export async function collectCandidate(
     if (typeof entry !== "object" || entry === null) {
       throw new Error("候选文件条目格式无效");
     }
-    const path = validateCandidatePath(entry.path, policy);
+    const path = normalizeWorkspacePath(entry.path);
+    const disposition = classifyWorkspacePath(path, policy);
+    if (disposition === "protected") {
+      throw new Error(`候选路径属于受保护资产: ${path}`);
+    }
+    if (disposition === "ignored") continue;
     validateRemoteMetadata(entry);
 
     const pathKey = protectedFilesystemPathKey(path);

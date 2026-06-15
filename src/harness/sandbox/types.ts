@@ -53,7 +53,12 @@ export interface SandboxHandle {
   readonly id: string;
   upload(files: WorkspaceFile[], remoteRoot: string): Promise<void>;
   remove(paths: string[], remoteRoot: string): Promise<void>;
-  workspace(remoteRoot: string, maxEntries?: number): RemoteWorkspace;
+  verify(files: WorkspaceFile[], remoteRoot: string): Promise<void>;
+  workspace(
+    remoteRoot: string,
+    maxEntries?: number,
+    watchedRoots?: string[],
+  ): RemoteWorkspace;
   execute(
     command: string,
     cwd: string,

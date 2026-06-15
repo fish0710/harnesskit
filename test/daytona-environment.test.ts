@@ -74,6 +74,7 @@ class RecordingHandle implements SandboxHandle {
   readonly files = new Map<string, WorkspaceFile>();
   readonly commands: string[] = [];
   readonly networkBlocks: boolean[] = [];
+  verifications = 0;
   deleted = 0;
 
   constructor(
@@ -90,6 +91,7 @@ class RecordingHandle implements SandboxHandle {
         ((files: Map<string, WorkspaceFile>) => void) | undefined
       >;
       gateDeleteFails: boolean;
+      mutateProtectedOnGate: boolean;
     },
   ) {}
 
@@ -104,6 +106,23 @@ class RecordingHandle implements SandboxHandle {
 
   async remove(paths: string[]): Promise<void> {
     for (const path of paths) this.files.delete(path);
+  }
+
+  async verify(files: WorkspaceFile[]): Promise<void> {
+    this.verifications++;
+    for (const expected of files) {
+      const actual = this.files.get(expected.path);
+      if (
+        !actual ||
+        actual.sha256 !== expected.sha256 ||
+        actual.executable !== expected.executable ||
+        !actual.content.equals(expected.content)
+      ) {
+        throw new Error(
+          `Host-controlled file changed: ${expected.path}`,
+        );
+      }
+    }
   }
 
   workspace() {
@@ -151,6 +170,16 @@ class RecordingHandle implements SandboxHandle {
       const exitCode = this.provider.gateExitCodes[
         this.provider.gateRuns++
       ] ?? 0;
+      if (this.provider.mutateProtectedOnGate) {
+        this.files.set(
+          "contracts/gate.yaml",
+          workspaceFile(
+            "contracts/gate.yaml",
+            Buffer.from("tampered\n"),
+            false,
+          ),
+        );
+      }
       return {
         exitCode,
         stdout: exitCode === 0 ? "pass" : "trusted test failed",
@@ -188,12 +217,14 @@ function scriptedProvider(options: {
     ((files: Map<string, WorkspaceFile>) => void) | undefined
   >;
   gateDeleteFails?: boolean;
+  mutateProtectedOnGate?: boolean;
 }): ScriptedProvider {
   const state = {
     ...options,
     agentStdout: options.agentStdout ?? "agent done",
     candidateMutations: options.candidateMutations ?? [],
     gateDeleteFails: options.gateDeleteFails ?? false,
+    mutateProtectedOnGate: options.mutateProtectedOnGate ?? false,
     agentPrompts: [] as string[],
     agentRuns: 0,
     gateRuns: 0,
@@ -277,6 +308,7 @@ test("multiple attempts reuse one agent and create a fresh gate each time", asyn
     gates[0]?.files.get("contracts/gate.yaml")?.content.toString(),
     "trusted\n",
   );
+  assert.ok(gates.every((handle) => handle.verifications === 2));
 });
 
 test("gate sandboxes receive no model credentials or Claude installation", async () => {
@@ -439,6 +471,41 @@ test("gate cleanup failure prevents publication", async () => {
   assert.match(
     outcome.report.results[0]?.errorReason ?? "",
     /cleanup|清理|delete/i,
+  );
+  assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "before\n");
+});
+
+test("protected gate asset mutation turns a passing command into integrity error", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    mutateProtectedOnGate: true,
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "command", command: "fake-agent" },
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget: { ...budget, maxAttempts: 1 },
+  });
+
+  assert.equal(outcome.outcome, "escalated");
+  assert.equal(outcome.report.results[0]?.status, "error");
+  assert.match(
+    outcome.report.results[0]?.errorReason ?? "",
+    /Host-controlled file changed/,
   );
   assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "before\n");
 });
