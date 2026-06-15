@@ -22,9 +22,14 @@ import {
   captureWorkspace,
   collectCandidate,
 } from "./workspace.js";
-import { requireAgentSnapshot } from "./toolchain.js";
+import {
+  assertClaudeToolchain,
+  CLAUDE_TOOLCHAIN_PREFLIGHT,
+  requireAgentSnapshot,
+} from "./toolchain.js";
 
 const REMOTE_ROOT = "/workspace/candidate";
+const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 
 export type SandboxAgentSpec =
   | { kind: "claude" }
@@ -68,9 +73,16 @@ async function runSetup(
   commands: string[],
   label: string,
 ): Promise<void> {
-  for (const command of commands) {
-    const result = await handle.runPty(command, REMOTE_ROOT, {});
-    if (result.exitCode !== 0) throw commandFailure(label, result);
+  for (const [index, command] of commands.entries()) {
+    const result = await handle.execute(
+      command,
+      REMOTE_ROOT,
+      {},
+      SETUP_TIMEOUT_MS,
+    );
+    if (result.exitCode !== 0) {
+      throw commandFailure(`${label} command ${index + 1}`, result);
+    }
   }
 }
 
@@ -110,6 +122,15 @@ export function createDaytonaRunEnvironment(
         agentVisibleFiles(baseline, options.policy),
         REMOTE_ROOT,
       );
+      if (options.agent.kind === "claude") {
+        const preflight = await handle.execute(
+          CLAUDE_TOOLCHAIN_PREFLIGHT,
+          REMOTE_ROOT,
+          {},
+          30_000,
+        );
+        assertClaudeToolchain(preflight);
+      }
       await runSetup(handle, options.policy.agentSetup, "agent setup");
       agentHandle = handle;
       observe("agent.create.end", { id: handle.id });
