@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { Daytona } from "@daytona/sdk";
+import { Daytona, Image } from "@daytona/sdk";
 
 import {
   assertClaudeToolchain,
@@ -20,40 +21,54 @@ type DaytonaSnapshot = Awaited<ReturnType<Daytona["snapshot"]["get"]>>;
 type SnapshotIdentity = {
   name: string;
   imageName?: string;
+  buildInfo?: {
+    dockerfileContent?: string;
+  };
   state: string;
   errorReason?: string | null;
 };
 
+export const DAYTONA_AGENT_DOCKERFILE =
+  "images/daytona/claude/Dockerfile";
+
+export function readAgentDockerfile(): string {
+  return readFileSync(DAYTONA_AGENT_DOCKERFILE, "utf8");
+}
+
 export function assertCompatibleSnapshot(
   snapshot: SnapshotIdentity,
 ): void {
-  if (snapshot.imageName !== DAYTONA_AGENT_REGISTRY_IMAGE) {
+  const matchesRegistryImage =
+    snapshot.imageName === DAYTONA_AGENT_REGISTRY_IMAGE;
+  const matchesBuildInfo =
+    snapshot.buildInfo?.dockerfileContent === readAgentDockerfile();
+  if (!matchesRegistryImage && !matchesBuildInfo) {
     throw new Error(
       `Existing immutable Snapshot ${snapshot.name} does not match ` +
-        `${DAYTONA_AGENT_REGISTRY_IMAGE}; publish a new revision such as r2`,
+        `${DAYTONA_AGENT_REGISTRY_IMAGE} or current Dockerfile; ` +
+        `publish a new revision such as r2`,
     );
   }
+}
+
+function quoteShell(value: string): string {
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
 }
 
 export function buildImageCommands(
   runner: string,
   context: string,
 ): Array<[string, string[]]> {
+  const quotedContext = quoteShell(context);
+  const quotedDockerfileDir = quoteShell("images/daytona/claude");
+  const prepareContext =
+    `rm -rf ${quotedContext} && mkdir -p ${quotedContext}`;
+  const transferContext =
+    `COPYFILE_DISABLE=1 tar -C ${quotedDockerfileDir} -cf - . | ` +
+    `docker exec -i ${quoteShell(runner)} sh -lc ` +
+    quoteShell(`${prepareContext} && tar -C ${quotedContext} -xf -`);
   return [
-    [
-      "docker",
-      [
-        "exec",
-        runner,
-        "sh",
-        "-lc",
-        `rm -rf ${context} && mkdir -p ${context}`,
-      ],
-    ],
-    [
-      "docker",
-      ["cp", "images/daytona/claude/.", `${runner}:${context}`],
-    ],
+    ["sh", ["-lc", transferContext]],
     [
       "docker",
       [
@@ -120,7 +135,7 @@ function runCommand(command: string, args: string[]): void {
 function cleanupRemoteContext(runner: string, context: string): void {
   const result = spawnSync(
     "docker",
-    ["exec", runner, "sh", "-lc", `rm -rf ${context}`],
+    ["exec", runner, "sh", "-lc", `rm -rf ${quoteShell(context)}`],
     { stdio: "inherit" },
   );
   if (result.error) {
@@ -146,6 +161,32 @@ function isNotFound(error: unknown): boolean {
   );
 }
 
+function isAccessDenied(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const shaped = error as Error & {
+    statusCode?: number;
+    response?: { status?: number; data?: { message?: string } };
+  };
+  return (
+    shaped.statusCode === 403 ||
+    shaped.response?.status === 403 ||
+    error.message === "Access denied" ||
+    shaped.response?.data?.message === "Access denied"
+  );
+}
+
+export function explainSnapshotCreateError(error: unknown): Error {
+  if (!isAccessDenied(error)) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+  return new Error(
+    `Daytona refused to create Snapshot ${DAYTONA_AGENT_SNAPSHOT}. ` +
+      `The configured DAYTONA_API_KEY needs write:snapshots permission. ` +
+      `If publishing through a Daytona registry, the organization also needs ` +
+      `a configured Docker registry and the key needs registry write access.`,
+  );
+}
+
 function snapshotFailure(snapshot: SnapshotIdentity, reason: string): Error {
   const errorReason = snapshot.errorReason
     ? `: ${snapshot.errorReason}`
@@ -167,16 +208,20 @@ async function ensureSnapshot(daytona: Daytona): Promise<DaytonaSnapshot> {
     assertCompatibleSnapshot(snapshot);
   } catch (error) {
     if (!isNotFound(error)) throw error;
-    snapshot = await daytona.snapshot.create(
-      {
-        name: DAYTONA_AGENT_SNAPSHOT,
-        image: DAYTONA_AGENT_REGISTRY_IMAGE,
-      },
-      {
-        timeout: 10 * 60,
-        onLogs: (line) => console.log(line),
-      },
-    );
+    try {
+      snapshot = await daytona.snapshot.create(
+        {
+          name: DAYTONA_AGENT_SNAPSHOT,
+          image: Image.fromDockerfile(DAYTONA_AGENT_DOCKERFILE),
+        },
+        {
+          timeout: 10 * 60,
+          onLogs: (line) => console.log(line),
+        },
+      );
+    } catch (createError) {
+      throw explainSnapshotCreateError(createError);
+    }
     assertCompatibleSnapshot(snapshot);
   }
 

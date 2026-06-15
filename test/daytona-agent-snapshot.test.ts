@@ -4,6 +4,8 @@ import { test } from "node:test";
 import {
   assertCompatibleSnapshot,
   buildImageCommands,
+  explainSnapshotCreateError,
+  readAgentDockerfile,
 } from "../src/tools/daytona-agent-snapshot.js";
 import {
   DAYTONA_AGENT_IMAGE,
@@ -16,21 +18,14 @@ test("build plan targets the Daytona runner and internal registry", () => {
     buildImageCommands("daytona-runner-1", "/tmp/context"),
     [
       [
-        "docker",
+        "sh",
         [
-          "exec",
-          "daytona-runner-1",
-          "sh",
           "-lc",
-          "rm -rf /tmp/context && mkdir -p /tmp/context",
-        ],
-      ],
-      [
-        "docker",
-        [
-          "cp",
-          "images/daytona/claude/.",
-          "daytona-runner-1:/tmp/context",
+          "COPYFILE_DISABLE=1 tar -C 'images/daytona/claude' -cf - . | " +
+            "docker exec -i 'daytona-runner-1' sh -lc " +
+            "'rm -rf '\"'\"'/tmp/context'\"'\"' && " +
+            "mkdir -p '\"'\"'/tmp/context'\"'\"' && " +
+            "tar -C '\"'\"'/tmp/context'\"'\"' -xf -'",
         ],
       ],
       [
@@ -103,4 +98,23 @@ test("existing Snapshot must match the immutable registry image", () => {
       }),
     /immutable Snapshot.*r2/i,
   );
+});
+
+test("existing Snapshot can match the immutable Dockerfile buildInfo", () => {
+  assert.doesNotThrow(() =>
+    assertCompatibleSnapshot({
+      name: DAYTONA_AGENT_SNAPSHOT,
+      imageName: "snapshot-builder.internal/harness/generated:latest",
+      buildInfo: {
+        dockerfileContent: readAgentDockerfile(),
+      },
+      state: "inactive",
+    }),
+  );
+});
+
+test("snapshot create access denial explains required Daytona permissions", () => {
+  const explained = explainSnapshotCreateError(new Error("Access denied"));
+  assert.match(explained.message, /write:snapshots/);
+  assert.match(explained.message, /Docker registry/);
 });
