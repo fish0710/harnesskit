@@ -37,12 +37,20 @@ export interface CandidateSnapshot {
   files: Map<string, WorkspaceFile>;
 }
 
-export interface SandboxCreateRequest {
-  role: "agent" | "gate";
-  snapshot?: string;
+interface SandboxCreateBaseRequest {
   envVars: Record<string, string>;
   ephemeral: boolean;
 }
+
+export type SandboxCreateRequest =
+  | (SandboxCreateBaseRequest & {
+    role: "agent";
+    snapshot?: string;
+  })
+  | (SandboxCreateBaseRequest & {
+    role: "gate";
+    snapshot?: never;
+  });
 
 export interface SandboxCommandResult {
   exitCode: number;

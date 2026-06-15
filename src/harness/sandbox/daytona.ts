@@ -707,6 +707,9 @@ class DaytonaSdkProvider implements SandboxProvider {
   constructor(private readonly client: DaytonaSdkClient) {}
 
   async create(request: SandboxCreateRequest): Promise<SandboxHandle> {
+    if (request.role !== "agent" && "snapshot" in request) {
+      throw new Error("Only agent sandboxes may use snapshots");
+    }
     const sandbox = await this.client.create({
       language: "typescript",
       ...(request.snapshot ? { snapshot: request.snapshot } : {}),

@@ -8,6 +8,7 @@ import {
   createDaytonaManager,
   createDaytonaSdkProviderFromClient,
 } from "../src/harness/sandbox/daytona.js";
+import type { SandboxCreateRequest } from "../src/harness/sandbox/types.js";
 
 interface CreateRequest {
   role: "agent" | "gate";
@@ -33,6 +34,15 @@ const modelEnvironment = {
   ANTHROPIC_MODEL: "sonnet",
   ANTHROPIC_REASONING_MODEL: "reasoning",
 };
+
+// @ts-expect-error Gate sandbox requests cannot include snapshots.
+const gateSnapshotTypeCheck: SandboxCreateRequest = {
+  role: "gate",
+  snapshot: "harness-agent-claude-2.1.145-r1",
+  envVars: {},
+  ephemeral: true,
+};
+void gateSnapshotTypeCheck;
 
 function completeEnvironment(): Record<string, string> {
   return {
@@ -134,6 +144,32 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
     Object.values(created[1]?.envVars ?? {}).includes("agent-token"),
     false,
   );
+});
+
+test("SDK provider rejects runtime Gate snapshot requests before client create", async () => {
+  const created: CreatedSdkRequest[] = [];
+  const sdkSandbox = fakeSdkSandbox();
+  const provider = createDaytonaSdkProviderFromClient({
+    async create(request: CreatedSdkRequest) {
+      created.push(request);
+      return sdkSandbox;
+    },
+    async delete() {
+      sdkSandbox.calls.deleted++;
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      provider.create({
+        role: "gate",
+        snapshot: "harness-agent-claude-2.1.145-r1",
+        envVars: {},
+        ephemeral: true,
+      } as unknown as SandboxCreateRequest),
+    /Only agent sandboxes may use snapshots/,
+  );
+  assert.deepEqual(created, []);
 });
 
 test("SDK handle uploads nested files and preserves executable mode", async () => {
