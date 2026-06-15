@@ -424,6 +424,70 @@ test("gate sandboxes receive no model credentials or Claude installation", async
   );
 });
 
+test("Claude Daytona observations report safe stages without prompt or credential text", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["broken\n", "fixed\n"],
+    gateExitCodes: [1, 0],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: {
+      ...configuredClaudeEnvironment,
+      DAYTONA_API_KEY: "daytona-secret-key",
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const outcome = await runLoop({
+    task: "fix highly sensitive task text",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    initialFeedback: "private reviewer feedback",
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  const events = observations.map(([event]) => event);
+  for (const event of [
+    "agent.create.start",
+    "agent.upload.end",
+    "agent.preflight.end",
+    "agent.setup.end",
+    "agent.command.end",
+    "candidate.collect.end",
+    "gate.create.end",
+    "gate.upload.end",
+    "gate.setup.end",
+    "gate.network.end",
+    "gate.run.end",
+    "gate.cleanup.end",
+    "agent.cleanup.end",
+  ]) {
+    assert.ok(events.includes(event), `missing observation: ${event}`);
+  }
+  const ended = observations.filter(([event]) => event.endsWith(".end"));
+  assert.ok(ended.length > 0);
+  for (const [, data] of ended) {
+    assert.equal(typeof (data as { durationMs?: unknown }).durationMs, "number");
+  }
+  const serialized = JSON.stringify(observations);
+  for (const secret of [
+    configuredClaudeEnvironment.ANTHROPIC_AUTH_TOKEN,
+    "daytona-secret-key",
+    "fix highly sensitive task text",
+    "private reviewer feedback",
+  ]) {
+    assert.equal(serialized.includes(secret), false);
+  }
+});
+
 test("Claude agent environment requires a configured Agent Snapshot before sandbox creation", () => {
   const root = createGitFixture({ "src/a.ts": "before\n" });
   const provider = scriptedProvider({
