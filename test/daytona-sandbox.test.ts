@@ -11,12 +11,14 @@ import {
 
 interface CreateRequest {
   role: "agent" | "gate";
+  snapshot?: string;
   envVars: Record<string, string>;
   ephemeral: boolean;
 }
 
 interface CreatedSdkRequest {
   language?: string;
+  snapshot?: string;
   labels?: Record<string, string>;
   envVars?: Record<string, string>;
   ephemeral?: boolean;
@@ -101,6 +103,7 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
 
   await provider.create({
     role: "agent",
+    snapshot: "harness-agent-claude-2.1.145-r1",
     envVars: modelEnvironment,
     ephemeral: false,
   });
@@ -113,6 +116,7 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
   assert.deepEqual(created, [
     {
       language: "typescript",
+      snapshot: "harness-agent-claude-2.1.145-r1",
       labels: { "harness.role": "agent" },
       envVars: modelEnvironment,
       ephemeral: false,

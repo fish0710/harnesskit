@@ -3,7 +3,6 @@ import { test } from "node:test";
 
 import {
   CLAUDE_COMMAND,
-  CLAUDE_INSTALL_COMMAND,
   configureLocalDaytonaProxy,
   getClaudeEnvironment,
   getDaytonaConfig,
@@ -106,8 +105,9 @@ test("Claude environment reports every missing required allowlisted variable", (
   );
 });
 
-test("Claude Code is installed under the sandbox user home and launched from it", () => {
-  assert.match(CLAUDE_INSTALL_COMMAND, /--prefix "\$HOME\/\.local"/);
-  assert.match(CLAUDE_COMMAND, /^exec "\$HOME\/\.local\/bin\/claude"/);
+test("Claude Code launches from the immutable image path", () => {
+  assert.match(CLAUDE_COMMAND, /^exec "\/usr\/local\/bin\/claude"/);
   assert.match(CLAUDE_COMMAND, /--dangerously-skip-permissions/);
+  assert.match(CLAUDE_COMMAND, /--output-format stream-json/);
+  assert.match(CLAUDE_COMMAND, /--verbose/);
 });

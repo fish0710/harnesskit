@@ -24,10 +24,8 @@ import type {
 } from "./types.js";
 
 export const DEFAULT_DAYTONA_API_URL = "http://localhost:3000/api";
-export const CLAUDE_INSTALL_COMMAND =
-  'npm install -g --prefix "$HOME/.local" @anthropic-ai/claude-code';
 export const CLAUDE_COMMAND =
-  'exec "$HOME/.local/bin/claude" --dangerously-skip-permissions ' +
+  'exec "/usr/local/bin/claude" --dangerously-skip-permissions ' +
   '-p "$HARNESS_PROMPT" --output-format stream-json --verbose';
 
 const LOCAL_DAYTONA_NO_PROXY_HOSTS = [
@@ -148,6 +146,7 @@ export interface DaytonaSdkSandbox {
 export interface DaytonaSdkClient {
   create(params: {
     language: string;
+    snapshot?: string;
     labels: Record<string, string>;
     envVars: Record<string, string>;
     ephemeral: boolean;
@@ -710,6 +709,7 @@ class DaytonaSdkProvider implements SandboxProvider {
   async create(request: SandboxCreateRequest): Promise<SandboxHandle> {
     const sandbox = await this.client.create({
       language: "typescript",
+      ...(request.snapshot ? { snapshot: request.snapshot } : {}),
       labels: { "harness.role": request.role },
       envVars: request.envVars,
       ephemeral: request.ephemeral,

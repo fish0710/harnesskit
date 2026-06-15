@@ -6,7 +6,6 @@ import type {
 } from "../run.js";
 import {
   CLAUDE_COMMAND,
-  CLAUDE_INSTALL_COMMAND,
   createDaytonaExecutionTarget,
   getClaudeEnvironment,
 } from "./daytona.js";
@@ -106,17 +105,6 @@ export function createDaytonaRunEnvironment(
         REMOTE_ROOT,
       );
       await runSetup(handle, options.policy.agentSetup, "agent setup");
-      if (options.agent.kind === "claude") {
-        const installation = await handle.execute(
-          CLAUDE_INSTALL_COMMAND,
-          REMOTE_ROOT,
-          {},
-          5 * 60 * 1000,
-        );
-        if (installation.exitCode !== 0) {
-          throw commandFailure("Claude Code installation", installation);
-        }
-      }
       agentHandle = handle;
       observe("agent.create.end", { id: handle.id });
       return handle;

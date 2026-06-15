@@ -39,6 +39,7 @@ export interface CandidateSnapshot {
 
 export interface SandboxCreateRequest {
   role: "agent" | "gate";
+  snapshot?: string;
   envVars: Record<string, string>;
   ephemeral: boolean;
 }
