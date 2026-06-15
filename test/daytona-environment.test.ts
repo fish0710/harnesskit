@@ -373,10 +373,18 @@ test("gate sandboxes receive no model credentials or Claude installation", async
   const agentHandle = provider.handles.find(
     (handle) => handle.role === "agent",
   );
+  const agentCommands = [
+    ...(agentHandle?.commands ?? []),
+    ...(agentHandle?.ptyCommands ?? []),
+  ];
   assert.equal(
-    agentHandle?.ptyCommands.some((command) =>
-      command.includes("npm install")
+    agentCommands.some((command) =>
+      command.includes("@anthropic-ai/claude-code")
     ),
+    false,
+  );
+  assert.equal(
+    agentCommands.some((command) => command.includes("npm install -g")),
     false,
   );
 });

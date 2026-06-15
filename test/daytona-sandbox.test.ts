@@ -113,7 +113,7 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
 
   await provider.create({
     role: "agent",
-    snapshot: "harness-agent-claude-2.1.145-r1",
+    snapshot: "  harness-agent-claude-2.1.145-r1  ",
     envVars: modelEnvironment,
     ephemeral: false,
   });
@@ -144,6 +144,32 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
     Object.values(created[1]?.envVars ?? {}).includes("agent-token"),
     false,
   );
+});
+
+test("SDK provider rejects empty Agent snapshot requests before client create", async () => {
+  const created: CreatedSdkRequest[] = [];
+  const sdkSandbox = fakeSdkSandbox();
+  const provider = createDaytonaSdkProviderFromClient({
+    async create(request: CreatedSdkRequest) {
+      created.push(request);
+      return sdkSandbox;
+    },
+    async delete() {
+      sdkSandbox.calls.deleted++;
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      provider.create({
+        role: "agent",
+        snapshot: "   ",
+        envVars: {},
+        ephemeral: false,
+      }),
+    /Agent snapshot must not be empty/,
+  );
+  assert.deepEqual(created, []);
 });
 
 test("SDK provider rejects runtime Gate snapshot requests before client create", async () => {

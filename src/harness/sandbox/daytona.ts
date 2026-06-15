@@ -710,9 +710,17 @@ class DaytonaSdkProvider implements SandboxProvider {
     if (request.role !== "agent" && "snapshot" in request) {
       throw new Error("Only agent sandboxes may use snapshots");
     }
+    const snapshot = request.snapshot?.trim();
+    if (
+      request.role === "agent" &&
+      request.snapshot !== undefined &&
+      !snapshot
+    ) {
+      throw new Error("Agent snapshot must not be empty");
+    }
     const sandbox = await this.client.create({
       language: "typescript",
-      ...(request.snapshot ? { snapshot: request.snapshot } : {}),
+      ...(snapshot ? { snapshot } : {}),
       labels: { "harness.role": request.role },
       envVars: request.envVars,
       ephemeral: request.ephemeral,
