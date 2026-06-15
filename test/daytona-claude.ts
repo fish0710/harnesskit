@@ -73,19 +73,24 @@ export async function runDaytonaIntegration(
   });
 
   const outcome = await runLoop({
-    task: "Replace src/result.txt with exactly: passed followed by one newline.",
+    task: "Replace src/result.txt with exactly: passed and no trailing newline.",
     contracts: [{
       id: "integration.result",
       type: "command",
-      cmd: "node",
+      cmd: "sh",
       args: [
-        "-e",
-        "const fs=require('fs');process.exit(fs.readFileSync('src/result.txt','utf8')==='passed\\n'?0:1)",
+        "-c",
+        "bytes=$(wc -c < src/result.txt) || exit 1; " +
+          "value=$(cat src/result.txt) || exit 1; " +
+          "[ \"$bytes\" -eq 6 ] && [ \"$value\" = passed ] && exit 0; " +
+          "printf 'bytes=%s value=<%s> hex=' \"$bytes\" \"$value\"; " +
+          "od -An -tx1 src/result.txt",
       ],
     }],
     gate: new GateCore().use(commandPlugin),
     ctx: { cwd: root },
     environment: runEnvironment,
+    onLog: (line) => console.log(line),
     budget: {
       maxAttempts: 1,
       maxTokens: 1e9,
@@ -99,7 +104,7 @@ export async function runDaytonaIntegration(
     throw new Error(
       `Daytona integration failed: ${outcome.outcome} ${
         outcome.action?.reason ?? ""
-      }`,
+      }; report=${JSON.stringify(outcome.report)}`,
     );
   }
   if (roles.filter((role) => role === "agent").length !== 1) {

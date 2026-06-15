@@ -33,6 +33,16 @@ const budget: GenerationBudget = {
   repeatWallThreshold: 99,
 };
 
+const modelEnvironment = {
+  ANTHROPIC_AUTH_TOKEN: "test-token",
+  ANTHROPIC_BASE_URL: "https://model.example.test",
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: "haiku",
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "opus",
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "sonnet",
+  ANTHROPIC_MODEL: "sonnet",
+  ANTHROPIC_REASONING_MODEL: "reasoning",
+};
+
 function createGitFixture(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "harness-daytona-environment-"));
   spawnSync("git", ["init"], { cwd: root, stdio: "ignore" });
@@ -73,6 +83,7 @@ interface ScriptedProvider extends SandboxProvider {
 class RecordingHandle implements SandboxHandle {
   readonly files = new Map<string, WorkspaceFile>();
   readonly commands: string[] = [];
+  readonly ptyCommands: string[] = [];
   readonly networkBlocks: boolean[] = [];
   verifications = 0;
   deleted = 0;
@@ -194,6 +205,7 @@ class RecordingHandle implements SandboxHandle {
     cwd: string,
     env: Record<string, string> = {},
   ) {
+    this.ptyCommands.push(command);
     return this.execute(command, cwd, env);
   }
 
@@ -321,7 +333,8 @@ test("gate sandboxes receive no model credentials or Claude installation", async
     provider,
     root,
     policy: policy(),
-    agent: { kind: "command", command: "fake-agent" },
+    agent: { kind: "claude" },
+    environment: modelEnvironment,
   });
 
   await runLoop({
@@ -342,6 +355,15 @@ test("gate sandboxes receive no model credentials or Claude installation", async
   assert.deepEqual(gateRequest?.envVars, {});
   assert.equal(
     gateHandle?.commands.some((command) => command.includes("claude")),
+    false,
+  );
+  const agentHandle = provider.handles.find(
+    (handle) => handle.role === "agent",
+  );
+  assert.equal(
+    agentHandle?.ptyCommands.some((command) =>
+      command.includes("npm install")
+    ),
     false,
   );
 });

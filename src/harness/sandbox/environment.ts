@@ -107,10 +107,11 @@ export function createDaytonaRunEnvironment(
       );
       await runSetup(handle, options.policy.agentSetup, "agent setup");
       if (options.agent.kind === "claude") {
-        const installation = await handle.runPty(
+        const installation = await handle.execute(
           CLAUDE_INSTALL_COMMAND,
           REMOTE_ROOT,
           {},
+          5 * 60 * 1000,
         );
         if (installation.exitCode !== 0) {
           throw commandFailure("Claude Code installation", installation);

@@ -152,18 +152,35 @@ test("SDK handle uploads nested files and preserves executable mode", async () =
   ], "/workspace/candidate");
 
   assert.deepEqual(sdkSandbox.calls.createdFolders, [
-    ["/workspace/candidate", "755"],
-    ["/workspace/candidate/scripts", "755"],
+    ["workspace/candidate", "755"],
+    ["workspace/candidate/scripts", "755"],
   ]);
   assert.equal(sdkSandbox.calls.uploads.length, 1);
   assert.equal(
     sdkSandbox.calls.uploads[0]?.destination,
-    "/workspace/candidate/scripts/check.sh",
+    "workspace/candidate/scripts/check.sh",
   );
   assert.deepEqual(sdkSandbox.calls.uploads[0]?.source, content);
   assert.deepEqual(sdkSandbox.calls.permissions, [
-    ["/workspace/candidate/scripts/check.sh", { mode: "755" }],
+    ["workspace/candidate/scripts/check.sh", { mode: "755" }],
   ]);
+});
+
+test("SDK handle creates an empty workspace without an empty multipart upload", async () => {
+  const sdkSandbox = fakeSdkSandbox();
+  const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
+  const handle = await provider.create({
+    role: "agent",
+    envVars: {},
+    ephemeral: false,
+  });
+
+  await handle.upload([], "/workspace/candidate");
+
+  assert.deepEqual(sdkSandbox.calls.createdFolders, [
+    ["workspace/candidate", "755"],
+  ]);
+  assert.deepEqual(sdkSandbox.calls.uploads, []);
 });
 
 test("SDK handle rejects upload paths outside the remote workspace", async () => {
@@ -220,8 +237,8 @@ test("remote workspace recursively lists entries and maps unknown modes to speci
     { path: "device", kind: "special", size: 0, executable: false },
   ]);
   assert.deepEqual(sdkSandbox.calls.listed, [
-    "/workspace/candidate",
-    "/workspace/candidate/src",
+    "workspace/candidate",
+    "workspace/candidate/src",
   ]);
 });
 
@@ -265,9 +282,9 @@ test("remote workspace only descends into watched candidate and protected roots"
     "node_modules",
   ]);
   assert.deepEqual(sdkSandbox.calls.listed, [
-    "/workspace/candidate",
-    "/workspace/candidate/src",
-    "/workspace/candidate/contracts",
+    "workspace/candidate",
+    "workspace/candidate/src",
+    "workspace/candidate/contracts",
   ]);
 });
 
@@ -298,7 +315,7 @@ test("remote workspace downloads regular file bytes through the SDK", async () =
 
   assert.deepEqual(bytes, Buffer.from("export {};\n"));
   assert.deepEqual(sdkSandbox.calls.downloaded, [
-    "/workspace/candidate/src/index.ts",
+    "workspace/candidate/src/index.ts",
   ]);
 });
 
@@ -360,7 +377,7 @@ test("SDK handle runs commands in a PTY, captures output, and disconnects", asyn
 
   assert.deepEqual(sdkSandbox.calls.ptyOptions, {
     id: sdkSandbox.calls.ptyOptions?.id,
-    cwd: "/workspace/candidate",
+    cwd: "workspace/candidate",
     envs: { HARNESS_PROMPT: "fix the test", ...modelEnvironment },
     onData: sdkSandbox.calls.ptyOptions?.onData,
   });
@@ -377,6 +394,33 @@ test("SDK handle runs commands in a PTY, captures output, and disconnects", asyn
     stdout: "first line\nsecond line\n",
     stderr: "",
   });
+});
+
+test("SDK handle rejects promptly when a PTY times out", async () => {
+  const sdkSandbox = fakeSdkSandbox({ ptyWaitNever: true });
+  const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
+  const handle = await provider.create({
+    role: "agent",
+    envVars: modelEnvironment,
+    ephemeral: false,
+  });
+
+  await assert.rejects(
+    Promise.race([
+      handle.runPty(
+        "sleep infinity",
+        "/workspace/candidate",
+        {},
+        10,
+      ),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("test guard timed out")), 250)
+      ),
+    ]),
+    /PTY timed out after 10ms/,
+  );
+  assert.equal(sdkSandbox.calls.ptyKill, 1);
+  assert.equal(sdkSandbox.calls.ptyDisconnect, 1);
 });
 
 test("SDK handle toggles sandbox network blocking", async () => {
@@ -529,6 +573,7 @@ function fakeSdkSandbox(options: {
   downloads?: Map<string, Buffer>;
   ptyOutput?: string[];
   ptyExitCode?: number;
+  ptyWaitNever?: boolean;
 } = {}) {
   const calls = {
     createdFolders: [] as Array<[string, string]>,
@@ -545,6 +590,7 @@ function fakeSdkSandbox(options: {
     ptyInputs: [] as string[],
     ptyWaitForConnection: 0,
     ptyWait: 0,
+    ptyKill: 0,
     ptyDisconnect: 0,
     deleted: 0,
     networkBlocked: [] as boolean[],
@@ -556,12 +602,18 @@ function fakeSdkSandbox(options: {
     options,
     fs: {
       async createFolder(path: string, mode: string) {
+        if (path.startsWith("/")) {
+          throw new Error(`SDK path must be relative: ${path}`);
+        }
         calls.createdFolders.push([path, mode]);
       },
       async deleteFile() {},
       async uploadFiles(
         files: Array<{ source: Buffer; destination: string }>,
       ) {
+        if (files.length === 0) {
+          throw new Error("empty multipart upload");
+        }
         calls.uploads.push(...files);
       },
       async setFilePermissions(
@@ -571,23 +623,36 @@ function fakeSdkSandbox(options: {
         calls.permissions.push([path, permissions]);
       },
       async listFiles(path: string) {
+        if (path.startsWith("/")) {
+          throw new Error(`SDK path must be relative: ${path}`);
+        }
         calls.listed.push(path);
-        return options.listings?.get(path) ?? [];
+        return options.listings?.get(path) ??
+          options.listings?.get(`/${path}`) ??
+          [];
       },
       async downloadFile(path: string) {
+        if (path.startsWith("/")) {
+          throw new Error(`SDK path must be relative: ${path}`);
+        }
         calls.downloaded.push(path);
-        const content = options.downloads?.get(path);
+        const content = options.downloads?.get(path) ??
+          options.downloads?.get(`/${path}`);
         if (!content) throw new Error(`Missing fake download: ${path}`);
         return content;
       },
       async getFileDetails(path: string) {
+        if (path.startsWith("/")) {
+          throw new Error(`SDK path must be relative: ${path}`);
+        }
         const parent = path.slice(0, path.lastIndexOf("/"));
         const name = path.slice(path.lastIndexOf("/") + 1);
-        const info = options.listings
-          ?.get(parent)
+        const info = (options.listings?.get(parent) ??
+          options.listings?.get(`/${parent}`))
           ?.find((entry) => entry.name === name);
         if (info) return info;
-        const content = options.downloads?.get(path);
+        const content = options.downloads?.get(path) ??
+          options.downloads?.get(`/${path}`);
         if (!content) throw new Error(`Missing fake details: ${path}`);
         return fileInfo(name, false, "-rw-r--r--", content.byteLength);
       },
@@ -615,9 +680,17 @@ function fakeSdkSandbox(options: {
           },
           async wait() {
             calls.ptyWait++;
+            if (options.ptyWaitNever) {
+              return new Promise<{
+                exitCode?: number;
+                error?: string;
+              }>(() => undefined);
+            }
             return { exitCode: options.ptyExitCode ?? 0 };
           },
-          async kill() {},
+          async kill() {
+            calls.ptyKill++;
+          },
           async disconnect() {
             calls.ptyDisconnect++;
           },

@@ -254,6 +254,17 @@ function remoteChildPath(parent: string, name: string): string {
   return name.startsWith("/") ? posix.normalize(name) : posix.join(parent, name);
 }
 
+function daytonaSdkPath(path: string): string {
+  const normalized = posix.normalize(path);
+  const relative = posix.isAbsolute(normalized)
+    ? normalized.slice(1)
+    : normalized;
+  if (!relative) {
+    throw new Error(`Daytona SDK path must not be the filesystem root: ${path}`);
+  }
+  return relative;
+}
+
 function relativeRemotePath(root: string, path: string): string {
   const relative = posix.relative(root, path);
   if (
@@ -293,7 +304,8 @@ class DaytonaRemoteWorkspace implements RemoteWorkspace {
       throw new Error(`Remote file was not listed as regular: ${path}`);
     }
     const destination = posix.join(this.remoteRoot, normalized);
-    const before = await this.sandbox.fs.getFileDetails(destination);
+    const sdkDestination = daytonaSdkPath(destination);
+    const before = await this.sandbox.fs.getFileDetails(sdkDestination);
     if (
       fileKind(before) !== "file" ||
       before.size !== expected.size ||
@@ -301,8 +313,8 @@ class DaytonaRemoteWorkspace implements RemoteWorkspace {
     ) {
       throw new Error(`Remote file changed before download: ${path}`);
     }
-    const content = await this.sandbox.fs.downloadFile(destination);
-    const after = await this.sandbox.fs.getFileDetails(destination);
+    const content = await this.sandbox.fs.downloadFile(sdkDestination);
+    const after = await this.sandbox.fs.getFileDetails(sdkDestination);
     if (
       fileKind(after) !== "file" ||
       after.size !== before.size ||
@@ -317,7 +329,7 @@ class DaytonaRemoteWorkspace implements RemoteWorkspace {
     directory: string,
     entries: RemoteFileEntry[],
   ): Promise<void> {
-    const listed = await this.sandbox.fs.listFiles(directory);
+    const listed = await this.sandbox.fs.listFiles(daytonaSdkPath(directory));
     for (const info of listed) {
       const destination = remoteChildPath(directory, info.name);
       const path = relativeRemotePath(this.remoteRoot, destination);
@@ -371,7 +383,7 @@ class DaytonaSandboxHandle implements SandboxHandle {
 
   async upload(files: WorkspaceFile[], remoteRoot: string): Promise<void> {
     const root = posix.normalize(remoteRoot);
-    await this.sandbox.fs.createFolder(root, "755");
+    await this.sandbox.fs.createFolder(daytonaSdkPath(root), "755");
     const directories = new Set<string>();
     for (const file of files) {
       const path = normalizeWorkspacePath(file.path);
@@ -386,17 +398,23 @@ class DaytonaSandboxHandle implements SandboxHandle {
       }
     }
     for (const directory of [...directories].sort()) {
-      await this.sandbox.fs.createFolder(directory, "755");
+      await this.sandbox.fs.createFolder(daytonaSdkPath(directory), "755");
     }
-    await this.sandbox.fs.uploadFiles(
-      files.map((file) => ({
-        source: Buffer.from(file.content),
-        destination: posix.join(root, normalizeWorkspacePath(file.path)),
-      })),
-    );
+    if (files.length > 0) {
+      await this.sandbox.fs.uploadFiles(
+        files.map((file) => ({
+          source: Buffer.from(file.content),
+          destination: daytonaSdkPath(
+            posix.join(root, normalizeWorkspacePath(file.path)),
+          ),
+        })),
+      );
+    }
     for (const file of files) {
       await this.sandbox.fs.setFilePermissions(
-        posix.join(root, normalizeWorkspacePath(file.path)),
+        daytonaSdkPath(
+          posix.join(root, normalizeWorkspacePath(file.path)),
+        ),
         { mode: file.executable ? "755" : "644" },
       );
     }
@@ -410,7 +428,7 @@ class DaytonaSandboxHandle implements SandboxHandle {
       if (relativeRemotePath(root, destination) !== path) {
         throw new Error(`Removal path escapes remote workspace: ${rawPath}`);
       }
-      await this.sandbox.fs.deleteFile(destination, false);
+      await this.sandbox.fs.deleteFile(daytonaSdkPath(destination), false);
     }
   }
 
@@ -422,7 +440,8 @@ class DaytonaSandboxHandle implements SandboxHandle {
       if (relativeRemotePath(root, destination) !== path) {
         throw new Error(`Verification path escapes remote workspace: ${path}`);
       }
-      const details = await this.sandbox.fs.getFileDetails(destination);
+      const sdkDestination = daytonaSdkPath(destination);
+      const details = await this.sandbox.fs.getFileDetails(sdkDestination);
       if (
         fileKind(details) !== "file" ||
         details.size !== file.content.byteLength ||
@@ -430,7 +449,7 @@ class DaytonaSandboxHandle implements SandboxHandle {
       ) {
         throw new Error(`Host-controlled file metadata changed: ${path}`);
       }
-      const content = await this.sandbox.fs.downloadFile(destination);
+      const content = await this.sandbox.fs.downloadFile(sdkDestination);
       const hash = createHash("sha256").update(content).digest("hex");
       if (hash !== file.sha256 || !content.equals(file.content)) {
         throw new Error(`Host-controlled file bytes changed: ${path}`);
@@ -465,7 +484,7 @@ class DaytonaSandboxHandle implements SandboxHandle {
       : Math.max(1, Math.ceil(timeoutMs / 1000));
     const result = await this.sandbox.process.executeCommand(
       command,
-      cwd,
+      daytonaSdkPath(cwd),
       env,
       timeoutSeconds,
     );
@@ -488,44 +507,54 @@ class DaytonaSandboxHandle implements SandboxHandle {
     let outputBytes = 0;
     let terminalError: Error | undefined;
     let pty: DaytonaSdkPty | undefined;
+    let rejectInterruption: (error: Error) => void = () => undefined;
+    const interruption = new Promise<never>((_resolve, reject) => {
+      rejectInterruption = reject;
+    });
+    const interrupt = (error: Error) => {
+      if (terminalError) return;
+      terminalError = error;
+      rejectInterruption(error);
+      void pty?.kill();
+    };
     if (signal?.aborted) {
       throw signal.reason ?? new Error("PTY execution aborted");
     }
     pty = await this.sandbox.process.createPty({
       id: `harness-${randomUUID()}`,
-      cwd,
+      cwd: daytonaSdkPath(cwd),
       envs: env,
       async onData(data) {
         if (terminalError) return;
         const chunk = Buffer.from(data);
         outputBytes += chunk.byteLength;
         if (outputBytes > maxOutputBytes) {
-          terminalError = new Error(
+          interrupt(new Error(
             `PTY output exceeded ${maxOutputBytes} bytes`,
-          );
-          await pty?.kill();
+          ));
           return;
         }
         chunks.push(chunk);
       },
     });
     const timer = setTimeout(() => {
-      terminalError = new Error(`PTY timed out after ${timeoutMs}ms`);
-      void pty?.kill();
+      interrupt(new Error(`PTY timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     timer.unref();
     const abort = () => {
-      terminalError = signal?.reason instanceof Error
+      interrupt(signal?.reason instanceof Error
         ? signal.reason
-        : new Error("PTY execution aborted");
-      void pty?.kill();
+        : new Error("PTY execution aborted"));
     };
     signal?.addEventListener("abort", abort, { once: true });
     try {
-      await pty.waitForConnection();
+      await Promise.race([pty.waitForConnection(), interruption]);
       const executable = command.startsWith("exec ") ? command : `exec ${command}`;
-      await pty.sendInput(`${executable}\n`);
-      const result = await pty.wait();
+      await Promise.race([
+        pty.sendInput(`${executable}\n`),
+        interruption,
+      ]);
+      const result = await Promise.race([pty.wait(), interruption]);
       if (terminalError) throw terminalError;
       return {
         exitCode: result.exitCode ?? 1,
