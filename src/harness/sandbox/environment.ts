@@ -22,6 +22,7 @@ import {
   captureWorkspace,
   collectCandidate,
 } from "./workspace.js";
+import { requireAgentSnapshot } from "./toolchain.js";
 
 const REMOTE_ROOT = "/workspace/candidate";
 
@@ -76,10 +77,14 @@ async function runSetup(
 export function createDaytonaRunEnvironment(
   options: DaytonaRunEnvironmentOptions,
 ): RunEnvironment {
+  const environment = options.environment ?? process.env;
   const baseline = captureWorkspace(options.root, options.policy);
   const modelEnvironment = options.agent.kind === "claude"
-    ? getClaudeEnvironment(options.environment ?? process.env)
+    ? getClaudeEnvironment(environment)
     : {};
+  const agentSnapshot = options.agent.kind === "claude"
+    ? requireAgentSnapshot(environment)
+    : undefined;
   let agentHandle: SandboxHandle | undefined;
   let pendingCandidate: CandidateSnapshot | undefined;
   let approvedCandidate: CandidateSnapshot | undefined;
@@ -96,6 +101,7 @@ export function createDaytonaRunEnvironment(
     observe("agent.create.start", {});
     const handle = await options.provider.create({
       role: "agent",
+      ...(agentSnapshot ? { snapshot: agentSnapshot } : {}),
       envVars: {},
       ephemeral: false,
     });

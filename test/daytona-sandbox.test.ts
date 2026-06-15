@@ -374,7 +374,7 @@ test("SDK handle runs commands in a PTY, captures output, and disconnects", asyn
   });
 
   const result = await handle.runPty(
-    '"$HOME/.local/bin/claude" --verbose',
+    '"/usr/local/bin/claude" --verbose',
     "/workspace/candidate",
     { HARNESS_PROMPT: "fix the test", ...modelEnvironment },
   );
@@ -388,7 +388,7 @@ test("SDK handle runs commands in a PTY, captures output, and disconnects", asyn
   assert.match(sdkSandbox.calls.ptyOptions?.id ?? "", /^harness-/);
   assert.equal(typeof sdkSandbox.calls.ptyOptions?.onData, "function");
   assert.deepEqual(sdkSandbox.calls.ptyInputs, [
-    'exec "$HOME/.local/bin/claude" --verbose\n',
+    'exec "/usr/local/bin/claude" --verbose\n',
   ]);
   assert.equal(sdkSandbox.calls.ptyWaitForConnection, 1);
   assert.equal(sdkSandbox.calls.ptyWait, 1);

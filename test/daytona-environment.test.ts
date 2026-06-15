@@ -43,6 +43,11 @@ const modelEnvironment = {
   ANTHROPIC_REASONING_MODEL: "reasoning",
 };
 
+const configuredClaudeEnvironment = {
+  ...modelEnvironment,
+  HARNESS_DAYTONA_AGENT_SNAPSHOT: "harness-agent-claude-2.1.145-r1",
+};
+
 function createGitFixture(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "harness-daytona-environment-"));
   spawnSync("git", ["init"], { cwd: root, stdio: "ignore" });
@@ -334,7 +339,7 @@ test("gate sandboxes receive no model credentials or Claude installation", async
     root,
     policy: policy(),
     agent: { kind: "claude" },
-    environment: modelEnvironment,
+    environment: configuredClaudeEnvironment,
   });
 
   await runLoop({
@@ -349,9 +354,17 @@ test("gate sandboxes receive no model credentials or Claude installation", async
   const gateRequest = provider.requests.find(
     (request) => request.role === "gate",
   );
+  const agentRequest = provider.requests.find(
+    (request) => request.role === "agent",
+  );
   const gateHandle = provider.handles.find(
     (handle) => handle.role === "gate",
   );
+  assert.equal(
+    agentRequest?.snapshot,
+    configuredClaudeEnvironment.HARNESS_DAYTONA_AGENT_SNAPSHOT,
+  );
+  assert.equal(gateRequest?.snapshot, undefined);
   assert.deepEqual(gateRequest?.envVars, {});
   assert.equal(
     gateHandle?.commands.some((command) => command.includes("claude")),
@@ -366,6 +379,27 @@ test("gate sandboxes receive no model credentials or Claude installation", async
     ),
     false,
   );
+});
+
+test("Claude agent environment requires a configured Agent Snapshot before sandbox creation", () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+  });
+
+  assert.throws(
+    () =>
+      createDaytonaRunEnvironment({
+        provider,
+        root,
+        policy: policy(),
+        agent: { kind: "claude" },
+        environment: modelEnvironment,
+      }),
+    /HARNESS_DAYTONA_AGENT_SNAPSHOT/,
+  );
+  assert.deepEqual(provider.requests, []);
 });
 
 test("publication uses the evaluated candidate instead of recollecting agent files", async () => {
