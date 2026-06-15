@@ -220,6 +220,25 @@ function boundedEvidence(value: string): string {
   ]).toString("utf8");
 }
 
+function ptyCommandWrapper(command: string): string {
+  return `{ ${command}; }; status=$?; exit "$status"\n`;
+}
+
+function ptyOutputTail(chunks: Buffer[], maxBytes = 8192): string {
+  if (chunks.length === 0) return "";
+  const output = Buffer.concat(chunks);
+  const tail = output.byteLength <= maxBytes
+    ? output
+    : output.subarray(output.byteLength - maxBytes);
+  return tail.toString("utf8");
+}
+
+function ptyDiagnosticError(message: string, chunks: Buffer[]): Error {
+  const tail = ptyOutputTail(chunks);
+  if (!tail) return new Error(message);
+  return new Error(`${message}\nRecent PTY output:\n${tail}`);
+}
+
 function assertRemoteCwd(remoteRoot: string, cwd: string): void {
   const normalizedRoot = posix.normalize(remoteRoot);
   const normalizedCwd = posix.normalize(cwd);
@@ -508,14 +527,30 @@ class DaytonaSandboxHandle implements SandboxHandle {
     let terminalError: Error | undefined;
     let pty: DaytonaSdkPty | undefined;
     let rejectInterruption: (error: Error) => void = () => undefined;
+    let killStarted: Promise<void> | undefined;
+    let disconnectStarted: Promise<void> | undefined;
     const interruption = new Promise<never>((_resolve, reject) => {
       rejectInterruption = reject;
     });
+    const safeKill = () => {
+      if (!pty) return Promise.resolve();
+      killStarted ??= pty.kill().catch(() => undefined);
+      return killStarted;
+    };
+    const safeDisconnect = () => {
+      if (!pty) return Promise.resolve();
+      disconnectStarted ??= pty.disconnect().catch(() => undefined);
+      return disconnectStarted;
+    };
+    const cleanupInterruptedPty = async () => {
+      await safeKill();
+      await safeDisconnect();
+    };
     const interrupt = (error: Error) => {
       if (terminalError) return;
       terminalError = error;
       rejectInterruption(error);
-      void pty?.kill();
+      void cleanupInterruptedPty();
     };
     if (signal?.aborted) {
       throw signal.reason ?? new Error("PTY execution aborted");
@@ -528,17 +563,21 @@ class DaytonaSandboxHandle implements SandboxHandle {
         if (terminalError) return;
         const chunk = Buffer.from(data);
         outputBytes += chunk.byteLength;
+        chunks.push(chunk);
         if (outputBytes > maxOutputBytes) {
-          interrupt(new Error(
+          interrupt(ptyDiagnosticError(
             `PTY output exceeded ${maxOutputBytes} bytes`,
+            chunks,
           ));
           return;
         }
-        chunks.push(chunk);
       },
     });
     const timer = setTimeout(() => {
-      interrupt(new Error(`PTY timed out after ${timeoutMs}ms`));
+      interrupt(ptyDiagnosticError(
+        `PTY timed out after ${timeoutMs}ms`,
+        chunks,
+      ));
     }, timeoutMs);
     timer.unref();
     const abort = () => {
@@ -549,9 +588,8 @@ class DaytonaSandboxHandle implements SandboxHandle {
     signal?.addEventListener("abort", abort, { once: true });
     try {
       await Promise.race([pty.waitForConnection(), interruption]);
-      const executable = command.startsWith("exec ") ? command : `exec ${command}`;
       await Promise.race([
-        pty.sendInput(`${executable}\n`),
+        pty.sendInput(ptyCommandWrapper(command)),
         interruption,
       ]);
       const result = await Promise.race([pty.wait(), interruption]);
@@ -564,7 +602,11 @@ class DaytonaSandboxHandle implements SandboxHandle {
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
-      await pty.disconnect();
+      if (terminalError) {
+        await cleanupInterruptedPty();
+      } else {
+        await safeDisconnect();
+      }
     }
   }
 

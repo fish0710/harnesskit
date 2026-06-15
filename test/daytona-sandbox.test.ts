@@ -500,7 +500,7 @@ test("SDK handle runs commands in a PTY, captures output, and disconnects", asyn
   assert.match(sdkSandbox.calls.ptyOptions?.id ?? "", /^harness-/);
   assert.equal(typeof sdkSandbox.calls.ptyOptions?.onData, "function");
   assert.deepEqual(sdkSandbox.calls.ptyInputs, [
-    'exec "/usr/local/bin/claude" --verbose\n',
+    '{ "/usr/local/bin/claude" --verbose; }; status=$?; exit "$status"\n',
   ]);
   assert.equal(sdkSandbox.calls.ptyWaitForConnection, 1);
   assert.equal(sdkSandbox.calls.ptyWait, 1);
@@ -512,8 +512,34 @@ test("SDK handle runs commands in a PTY, captures output, and disconnects", asyn
   });
 });
 
-test("SDK handle rejects promptly when a PTY times out", async () => {
-  const sdkSandbox = fakeSdkSandbox({ ptyWaitNever: true });
+test("SDK handle wraps exec-prefixed PTY commands without nesting exec", async () => {
+  const sdkSandbox = fakeSdkSandbox();
+  const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
+  const handle = await provider.create({
+    role: "agent",
+    envVars: modelEnvironment,
+    ephemeral: false,
+  });
+
+  await handle.runPty(
+    "exec npm test",
+    "/workspace/candidate",
+    {},
+  );
+
+  assert.deepEqual(sdkSandbox.calls.ptyInputs, [
+    '{ exec npm test; }; status=$?; exit "$status"\n',
+  ]);
+});
+
+test("SDK handle includes recent PTY output when a PTY times out", async () => {
+  const sdkSandbox = fakeSdkSandbox({
+    ptyOutput: [
+      "installing dependencies\n",
+      "bash: exec: npm: not found\n",
+    ],
+    ptyWaitNever: true,
+  });
   const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
   const handle = await provider.create({
     role: "agent",
@@ -533,7 +559,39 @@ test("SDK handle rejects promptly when a PTY times out", async () => {
         setTimeout(() => reject(new Error("test guard timed out")), 250)
       ),
     ]),
-    /PTY timed out after 10ms/,
+    /PTY timed out after 10ms[\s\S]*bash: exec: npm: not found/,
+  );
+  assert.equal(sdkSandbox.calls.ptyKill, 1);
+  assert.equal(sdkSandbox.calls.ptyDisconnect, 1);
+});
+
+test("SDK handle preserves timeout diagnostics when PTY cleanup fails", async () => {
+  const sdkSandbox = fakeSdkSandbox({
+    ptyOutput: ["last useful line\n"],
+    ptyWaitNever: true,
+    ptyKillError: new Error("kill failed"),
+    ptyDisconnectError: new Error("disconnect failed"),
+  });
+  const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
+  const handle = await provider.create({
+    role: "agent",
+    envVars: modelEnvironment,
+    ephemeral: false,
+  });
+
+  await assert.rejects(
+    Promise.race([
+      handle.runPty(
+        "sleep infinity",
+        "/workspace/candidate",
+        {},
+        10,
+      ),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("test guard timed out")), 250)
+      ),
+    ]),
+    /PTY timed out after 10ms[\s\S]*last useful line/,
   );
   assert.equal(sdkSandbox.calls.ptyKill, 1);
   assert.equal(sdkSandbox.calls.ptyDisconnect, 1);
@@ -690,6 +748,8 @@ function fakeSdkSandbox(options: {
   ptyOutput?: string[];
   ptyExitCode?: number;
   ptyWaitNever?: boolean;
+  ptyKillError?: Error;
+  ptyDisconnectError?: Error;
 } = {}) {
   const calls = {
     createdFolders: [] as Array<[string, string]>,
@@ -806,9 +866,13 @@ function fakeSdkSandbox(options: {
           },
           async kill() {
             calls.ptyKill++;
+            if (options.ptyKillError) throw options.ptyKillError;
           },
           async disconnect() {
             calls.ptyDisconnect++;
+            if (options.ptyDisconnectError) {
+              throw options.ptyDisconnectError;
+            }
           },
         };
       },
