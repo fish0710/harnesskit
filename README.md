@@ -34,3 +34,9 @@ The real integration flow is explicit:
 ```bash
 npm run test:daytona
 ```
+
+## Architecture And Archive
+
+- [Current Daytona sandbox gate architecture](docs/architecture/daytona-sandbox-gate.md)
+- [Local Daytona runbook](docs/daytona-local-claude-code-runbook.md)
+- [2026-06-15 implementation archive](docs/archive/2026-06-15-daytona-sandbox-gate/README.md)

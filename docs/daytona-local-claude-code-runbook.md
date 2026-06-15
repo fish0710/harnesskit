@@ -1,5 +1,10 @@
 # Daytona Sandbox Gate Runbook
 
+Related documents:
+
+- [Current architecture](architecture/daytona-sandbox-gate.md)
+- [2026-06-15 implementation archive](archive/2026-06-15-daytona-sandbox-gate/README.md)
+
 ## Architecture
 
 `harness run --driver claude` creates one persistent Daytona agent sandbox.
