@@ -13,17 +13,38 @@ import { runLoop } from "../src/harness/run.js";
 import { createDaytonaSdkProvider } from "../src/harness/sandbox/daytona.js";
 import { createDaytonaRunEnvironment } from "../src/harness/sandbox/environment.js";
 import { loadSandboxPolicy } from "../src/harness/sandbox/policy.js";
+import { requireAgentSnapshot } from "../src/harness/sandbox/toolchain.js";
 import type {
   SandboxCreateRequest,
+  SandboxPolicy,
   SandboxProvider,
 } from "../src/harness/sandbox/types.js";
 import { commandPlugin } from "../src/plugins/command.js";
 
-function createGitFixture(): string {
+export function integrationPolicy(): SandboxPolicy {
+  return loadSandboxPolicy({
+    sandbox: {
+      candidateRoots: ["src", "package.json", "package-lock.json"],
+      protectedPaths: ["contracts", ".harness"],
+      agentSetup: ["npm install"],
+      retainOnFailure: false,
+    },
+  });
+}
+
+export function createGitFixture(): string {
   const root = mkdtempSync(join(tmpdir(), "harness-daytona-integration-"));
   const destination = join(root, "src/result.txt");
   mkdirSync(dirname(destination), { recursive: true });
   writeFileSync(destination, "broken\n");
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({
+      name: "harness-daytona-integration-fixture",
+      version: "1.0.0",
+      private: true,
+    }, null, 2) + "\n",
+  );
   spawnSync("git", ["init"], { cwd: root, stdio: "ignore" });
   spawnSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
   spawnSync(
@@ -48,22 +69,20 @@ export async function runDaytonaIntegration(
     return;
   }
 
-  const roles: SandboxCreateRequest["role"][] = [];
+  const agentSnapshot = requireAgentSnapshot(environment);
+  const createRequests: SandboxCreateRequest[] = [];
   const sdkProvider = createDaytonaSdkProvider(environment);
   const provider: SandboxProvider = {
     async create(request) {
-      roles.push(request.role);
+      createRequests.push({
+        ...request,
+        envVars: { ...request.envVars },
+      });
       return sdkProvider.create(request);
     },
   };
   const root = createGitFixture();
-  const policy = loadSandboxPolicy({
-    sandbox: {
-      candidateRoots: ["src"],
-      protectedPaths: ["contracts", ".harness"],
-      retainOnFailure: false,
-    },
-  });
+  const policy = integrationPolicy();
   const runEnvironment = createDaytonaRunEnvironment({
     provider,
     root,
@@ -107,11 +126,30 @@ export async function runDaytonaIntegration(
       }; report=${JSON.stringify(outcome.report)}`,
     );
   }
-  if (roles.filter((role) => role === "agent").length !== 1) {
+  const agentRequests = createRequests.filter((request) =>
+    request.role === "agent"
+  );
+  const gateRequests = createRequests.filter((request) =>
+    request.role === "gate"
+  );
+  const roles = createRequests.map((request) => request.role);
+  if (agentRequests.length !== 1) {
     throw new Error(`Expected one agent sandbox, got ${roles.join(",")}`);
   }
-  if (roles.filter((role) => role === "gate").length !== 1) {
+  if (gateRequests.length !== 1) {
     throw new Error(`Expected one gate sandbox, got ${roles.join(",")}`);
+  }
+  if (agentRequests[0]?.snapshot !== agentSnapshot) {
+    throw new Error(
+      `Expected agent snapshot ${agentSnapshot}, got ${
+        agentRequests[0]?.snapshot ?? "undefined"
+      }`,
+    );
+  }
+  if (gateRequests[0]?.snapshot !== undefined) {
+    throw new Error(
+      `Expected gate snapshot undefined, got ${gateRequests[0]?.snapshot}`,
+    );
   }
   console.log("PASS Daytona agent/gate integration");
 }
