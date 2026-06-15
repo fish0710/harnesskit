@@ -14,6 +14,7 @@ import {
 import {
   configureLocalDaytonaProxy,
   getDaytonaConfig,
+  rewriteRemoteToolboxProxy,
 } from "../harness/sandbox/daytona.js";
 
 type DaytonaSnapshot = Awaited<ReturnType<Daytona["snapshot"]["get"]>>;
@@ -251,7 +252,10 @@ async function pollActiveSnapshot(
   throw snapshotFailure(snapshot, "did not become active before deadline");
 }
 
-async function verifySnapshotToolchain(daytona: Daytona): Promise<void> {
+async function verifySnapshotToolchain(
+  daytona: Daytona,
+  apiUrl: string,
+): Promise<void> {
   const sandbox = await daytona.create(
     {
       snapshot: DAYTONA_AGENT_SNAPSHOT,
@@ -259,6 +263,7 @@ async function verifySnapshotToolchain(daytona: Daytona): Promise<void> {
     },
     { timeout: 120 },
   );
+  rewriteRemoteToolboxProxy(sandbox, apiUrl);
   try {
     const result = await sandbox.process.executeCommand(
       CLAUDE_TOOLCHAIN_PREFLIGHT,
@@ -282,9 +287,10 @@ export async function main(): Promise<void> {
     }
 
     configureLocalDaytonaProxy(process.env);
-    const daytona = new Daytona(getDaytonaConfig(process.env));
+    const config = getDaytonaConfig(process.env);
+    const daytona = new Daytona(config);
     await ensureSnapshot(daytona);
-    await verifySnapshotToolchain(daytona);
+    await verifySnapshotToolchain(daytona, config.apiUrl);
     console.log(`export HARNESS_DAYTONA_AGENT_SNAPSHOT=${DAYTONA_AGENT_SNAPSHOT}`);
   } finally {
     cleanupRemoteContext(runner, context);

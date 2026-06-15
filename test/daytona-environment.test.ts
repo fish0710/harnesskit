@@ -13,6 +13,9 @@ import { test } from "node:test";
 import { GateCore } from "../src/gate.js";
 import { commandPlugin } from "../src/plugins/command.js";
 import {
+  CLAUDE_COMMAND,
+} from "../src/harness/sandbox/daytona.js";
+import {
   createDaytonaRunEnvironment,
 } from "../src/harness/sandbox/environment.js";
 import { loadSandboxPolicy } from "../src/harness/sandbox/policy.js";
@@ -537,6 +540,13 @@ test("Claude agent setup executes after preflight without using a PTY", async ()
   );
   assert.equal(agent.ptyCommands.includes("npm install"), false);
   assert.equal(agent.ptyCommands.includes("npm test"), false);
+  assert.equal(agent.ptyCommands.includes(CLAUDE_COMMAND), false);
+  assert.equal(agent.commands.includes(CLAUDE_COMMAND), true);
+  assert.equal(
+    agent.executeCalls.find((call) => call.command === CLAUDE_COMMAND)
+      ?.timeoutMs,
+    20 * 60 * 1000,
+  );
 });
 
 test("agent setup failure stops later setup and deletes the sandbox", async () => {

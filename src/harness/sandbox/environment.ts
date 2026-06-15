@@ -30,6 +30,7 @@ import {
 
 const REMOTE_ROOT = "/workspace/candidate";
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
+const AGENT_COMMAND_TIMEOUT_MS = 20 * 60 * 1000;
 
 export type SandboxAgentSpec =
   | { kind: "claude" }
@@ -184,10 +185,11 @@ export function createDaytonaRunEnvironment(
         const prompt = input.feedback
           ? `${input.task}\n\n[门禁反馈,请据此修复]\n${input.feedback}`
           : input.task;
-        result = await handle.runPty(
+        result = await handle.execute(
           CLAUDE_COMMAND,
           REMOTE_ROOT,
           { ...modelEnvironment, HARNESS_PROMPT: prompt },
+          AGENT_COMMAND_TIMEOUT_MS,
         );
       } else {
         result = await handle.runPty(

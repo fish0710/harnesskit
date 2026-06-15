@@ -111,6 +111,7 @@ export interface DaytonaSdkPty {
 
 export interface DaytonaSdkSandbox {
   readonly id: string;
+  toolboxProxyUrl?: string;
   readonly fs: {
     createFolder(path: string, mode: string): Promise<void>;
     deleteFile(path: string, recursive?: boolean): Promise<void>;
@@ -154,6 +155,52 @@ export interface DaytonaSdkClient {
     networkBlockAll: boolean;
   }): Promise<DaytonaSdkSandbox>;
   delete(sandbox: DaytonaSdkSandbox): Promise<void>;
+}
+
+type DaytonaSdkSandboxInternals = DaytonaSdkSandbox & {
+  axiosInstance?: {
+    defaults: {
+      baseURL?: string;
+    };
+  };
+  clientConfig?: {
+    basePath?: string;
+  };
+};
+
+function isLocalDaytonaApiUrl(apiUrl: string): boolean {
+  const url = new URL(apiUrl);
+  return ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+}
+
+function shouldRewriteToolboxProxy(
+  sandbox: DaytonaSdkSandbox,
+  apiUrl: string,
+): boolean {
+  if (isLocalDaytonaApiUrl(apiUrl)) return false;
+  const toolboxProxyUrl = sandbox.toolboxProxyUrl;
+  if (!toolboxProxyUrl) return false;
+  const parsed = new URL(toolboxProxyUrl);
+  return ["proxy.localhost", "localhost", "127.0.0.1"].includes(
+    parsed.hostname,
+  );
+}
+
+export function rewriteRemoteToolboxProxy(
+  sandbox: DaytonaSdkSandbox,
+  apiUrl: string,
+): void {
+  if (!shouldRewriteToolboxProxy(sandbox, apiUrl)) return;
+  const patchable = sandbox as DaytonaSdkSandboxInternals;
+  const toolboxProxyUrl = `${apiUrl.replace(/\/$/, "")}/toolbox`;
+  const baseURL = `${toolboxProxyUrl}/${sandbox.id}/toolbox`;
+  sandbox.toolboxProxyUrl = toolboxProxyUrl;
+  if (patchable.axiosInstance) {
+    patchable.axiosInstance.defaults.baseURL = baseURL;
+  }
+  if (patchable.clientConfig) {
+    patchable.clientConfig.basePath = baseURL;
+  }
 }
 
 export function getDaytonaConfig(
@@ -666,12 +713,11 @@ export function createDaytonaExecutionTarget(
               typeof entry[1] === "string"
             ),
         );
-        const result = await handle.runPty(
+        const result = await handle.execute(
           commandLine(request.command, request.args),
           request.cwd,
           env,
           request.timeoutMs,
-          request.signal,
         );
         return {
           executionId: request.executionId,
@@ -747,7 +793,10 @@ export function createDaytonaExecutionTarget(
 }
 
 class DaytonaSdkProvider implements SandboxProvider {
-  constructor(private readonly client: DaytonaSdkClient) {}
+  constructor(
+    private readonly client: DaytonaSdkClient,
+    private readonly apiUrl?: string,
+  ) {}
 
   async create(request: SandboxCreateRequest): Promise<SandboxHandle> {
     if (request.role !== "agent" && "snapshot" in request) {
@@ -769,6 +818,7 @@ class DaytonaSdkProvider implements SandboxProvider {
       ephemeral: request.ephemeral,
       networkBlockAll: false,
     });
+    if (this.apiUrl) rewriteRemoteToolboxProxy(sandbox, this.apiUrl);
     return new DaytonaSandboxHandle(this.client, sandbox);
   }
 }
@@ -777,15 +827,18 @@ export function createDaytonaSdkProvider(
   environment: Environment = process.env,
 ): SandboxProvider {
   configureLocalDaytonaProxy(environment);
+  const config = getDaytonaConfig(environment);
   return createDaytonaSdkProviderFromClient(
-    new Daytona(getDaytonaConfig(environment)),
+    new Daytona(config),
+    config.apiUrl,
   );
 }
 
 export function createDaytonaSdkProviderFromClient(
   client: DaytonaSdkClient,
+  apiUrl?: string,
 ): SandboxProvider {
-  return new DaytonaSdkProvider(client);
+  return new DaytonaSdkProvider(client, apiUrl);
 }
 
 export function createDaytonaManager(

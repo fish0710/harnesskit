@@ -7,6 +7,7 @@ import {
   createDaytonaExecutionTarget,
   createDaytonaManager,
   createDaytonaSdkProviderFromClient,
+  rewriteRemoteToolboxProxy,
 } from "../src/harness/sandbox/daytona.js";
 import type { SandboxCreateRequest } from "../src/harness/sandbox/types.js";
 
@@ -194,6 +195,48 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
     Object.values(created[1]?.envVars ?? {}).includes("agent-token"),
     false,
   );
+});
+
+test("SDK provider rewrites localhost toolbox URLs for remote Daytona APIs", async () => {
+  const sdkSandbox = fakeSdkSandbox({
+    toolboxProxyUrl: "http://proxy.localhost:4000/toolbox",
+  });
+  const provider = createDaytonaSdkProviderFromClient(
+    fakeSdkClient(sdkSandbox),
+    "https://daytona.example.test:8443/api",
+  );
+
+  await provider.create({
+    role: "agent",
+    snapshot: "harness-agent-claude-2.1.145-r1",
+    envVars: {},
+    ephemeral: false,
+  });
+
+  assert.equal(
+    sdkSandbox.toolboxProxyUrl,
+    "https://daytona.example.test:8443/api/toolbox",
+  );
+  assert.equal(
+    sdkSandbox.axiosInstance.defaults.baseURL,
+    "https://daytona.example.test:8443/api/toolbox/sdk-sandbox/toolbox",
+  );
+  assert.equal(
+    sdkSandbox.clientConfig.basePath,
+    "https://daytona.example.test:8443/api/toolbox/sdk-sandbox/toolbox",
+  );
+});
+
+test("toolbox rewrite leaves local Daytona APIs untouched", () => {
+  const sdkSandbox = fakeSdkSandbox({
+    toolboxProxyUrl: "http://proxy.localhost:4000/toolbox",
+  });
+
+  rewriteRemoteToolboxProxy(sdkSandbox, "http://localhost:3000/api");
+
+  assert.equal(sdkSandbox.toolboxProxyUrl, "http://proxy.localhost:4000/toolbox");
+  assert.equal(sdkSandbox.axiosInstance.defaults.baseURL, undefined);
+  assert.equal(sdkSandbox.clientConfig.basePath, undefined);
 });
 
 test("SDK provider rejects empty Agent snapshot requests before client create", async () => {
@@ -621,7 +664,7 @@ test("remote execution target preserves trusted argv and host execution id", asy
   }> = [];
   const handle = {
     ...recordingHandle("execution"),
-    async runPty(
+    async execute(
       command: string,
       cwd: string,
       env?: Record<string, string>,
@@ -745,6 +788,7 @@ function fakeSdkClient(sandbox: ReturnType<typeof fakeSdkSandbox>) {
 function fakeSdkSandbox(options: {
   listings?: Map<string, FileInfo[]>;
   downloads?: Map<string, Buffer>;
+  toolboxProxyUrl?: string;
   ptyOutput?: string[];
   ptyExitCode?: number;
   ptyWaitNever?: boolean;
@@ -774,6 +818,11 @@ function fakeSdkSandbox(options: {
 
   return {
     id: "sdk-sandbox",
+    toolboxProxyUrl: options.toolboxProxyUrl,
+    axiosInstance: {
+      defaults: {} as { baseURL?: string },
+    },
+    clientConfig: {} as { basePath?: string },
     calls,
     options,
     fs: {
