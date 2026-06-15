@@ -57,20 +57,22 @@ Harness 将“执行任务”和“决定是否通过”拆成两个不同权限
 ![Agent 与 Gate 循环](../assets/daytona-sandbox-gate/agent-gate-loop.png)
 
 1. 宿主校验 Daytona、模型环境变量和 sandbox policy。
-2. 宿主加载并验证冻结合约，捕获当前 Git 工作区 baseline。
-3. Harness 创建一个 agent 沙箱并上传 agent 可见文件。
-4. Claude Code 或 command agent 在该沙箱中执行任务。
-5. 宿主通过 Daytona 文件 API 收集候选文件，不信任沙箱内的 Git。
-6. 宿主严格校验路径、文件类型、大小、哈希和保护路径。
-7. Harness 为当前 attempt 创建一个全新的 gate 沙箱。
-8. 宿主在 gate 沙箱中组装 baseline、候选文件和受保护测试资产。
-9. gate 沙箱关闭出站网络并执行宿主发出的合约命令。
-10. gate 沙箱把原始证据返回宿主，随后被删除。
-11. 宿主 `GateCore` 完成状态分类、聚合和决策。
-12. `fail` 或 `error` 生成受限诊断，反馈给原 agent 沙箱继续下一轮。
-13. `blocked` 停止自动循环，等待人工 verdict。
-14. 超出轮数、时间、token 或重复失败阈值时升级。
-15. `pass` 时 publisher 写回门禁验证过的精确候选快照。
+2. Claude run 要求宿主显式选择 Agent Snapshot。
+3. 宿主加载并验证冻结合约，捕获当前 Git 工作区 baseline。
+4. Harness 从选定 Snapshot 创建一个 agent 沙箱并上传 agent 可见文件。
+5. 宿主执行 Node/npm/npx/Claude preflight 和 agent setup。
+6. Claude Code 或 command agent 在该沙箱中执行任务。
+7. 宿主通过 Daytona 文件 API 收集候选文件，不信任沙箱内的 Git。
+8. 宿主严格校验路径、文件类型、大小、哈希和保护路径。
+9. Harness 为当前 attempt 创建一个全新的 gate 沙箱。
+10. 宿主在 gate 沙箱中组装 baseline、候选文件和受保护测试资产。
+11. gate 沙箱关闭出站网络并执行宿主发出的合约命令。
+12. gate 沙箱把原始证据返回宿主，随后被删除。
+13. 宿主 `GateCore` 完成状态分类、聚合和决策。
+14. `fail` 或 `error` 生成受限诊断，反馈给原 agent 沙箱继续下一轮。
+15. `blocked` 停止自动循环，等待人工 verdict。
+16. 超出轮数、时间、token 或重复失败阈值时升级。
+17. `pass` 时 publisher 写回门禁验证过的精确候选快照。
 
 agent 沙箱跨重试保留上下文；gate 沙箱每轮重新创建，避免继承 agent 控制的
 进程、缓存、凭证或隐藏状态。
@@ -82,6 +84,7 @@ agent 沙箱跨重试保留上下文；gate 沙箱每轮重新创建，避免继
 | Baseline 文件与哈希 | 宿主 | collector、gate assembler、publisher | 是 |
 | 合约和冻结哈希 | 宿主 | `GateCore` | 是 |
 | 模型凭证 | 宿主进程环境 | 仅 agent PTY | 对 gate 不可见 |
+| Agent Snapshot | 宿主进程环境 | 仅 agent sandbox 创建请求 | 对 gate 不可见 |
 | Agent stdout、Git、patch 声明 | agent 沙箱 | 仅用于诊断 | 否 |
 | Candidate 文件 | agent 沙箱 | 宿主 collector | 收集前否 |
 | CandidateSnapshot | 宿主 collector | gate assembler、publisher | 是 |
@@ -109,6 +112,7 @@ gate 沙箱：
 
 - 每轮重新创建；
 - 不安装或启动 Claude Code；
+- 不接收 Agent Snapshot；
 - 不接收 Anthropic 环境变量；
 - 不复用 agent 沙箱文件系统；
 - 合约执行期间关闭出站网络；
@@ -170,7 +174,31 @@ Daytona SDK 的文件和进程 API 使用相对 sandbox 路径。adapter 在 SDK
 内部逻辑路径 `/workspace/candidate` 转换为 `workspace/candidate`，并跳过空的
 multipart 上传。
 
-## 10. 配置模型
+## 10. Claude Agent Snapshot
+
+Claude Code 不在 run 阶段安装。宿主必须预先构建并选择 pinned Agent
+Snapshot：
+
+```text
+Node.js 22.14.0
+Claude Code 2.1.145
+harness-daytona-claude:2.1.145-r1
+registry:6000/harness/harness-daytona-claude:2.1.145-r1
+harness-agent-claude-2.1.145-r1
+```
+
+运行时要求：
+
+```bash
+export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r1"
+```
+
+`npm run snapshot:agent` 负责在 Daytona runner 内构建镜像、推送到内部 registry、
+创建或激活 Snapshot，并用临时沙箱验证 `/usr/local/bin/node`、`npm`、`npx`
+和 `claude`。已有 Snapshot 的镜像名不匹配时必须发布新修订，例如 `r2`，不能
+覆盖旧的 immutable Snapshot。
+
+## 11. 配置模型
 
 ```json
 {
@@ -199,7 +227,7 @@ multipart 上传。
 `candidateRoots` 是 allowlist，`protectedPaths` 是额外保护层。新项目由 scaffold
 写入显式策略；现有项目缺少配置时使用保守默认值。
 
-## 11. 失败与升级语义
+## 12. 失败与升级语义
 
 | 门禁结果 | Harness 行为 |
 |---|---|
@@ -211,20 +239,20 @@ multipart 上传。
 | 同一检查重复失败 | `human_review_contract` |
 | 上下文达到阈值 | `swap_instance` |
 
-## 12. 已验证状态
+## 13. 已验证状态
 
 2026-06-15 的验证结果：
 
-- 本地 Daytona 控制面和 toolbox 可访问；
-- Claude Code 在 agent 沙箱中安装并执行成功；
+- Daytona 控制面和 toolbox 可访问；
+- Claude Code 从 host 选择的 Agent Snapshot 启动；
 - agent 沙箱退出码为 0；
 - 独立 gate 沙箱执行合约，结果为 `pass 1/1`；
 - 通过后发布精确候选字节；
-- `npm run check`：212 个测试全部通过；
+- `npm run check`：236 个测试全部通过；
 - 运行结束后无 `harness.role` 残留沙箱；
 - API key 只通过进程环境传入，未写入仓库。
 
-## 13. 已知边界
+## 14. 已知边界
 
 - 模型 token 对 agent 进程可见，设计不保证源码不会发送到已批准模型端点。
 - gate 沙箱本身不是可信判定器，只是隔离的证据执行环境。
@@ -234,7 +262,7 @@ multipart 上传。
   `run` 循环。
 - 当前实现不会自动 merge、push、批准 MR 或绕过 CI。
 
-## 14. 关联资料
+## 15. 关联资料
 
 - [归档索引](../archive/2026-06-15-daytona-sandbox-gate/README.md)
 - [原始设计规格](../superpowers/specs/2026-06-11-daytona-sandbox-gate-design.md)
