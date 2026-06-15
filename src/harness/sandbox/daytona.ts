@@ -22,6 +22,7 @@ import type {
   SandboxProvider,
   WorkspaceFile,
 } from "./types.js";
+import { requireAgentSnapshot } from "./toolchain.js";
 
 export const DEFAULT_DAYTONA_API_URL = "http://localhost:3000/api";
 export const CLAUDE_COMMAND =
@@ -750,12 +751,14 @@ export function createDaytonaManager(
 ): DaytonaManager {
   const environment = options.environment ?? process.env;
   getDaytonaConfig(environment);
+  const agentSnapshot = requireAgentSnapshot(environment);
   configureLocalDaytonaProxy(environment);
   const provider = options.provider ?? createDaytonaSdkProvider(environment);
   return {
     createAgentSandbox() {
       return provider.create({
         role: "agent",
+        snapshot: agentSnapshot,
         envVars: {},
         ephemeral: false,
       });

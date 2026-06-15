@@ -47,6 +47,7 @@ void gateSnapshotTypeCheck;
 function completeEnvironment(): Record<string, string> {
   return {
     DAYTONA_API_KEY: "daytona-control-plane-key",
+    HARNESS_DAYTONA_AGENT_SNAPSHOT: "harness-agent-claude-2.1.145-r1",
     ANTHROPIC_API_KEY: "must-not-be-forwarded",
     HARNESS_GATE_SIGNING_KEY: "must-not-be-forwarded",
     ...modelEnvironment,
@@ -82,6 +83,31 @@ test("manager keeps model credentials out of both sandbox-level environments", a
   assert.equal("HARNESS_GATE_SIGNING_KEY" in created[0]!.envVars, false);
 });
 
+test("manager passes configured Agent snapshot only to Agent sandbox creation", async () => {
+  const created: CreateRequest[] = [];
+  const provider = {
+    async create(request: CreateRequest) {
+      created.push(request);
+      return recordingHandle(`sandbox-${created.length}`);
+    },
+  };
+  const manager = createDaytonaManager({
+    provider,
+    environment: {
+      ...completeEnvironment(),
+      HARNESS_DAYTONA_AGENT_SNAPSHOT: "  harness-agent-claude-2.1.145-r1  ",
+    },
+  });
+
+  await manager.createAgentSandbox();
+  await manager.createGateSandbox();
+
+  assert.equal(created[0]?.role, "agent");
+  assert.equal(created[0]?.snapshot, "harness-agent-claude-2.1.145-r1");
+  assert.equal(created[1]?.role, "gate");
+  assert.equal(Object.hasOwn(created[1]!, "snapshot"), false);
+});
+
 test("manager rejects a missing Daytona API key before provider creation", () => {
   let createCalls = 0;
   const provider = {
@@ -96,6 +122,30 @@ test("manager rejects a missing Daytona API key before provider creation", () =>
     /DAYTONA_API_KEY/,
   );
   assert.equal(createCalls, 0);
+});
+
+test("manager rejects missing or blank Agent snapshot before provider creation", () => {
+  for (const snapshot of [undefined, "", "   "]) {
+    let createCalls = 0;
+    const provider = {
+      async create(_request: CreateRequest) {
+        createCalls++;
+        return recordingHandle("unexpected");
+      },
+    };
+    const environment = completeEnvironment();
+    if (snapshot === undefined) {
+      delete environment.HARNESS_DAYTONA_AGENT_SNAPSHOT;
+    } else {
+      environment.HARNESS_DAYTONA_AGENT_SNAPSHOT = snapshot;
+    }
+
+    assert.throws(
+      () => createDaytonaManager({ provider, environment }),
+      /HARNESS_DAYTONA_AGENT_SNAPSHOT/,
+    );
+    assert.equal(createCalls, 0);
+  }
 });
 
 test("SDK provider maps role, environment, and lifecycle fields into create", async () => {
