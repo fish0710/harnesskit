@@ -162,6 +162,64 @@ harness check --properties ./contracts/properties.js
 
 属性不存在是 `error`；找到反例是 `fail`。
 
+### miniprogram
+
+用途：验证微信小程序行为。该插件在宿主执行 runner，由 runner 通过
+`miniprogram-automator` 连接微信开发者工具的 WebSocket 自动化端口。
+
+```yaml
+id: mp.login
+type: miniprogram
+scenario: 小程序登录页应能完成手机号授权前置校验
+projectPath: dist/dev/mp-weixin
+runner: test/gates/miniprogram-login.js
+devtools:
+  mode: connect
+  wsEndpoint: ws://127.0.0.1:9420
+timeoutMs: 120000
+expectExit: 0
+```
+
+字段语义：
+
+| 字段 | 说明 |
+|---|---|
+| `projectPath` | 必填，工作区内小程序项目目录，必须包含 `project.config.json` |
+| `runner` | 必填，工作区内 Node.js runner 文件 |
+| `devtools.mode` | `connect` 连接已启动的开发者工具；`managed` 由插件先调用 CLI 启动自动化 |
+| `devtools.wsEndpoint` | `connect` 模式下传给 runner 的 WebSocket endpoint |
+| `devtools.cliPath` | `managed` 模式下的微信开发者工具 CLI 路径，默认 macOS 安装路径 |
+| `devtools.autoPort` | `managed` 模式下的自动化端口，默认 `9420` |
+| `devtools.trustProject` | `managed` 模式是否传 `--trust-project`，默认 `true` |
+| `timeoutMs` | runner 和 managed CLI 启动的超时时间 |
+| `expectExit` | runner 期望退出码，默认 `0` |
+
+runner 启动时只接收插件显式注入的环境变量：
+
+| 环境变量 | 说明 |
+|---|---|
+| `HARNESS_MINIPROGRAM_PROJECT` | 契约中的相对 `projectPath` |
+| `HARNESS_MINIPROGRAM_PROJECT_ABS` | 真实解析后的项目绝对路径 |
+| `HARNESS_MINIPROGRAM_WS_ENDPOINT` | 开发者工具 WebSocket endpoint |
+| `HARNESS_MINIPROGRAM_DEVTOOLS_PORT` | `managed` 模式的自动化端口 |
+
+安全边界：
+
+- `projectPath` 和 `runner` 必须是工作区相对路径，拒绝绝对路径、Windows drive
+  路径、`..` 和 symlink escape。
+- 插件使用 realpath 后的项目目录与 runner 文件执行，`project.config.json` 也必须
+  位于工作区内。
+- runner 和 managed DevTools CLI 都不继承宿主 ambient environment。
+- Daytona `harness run` 中，小程序契约不进入远端 gate 沙箱。宿主会把本轮
+  `CandidateSnapshot` materialize 到临时目录，在该目录运行 miniprogram 契约，
+  然后删除临时目录。
+- remote gate 契约和 host-local 小程序契约的结果会一起聚合；任一失败、错误或清理
+  失败都不会发布候选文件。
+
+本地 `harness check` / `harness gate` 直接在当前工作区跑该插件，适合连接本机
+微信开发者工具。`harness run --driver claude` 下，agent 仍在 Daytona 沙箱中工作，
+但小程序验证留在宿主，避免远端沙箱反连本机 DevTools 的网络穿透问题。
+
 ### review
 
 用途：机器无法可靠判定时，把结构化问题交给人。
