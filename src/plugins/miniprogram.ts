@@ -75,6 +75,14 @@ function isRegularFile(path: string): boolean {
   }
 }
 
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export const miniprogramPlugin: Plugin = {
   type: "miniprogram",
 
@@ -94,6 +102,7 @@ export const miniprogramPlugin: Plugin = {
 
     const projectAbs = resolve(ctx.cwd, projectPath);
     const runnerAbs = resolve(ctx.cwd, runner);
+    const projectConfigAbs = resolve(projectAbs, "project.config.json");
     if (!existsSync(projectAbs)) {
       return {
         id: contract.id,
@@ -104,7 +113,17 @@ export const miniprogramPlugin: Plugin = {
         errorReason: `小程序项目目录不存在: ${projectPath}`,
       };
     }
-    if (!existsSync(resolve(projectAbs, "project.config.json"))) {
+    if (!isDirectory(projectAbs)) {
+      return {
+        id: contract.id,
+        type: this.type,
+        status: "error",
+        durationMs: 0,
+        violations: [],
+        errorReason: `小程序项目路径必须是目录: ${projectPath}`,
+      };
+    }
+    if (!existsSync(projectConfigAbs)) {
       return {
         id: contract.id,
         type: this.type,
@@ -112,6 +131,16 @@ export const miniprogramPlugin: Plugin = {
         durationMs: 0,
         violations: [],
         errorReason: `小程序项目缺少 project.config.json: ${projectPath}`,
+      };
+    }
+    if (!isRegularFile(projectConfigAbs)) {
+      return {
+        id: contract.id,
+        type: this.type,
+        status: "error",
+        durationMs: 0,
+        violations: [],
+        errorReason: `小程序 project.config.json 必须是文件: ${projectPath}`,
       };
     }
     if (!existsSync(runnerAbs)) {

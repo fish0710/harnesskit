@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { relative } from "node:path";
 
 import { GateCore } from "../src/gate.js";
 import type {
@@ -162,6 +164,49 @@ test("miniprogram plugin rejects a directory runner before execution", async () 
   assert.equal(result.status, "error");
   assert.match(result.errorReason ?? "", /runner|文件|file/i);
   assert.equal(calls.length, 0);
+});
+
+test("miniprogram plugin rejects a file project path before execution", async () => {
+  const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+  const result = await miniprogramPlugin.run(
+    {
+      id: "mp.project.file",
+      type: "miniprogram",
+      projectPath: "test/fixtures/miniprogram-runner.js",
+      runner: "test/fixtures/miniprogram-runner.js",
+      devtools: { mode: "connect", wsEndpoint: "ws://127.0.0.1:9420" },
+    },
+    { cwd: process.cwd(), execution },
+  );
+
+  assert.equal(result.status, "error");
+  assert.match(result.errorReason ?? "", /项目目录|directory|目录/);
+  assert.equal(calls.length, 0);
+});
+
+test("miniprogram plugin rejects a directory project.config.json before execution", async () => {
+  const projectAbs = mkdtempSync(`${process.cwd()}/test/fixtures/mp-config-dir-`);
+  try {
+    mkdirSync(`${projectAbs}/project.config.json`);
+    const projectPath = relative(process.cwd(), projectAbs);
+    const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+    const result = await miniprogramPlugin.run(
+      {
+        id: "mp.project.config.directory",
+        type: "miniprogram",
+        projectPath,
+        runner: "test/fixtures/miniprogram-runner.js",
+        devtools: { mode: "connect", wsEndpoint: "ws://127.0.0.1:9420" },
+      },
+      { cwd: process.cwd(), execution },
+    );
+
+    assert.equal(result.status, "error");
+    assert.match(result.errorReason ?? "", /project\.config\.json|配置|文件|file/i);
+    assert.equal(calls.length, 0);
+  } finally {
+    rmSync(projectAbs, { recursive: true, force: true });
+  }
 });
 
 test("miniprogram plugin classifies runner non-zero as fail", async () => {
