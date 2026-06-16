@@ -61,7 +61,20 @@ export {
   createDaytonaExecutionTarget,
 } from "./harness/sandbox/daytona.js";
 export { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
-export { writeRunRecord, lastRunRecord, type RunRecord } from "./harness/record.js";
+export {
+  RunRecorder,
+  createRunRecorder,
+  lastRunRecord,
+  writeRunRecord,
+  type CompleteRunRecordInput,
+  type CreateRunRecorderInput,
+  type RunRecord,
+  type RunRecordAttempt,
+  type RunRecordEvent,
+  type RunRecordObservability,
+  type RunRecordStatus,
+  type RunRecordV2,
+} from "./harness/record.js";
 export { createProject, type CreateResult } from "./harness/scaffold.js";
 export { writePlan } from "./harness/plan.js";
 export { gatherStatus } from "./harness/status.js";
