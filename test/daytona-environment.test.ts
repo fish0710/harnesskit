@@ -636,6 +636,51 @@ test("Claude Daytona observability emits an error end event when setup throws", 
   );
 });
 
+test("Claude Daytona command rejection emits a command error end event", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    throwCommands: {
+      [CLAUDE_COMMAND]: new Error("toolbox timeout"),
+    },
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    observability: {
+      runId: "run-obs",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await assert.rejects(
+    () => environment.runTask({ task: "fix it" }),
+    /toolbox timeout/,
+  );
+
+  const commandEnd = observations.find(([event]) =>
+    event === "agent.command.end"
+  );
+  assert.equal(
+    (commandEnd?.[1] as { outcome?: string }).outcome,
+    "error",
+  );
+  assert.equal(
+    (commandEnd?.[1] as { errorReason?: string }).errorReason,
+    "toolbox timeout",
+  );
+  assert.equal(
+    (commandEnd?.[1] as { attempt?: number }).attempt,
+    1,
+  );
+});
+
 test("Claude Daytona observations report safe stages without prompt or credential text", async () => {
   const root = createGitFixture({ "src/a.ts": "before\n" });
   const provider = scriptedProvider({

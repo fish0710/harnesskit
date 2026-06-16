@@ -296,43 +296,59 @@ export function createDaytonaRunEnvironment(
       const attempt = agentAttempt;
       let commandStartedAt = Date.now();
       let result;
-      if (options.agent.kind === "claude") {
-        const claudeObservationEnv = observability
-          ? await prepareClaudeObservability(
-            handle,
-            observability.runId,
+      let commandStarted = false;
+      try {
+        if (options.agent.kind === "claude") {
+          const claudeObservationEnv = observability
+            ? await prepareClaudeObservability(
+              handle,
+              observability.runId,
+              attempt,
+              observability.config,
+              observe,
+            )
+            : {};
+          const claudeConfigDir = claudeObservationEnv.CLAUDE_CONFIG_DIR;
+          commandStartedAt = Date.now();
+          observe("agent.command.start", {
+            id: handle.id,
             attempt,
-            observability.config,
-            observe,
-          )
-          : {};
-        const claudeConfigDir = claudeObservationEnv.CLAUDE_CONFIG_DIR;
-        commandStartedAt = Date.now();
-        observe("agent.command.start", {
-          id: handle.id,
-          attempt,
-          ...(claudeConfigDir ? { claudeConfigDir } : {}),
-        });
-        const prompt = input.feedback
-          ? `${input.task}\n\n[门禁反馈,请据此修复]\n${input.feedback}`
-          : input.task;
-        result = await handle.execute(
-          CLAUDE_COMMAND,
-          REMOTE_ROOT,
-          { ...modelEnvironment, ...claudeObservationEnv, HARNESS_PROMPT: prompt },
-          AGENT_COMMAND_TIMEOUT_MS,
-        );
-      } else {
-        commandStartedAt = Date.now();
-        observe("agent.command.start", { id: handle.id, attempt });
-        result = await handle.runPty(
-          options.agent.command,
-          REMOTE_ROOT,
-          {
-            HARNESS_TASK: input.task,
-            HARNESS_FEEDBACK: input.feedback ?? "",
-          },
-        );
+            ...(claudeConfigDir ? { claudeConfigDir } : {}),
+          });
+          commandStarted = true;
+          const prompt = input.feedback
+            ? `${input.task}\n\n[门禁反馈,请据此修复]\n${input.feedback}`
+            : input.task;
+          result = await handle.execute(
+            CLAUDE_COMMAND,
+            REMOTE_ROOT,
+            { ...modelEnvironment, ...claudeObservationEnv, HARNESS_PROMPT: prompt },
+            AGENT_COMMAND_TIMEOUT_MS,
+          );
+        } else {
+          commandStartedAt = Date.now();
+          observe("agent.command.start", { id: handle.id, attempt });
+          commandStarted = true;
+          result = await handle.runPty(
+            options.agent.command,
+            REMOTE_ROOT,
+            {
+              HARNESS_TASK: input.task,
+              HARNESS_FEEDBACK: input.feedback ?? "",
+            },
+          );
+        }
+      } catch (error) {
+        if (commandStarted) {
+          observe("agent.command.end", {
+            id: handle.id,
+            attempt,
+            outcome: "error",
+            errorReason: error instanceof Error ? error.message : String(error),
+            durationMs: durationSince(commandStartedAt),
+          });
+        }
+        throw error;
       }
       observe("agent.command.end", {
         id: handle.id,
