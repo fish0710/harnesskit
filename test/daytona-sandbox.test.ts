@@ -7,16 +7,20 @@ import {
   createDaytonaExecutionTarget,
   createDaytonaManager,
   createDaytonaSdkProviderFromClient,
+  rewriteRemoteToolboxProxy,
 } from "../src/harness/sandbox/daytona.js";
+import type { SandboxCreateRequest } from "../src/harness/sandbox/types.js";
 
 interface CreateRequest {
   role: "agent" | "gate";
+  snapshot?: string;
   envVars: Record<string, string>;
   ephemeral: boolean;
 }
 
 interface CreatedSdkRequest {
   language?: string;
+  snapshot?: string;
   labels?: Record<string, string>;
   envVars?: Record<string, string>;
   ephemeral?: boolean;
@@ -32,9 +36,19 @@ const modelEnvironment = {
   ANTHROPIC_REASONING_MODEL: "reasoning",
 };
 
+const gateSnapshotTypeCheck: SandboxCreateRequest = {
+  role: "gate",
+  snapshot: "harness-gate-runtime-latest",
+  envVars: {},
+  ephemeral: true,
+};
+void gateSnapshotTypeCheck;
+
 function completeEnvironment(): Record<string, string> {
   return {
     DAYTONA_API_KEY: "daytona-control-plane-key",
+    HARNESS_DAYTONA_AGENT_SNAPSHOT: "harness-agent-claude-2.1.145-r1",
+    HARNESS_DAYTONA_GATE_SNAPSHOT: "harness-gate-runtime-latest",
     ANTHROPIC_API_KEY: "must-not-be-forwarded",
     HARNESS_GATE_SIGNING_KEY: "must-not-be-forwarded",
     ...modelEnvironment,
@@ -70,6 +84,32 @@ test("manager keeps model credentials out of both sandbox-level environments", a
   assert.equal("HARNESS_GATE_SIGNING_KEY" in created[0]!.envVars, false);
 });
 
+test("manager passes configured Agent and Gate snapshots to their sandbox creation", async () => {
+  const created: CreateRequest[] = [];
+  const provider = {
+    async create(request: CreateRequest) {
+      created.push(request);
+      return recordingHandle(`sandbox-${created.length}`);
+    },
+  };
+  const manager = createDaytonaManager({
+    provider,
+    environment: {
+      ...completeEnvironment(),
+      HARNESS_DAYTONA_AGENT_SNAPSHOT: "  harness-agent-claude-2.1.145-r1  ",
+      HARNESS_DAYTONA_GATE_SNAPSHOT: "  harness-gate-runtime-latest  ",
+    },
+  });
+
+  await manager.createAgentSandbox();
+  await manager.createGateSandbox();
+
+  assert.equal(created[0]?.role, "agent");
+  assert.equal(created[0]?.snapshot, "harness-agent-claude-2.1.145-r1");
+  assert.equal(created[1]?.role, "gate");
+  assert.equal(created[1]?.snapshot, "harness-gate-runtime-latest");
+});
+
 test("manager rejects a missing Daytona API key before provider creation", () => {
   let createCalls = 0;
   const provider = {
@@ -84,6 +124,31 @@ test("manager rejects a missing Daytona API key before provider creation", () =>
     /DAYTONA_API_KEY/,
   );
   assert.equal(createCalls, 0);
+});
+
+test("manager rejects blank Agent or Gate snapshot before provider creation", () => {
+  for (const [key, value] of [
+    ["HARNESS_DAYTONA_AGENT_SNAPSHOT", ""],
+    ["HARNESS_DAYTONA_AGENT_SNAPSHOT", "   "],
+    ["HARNESS_DAYTONA_GATE_SNAPSHOT", ""],
+    ["HARNESS_DAYTONA_GATE_SNAPSHOT", "   "],
+  ] as const) {
+    let createCalls = 0;
+    const provider = {
+      async create(_request: CreateRequest) {
+        createCalls++;
+        return recordingHandle("unexpected");
+      },
+    };
+    const environment = completeEnvironment();
+    environment[key] = value;
+
+    assert.throws(
+      () => createDaytonaManager({ provider, environment }),
+      new RegExp(key),
+    );
+    assert.equal(createCalls, 0);
+  }
 });
 
 test("SDK provider maps role, environment, and lifecycle fields into create", async () => {
@@ -101,11 +166,13 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
 
   await provider.create({
     role: "agent",
+    snapshot: "  harness-agent-claude-2.1.145-r1  ",
     envVars: modelEnvironment,
     ephemeral: false,
   });
   await provider.create({
     role: "gate",
+    snapshot: "  harness-gate-runtime-latest  ",
     envVars: {},
     ephemeral: true,
   });
@@ -113,6 +180,7 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
   assert.deepEqual(created, [
     {
       language: "typescript",
+      snapshot: "harness-agent-claude-2.1.145-r1",
       labels: { "harness.role": "agent" },
       envVars: modelEnvironment,
       ephemeral: false,
@@ -120,6 +188,7 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
     },
     {
       language: "typescript",
+      snapshot: "harness-gate-runtime-latest",
       labels: { "harness.role": "gate" },
       envVars: {},
       ephemeral: true,
@@ -130,6 +199,100 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
     Object.values(created[1]?.envVars ?? {}).includes("agent-token"),
     false,
   );
+});
+
+test("SDK provider keeps PTY toolbox URLs on the public toolbox proxy", async () => {
+  const sdkSandbox = fakeSdkSandbox({
+    toolboxProxyUrl: "http://proxy.localhost:4000/toolbox",
+  });
+  const provider = createDaytonaSdkProviderFromClient(
+    fakeSdkClient(sdkSandbox),
+    "https://daytona.example.test:8443/api",
+  );
+
+  await provider.create({
+    role: "agent",
+    snapshot: "harness-agent-claude-2.1.145-r1",
+    envVars: {},
+    ephemeral: false,
+  });
+
+  assert.equal(
+    sdkSandbox.toolboxProxyUrl,
+    "https://daytona.example.test:8443/toolbox",
+  );
+  assert.equal(
+    sdkSandbox.axiosInstance.defaults.baseURL,
+    "https://daytona.example.test:8443/api/toolbox/sdk-sandbox/toolbox",
+  );
+  assert.equal(
+    sdkSandbox.clientConfig.basePath,
+    "https://daytona.example.test:8443/api/toolbox/sdk-sandbox/toolbox",
+  );
+});
+
+test("toolbox rewrite leaves local Daytona APIs untouched", () => {
+  const sdkSandbox = fakeSdkSandbox({
+    toolboxProxyUrl: "http://proxy.localhost:4000/toolbox",
+  });
+
+  rewriteRemoteToolboxProxy(sdkSandbox, "http://localhost:3000/api");
+
+  assert.equal(sdkSandbox.toolboxProxyUrl, "http://proxy.localhost:4000/toolbox");
+  assert.equal(sdkSandbox.axiosInstance.defaults.baseURL, undefined);
+  assert.equal(sdkSandbox.clientConfig.basePath, undefined);
+});
+
+test("SDK provider rejects empty Agent snapshot requests before client create", async () => {
+  const created: CreatedSdkRequest[] = [];
+  const sdkSandbox = fakeSdkSandbox();
+  const provider = createDaytonaSdkProviderFromClient({
+    async create(request: CreatedSdkRequest) {
+      created.push(request);
+      return sdkSandbox;
+    },
+    async delete() {
+      sdkSandbox.calls.deleted++;
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      provider.create({
+        role: "agent",
+        snapshot: "   ",
+        envVars: {},
+        ephemeral: false,
+      }),
+    /Agent snapshot must not be empty/,
+  );
+  assert.deepEqual(created, []);
+});
+
+test("SDK provider rejects empty Gate snapshot requests before client create", async () => {
+  const created: CreatedSdkRequest[] = [];
+  const sdkSandbox = fakeSdkSandbox();
+  const provider = createDaytonaSdkProviderFromClient({
+    async create(request: CreatedSdkRequest) {
+      created.push(request);
+      return sdkSandbox;
+    },
+    async delete() {
+      sdkSandbox.calls.deleted++;
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      provider.create({
+        role: "gate",
+        snapshot: "   ",
+        envVars: {},
+        ephemeral: true,
+      }),
+    /Gate snapshot must not be empty/,
+  );
+  assert.deepEqual(created, []);
 });
 
 test("SDK handle uploads nested files and preserves executable mode", async () => {
@@ -370,7 +533,7 @@ test("SDK handle runs commands in a PTY, captures output, and disconnects", asyn
   });
 
   const result = await handle.runPty(
-    '"$HOME/.local/bin/claude" --verbose',
+    '"/usr/local/bin/claude" --verbose',
     "/workspace/candidate",
     { HARNESS_PROMPT: "fix the test", ...modelEnvironment },
   );
@@ -384,7 +547,7 @@ test("SDK handle runs commands in a PTY, captures output, and disconnects", asyn
   assert.match(sdkSandbox.calls.ptyOptions?.id ?? "", /^harness-/);
   assert.equal(typeof sdkSandbox.calls.ptyOptions?.onData, "function");
   assert.deepEqual(sdkSandbox.calls.ptyInputs, [
-    'exec "$HOME/.local/bin/claude" --verbose\n',
+    '{ "/usr/local/bin/claude" --verbose; }; status=$?; exit "$status"\n',
   ]);
   assert.equal(sdkSandbox.calls.ptyWaitForConnection, 1);
   assert.equal(sdkSandbox.calls.ptyWait, 1);
@@ -396,8 +559,34 @@ test("SDK handle runs commands in a PTY, captures output, and disconnects", asyn
   });
 });
 
-test("SDK handle rejects promptly when a PTY times out", async () => {
-  const sdkSandbox = fakeSdkSandbox({ ptyWaitNever: true });
+test("SDK handle wraps exec-prefixed PTY commands without nesting exec", async () => {
+  const sdkSandbox = fakeSdkSandbox();
+  const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
+  const handle = await provider.create({
+    role: "agent",
+    envVars: modelEnvironment,
+    ephemeral: false,
+  });
+
+  await handle.runPty(
+    "exec npm test",
+    "/workspace/candidate",
+    {},
+  );
+
+  assert.deepEqual(sdkSandbox.calls.ptyInputs, [
+    '{ exec npm test; }; status=$?; exit "$status"\n',
+  ]);
+});
+
+test("SDK handle includes recent PTY output when a PTY times out", async () => {
+  const sdkSandbox = fakeSdkSandbox({
+    ptyOutput: [
+      "installing dependencies\n",
+      "bash: exec: npm: not found\n",
+    ],
+    ptyWaitNever: true,
+  });
   const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
   const handle = await provider.create({
     role: "agent",
@@ -417,7 +606,39 @@ test("SDK handle rejects promptly when a PTY times out", async () => {
         setTimeout(() => reject(new Error("test guard timed out")), 250)
       ),
     ]),
-    /PTY timed out after 10ms/,
+    /PTY timed out after 10ms[\s\S]*bash: exec: npm: not found/,
+  );
+  assert.equal(sdkSandbox.calls.ptyKill, 1);
+  assert.equal(sdkSandbox.calls.ptyDisconnect, 1);
+});
+
+test("SDK handle preserves timeout diagnostics when PTY cleanup fails", async () => {
+  const sdkSandbox = fakeSdkSandbox({
+    ptyOutput: ["last useful line\n"],
+    ptyWaitNever: true,
+    ptyKillError: new Error("kill failed"),
+    ptyDisconnectError: new Error("disconnect failed"),
+  });
+  const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
+  const handle = await provider.create({
+    role: "agent",
+    envVars: modelEnvironment,
+    ephemeral: false,
+  });
+
+  await assert.rejects(
+    Promise.race([
+      handle.runPty(
+        "sleep infinity",
+        "/workspace/candidate",
+        {},
+        10,
+      ),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("test guard timed out")), 250)
+      ),
+    ]),
+    /PTY timed out after 10ms[\s\S]*last useful line/,
   );
   assert.equal(sdkSandbox.calls.ptyKill, 1);
   assert.equal(sdkSandbox.calls.ptyDisconnect, 1);
@@ -447,7 +668,7 @@ test("remote execution target preserves trusted argv and host execution id", asy
   }> = [];
   const handle = {
     ...recordingHandle("execution"),
-    async runPty(
+    async execute(
       command: string,
       cwd: string,
       env?: Record<string, string>,
@@ -499,6 +720,87 @@ test("remote HTTP target converts malformed envelopes into error evidence", asyn
   assert.equal(evidence.executionId, "http-id");
   assert.ok(evidence.error);
   assert.equal(evidence.status, undefined);
+});
+
+test("remote HTTP target avoids inline node eval for the evidence script", async () => {
+  const calls: Array<{ command: string; env: Record<string, string> }> = [];
+  const handle = {
+    ...recordingHandle("http"),
+    async execute(command: string, _cwd: string, env: Record<string, string>) {
+      calls.push({ command, env });
+      if (command.includes(" '-e' ") || command.includes(" -e ")) {
+        return {
+          exitCode: 0,
+          stdout: "/usr/bin/bash: polluted stdout",
+          stderr: "",
+        };
+      }
+      return {
+        exitCode: 0,
+        stdout:
+          "HARNESS_HTTP_EVIDENCE " +
+          JSON.stringify({
+            status: 200,
+            headers: { "content-type": "application/json" },
+            body: "{\"status\":\"ok\"}",
+          }),
+        stderr: "",
+      };
+    },
+  };
+  const target = createDaytonaExecutionTarget(
+    handle,
+    "/workspace/candidate",
+  );
+
+  const evidence = await target.request({
+    executionId: "http-id",
+    url: "http://127.0.0.1:3000/health",
+    method: "GET",
+  });
+
+  assert.equal(evidence.executionId, "http-id");
+  assert.equal(evidence.status, 200);
+  assert.equal(evidence.error, undefined);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.command, /HARNESS_HTTP_SCRIPT_B64/);
+  assert.equal(typeof calls[0]!.env.HARNESS_HTTP_SCRIPT_B64, "string");
+  assert.equal(typeof calls[0]!.env.HARNESS_HTTP_REQUEST, "string");
+});
+
+test("remote HTTP target ignores shell stdout before the evidence marker", async () => {
+  const handle = {
+    ...recordingHandle("http"),
+    async execute() {
+      return {
+        exitCode: 0,
+        stdout:
+          "/usr/bin/bash: warning: setlocale failed\n" +
+          "HARNESS_HTTP_EVIDENCE " +
+          JSON.stringify({
+            status: 204,
+            headers: { "x-gate": "ok" },
+            body: "",
+          }),
+        stderr: "",
+      };
+    },
+  };
+  const target = createDaytonaExecutionTarget(
+    handle,
+    "/workspace/candidate",
+  );
+
+  const evidence = await target.request({
+    executionId: "http-id",
+    url: "http://127.0.0.1:3000/health",
+    method: "GET",
+  });
+
+  assert.equal(evidence.executionId, "http-id");
+  assert.equal(evidence.status, 204);
+  assert.equal(evidence.headers["x-gate"], "ok");
+  assert.equal(evidence.error, undefined);
 });
 
 test("SDK handle deletes the underlying sandbox", async () => {
@@ -571,9 +873,12 @@ function fakeSdkClient(sandbox: ReturnType<typeof fakeSdkSandbox>) {
 function fakeSdkSandbox(options: {
   listings?: Map<string, FileInfo[]>;
   downloads?: Map<string, Buffer>;
+  toolboxProxyUrl?: string;
   ptyOutput?: string[];
   ptyExitCode?: number;
   ptyWaitNever?: boolean;
+  ptyKillError?: Error;
+  ptyDisconnectError?: Error;
 } = {}) {
   const calls = {
     createdFolders: [] as Array<[string, string]>,
@@ -598,6 +903,11 @@ function fakeSdkSandbox(options: {
 
   return {
     id: "sdk-sandbox",
+    toolboxProxyUrl: options.toolboxProxyUrl,
+    axiosInstance: {
+      defaults: {} as { baseURL?: string },
+    },
+    clientConfig: {} as { basePath?: string },
     calls,
     options,
     fs: {
@@ -690,9 +1000,13 @@ function fakeSdkSandbox(options: {
           },
           async kill() {
             calls.ptyKill++;
+            if (options.ptyKillError) throw options.ptyKillError;
           },
           async disconnect() {
             calls.ptyDisconnect++;
+            if (options.ptyDisconnectError) {
+              throw options.ptyDisconnectError;
+            }
           },
         };
       },

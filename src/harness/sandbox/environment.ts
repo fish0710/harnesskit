@@ -1,12 +1,11 @@
 import { aggregate } from "../../aggregate.js";
-import type { CheckResult, GateReport } from "../../types.js";
+import type { CheckResult, Contract, GateReport } from "../../types.js";
 import type {
   EnvironmentTaskInput,
   RunEnvironment,
 } from "../run.js";
 import {
   CLAUDE_COMMAND,
-  CLAUDE_INSTALL_COMMAND,
   createDaytonaExecutionTarget,
   getClaudeEnvironment,
 } from "./daytona.js";
@@ -23,8 +22,16 @@ import {
   captureWorkspace,
   collectCandidate,
 } from "./workspace.js";
+import {
+  assertClaudeToolchain,
+  CLAUDE_TOOLCHAIN_PREFLIGHT,
+  getGateSnapshot,
+  requireAgentSnapshot,
+} from "./toolchain.js";
 
 const REMOTE_ROOT = "/workspace/candidate";
+const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
+const AGENT_COMMAND_TIMEOUT_MS = 20 * 60 * 1000;
 
 export type SandboxAgentSpec =
   | { kind: "claude" }
@@ -63,24 +70,72 @@ function commandFailure(label: string, result: {
   );
 }
 
+function durationSince(startedAt: number): number {
+  return Math.max(0, Date.now() - startedAt);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isLoopbackHost(value: string): boolean {
+  return value === "localhost" ||
+    value === "127.0.0.1" ||
+    value === "::1" ||
+    value.endsWith(".localhost");
+}
+
+function urlUsesLoopback(value: string): boolean {
+  try {
+    return isLoopbackHost(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function contractUsesLoopbackHttp(contract: Contract): boolean {
+  if (contract.type !== "http" || !isRecord(contract.trigger)) {
+    return false;
+  }
+  const { url, baseUrl } = contract.trigger;
+  return (typeof url === "string" && urlUsesLoopback(url)) ||
+    (typeof baseUrl === "string" && urlUsesLoopback(baseUrl));
+}
+
+function shouldBlockGateNetwork(contracts: Contract[]): boolean {
+  return !contracts.some(contractUsesLoopbackHttp);
+}
+
 async function runSetup(
   handle: SandboxHandle,
   commands: string[],
   label: string,
 ): Promise<void> {
-  for (const command of commands) {
-    const result = await handle.runPty(command, REMOTE_ROOT, {});
-    if (result.exitCode !== 0) throw commandFailure(label, result);
+  for (const [index, command] of commands.entries()) {
+    const result = await handle.execute(
+      command,
+      REMOTE_ROOT,
+      {},
+      SETUP_TIMEOUT_MS,
+    );
+    if (result.exitCode !== 0) {
+      throw commandFailure(`${label} command ${index + 1}`, result);
+    }
   }
 }
 
 export function createDaytonaRunEnvironment(
   options: DaytonaRunEnvironmentOptions,
 ): RunEnvironment {
+  const environment = options.environment ?? process.env;
   const baseline = captureWorkspace(options.root, options.policy);
   const modelEnvironment = options.agent.kind === "claude"
-    ? getClaudeEnvironment(options.environment ?? process.env)
+    ? getClaudeEnvironment(environment)
     : {};
+  const agentSnapshot = options.agent.kind === "claude"
+    ? requireAgentSnapshot(environment)
+    : undefined;
+  const gateSnapshot = getGateSnapshot(environment);
   let agentHandle: SandboxHandle | undefined;
   let pendingCandidate: CandidateSnapshot | undefined;
   let approvedCandidate: CandidateSnapshot | undefined;
@@ -95,30 +150,56 @@ export function createDaytonaRunEnvironment(
     if (closed) throw new Error("Daytona run environment is closed");
     if (agentHandle) return agentHandle;
     observe("agent.create.start", {});
+    const createStartedAt = Date.now();
     const handle = await options.provider.create({
       role: "agent",
+      ...(agentSnapshot ? { snapshot: agentSnapshot } : {}),
       envVars: {},
       ephemeral: false,
     });
+    observe("agent.create.end", {
+      id: handle.id,
+      role: "agent",
+      durationMs: durationSince(createStartedAt),
+    });
     try {
+      const agentFiles = agentVisibleFiles(baseline, options.policy);
+      observe("agent.upload.start", { id: handle.id });
+      const uploadStartedAt = Date.now();
       await handle.upload(
-        agentVisibleFiles(baseline, options.policy),
+        agentFiles,
         REMOTE_ROOT,
       );
-      await runSetup(handle, options.policy.agentSetup, "agent setup");
+      observe("agent.upload.end", {
+        id: handle.id,
+        files: agentFiles.length,
+        durationMs: durationSince(uploadStartedAt),
+      });
       if (options.agent.kind === "claude") {
-        const installation = await handle.execute(
-          CLAUDE_INSTALL_COMMAND,
+        observe("agent.preflight.start", { id: handle.id });
+        const preflightStartedAt = Date.now();
+        const preflight = await handle.execute(
+          CLAUDE_TOOLCHAIN_PREFLIGHT,
           REMOTE_ROOT,
           {},
-          5 * 60 * 1000,
+          30_000,
         );
-        if (installation.exitCode !== 0) {
-          throw commandFailure("Claude Code installation", installation);
-        }
+        assertClaudeToolchain(preflight);
+        observe("agent.preflight.end", {
+          id: handle.id,
+          exitCode: preflight.exitCode,
+          durationMs: durationSince(preflightStartedAt),
+        });
       }
+      observe("agent.setup.start", { id: handle.id });
+      const setupStartedAt = Date.now();
+      await runSetup(handle, options.policy.agentSetup, "agent setup");
+      observe("agent.setup.end", {
+        id: handle.id,
+        commands: options.policy.agentSetup.length,
+        durationMs: durationSince(setupStartedAt),
+      });
       agentHandle = handle;
-      observe("agent.create.end", { id: handle.id });
       return handle;
     } catch (error) {
       await handle.delete().catch(() => undefined);
@@ -132,15 +213,17 @@ export function createDaytonaRunEnvironment(
     async runTask(input: EnvironmentTaskInput) {
       const handle = await ensureAgent();
       observe("agent.command.start", { id: handle.id });
+      const commandStartedAt = Date.now();
       let result;
       if (options.agent.kind === "claude") {
         const prompt = input.feedback
           ? `${input.task}\n\n[门禁反馈,请据此修复]\n${input.feedback}`
           : input.task;
-        result = await handle.runPty(
+        result = await handle.execute(
           CLAUDE_COMMAND,
           REMOTE_ROOT,
           { ...modelEnvironment, HARNESS_PROMPT: prompt },
+          AGENT_COMMAND_TIMEOUT_MS,
         );
       } else {
         result = await handle.runPty(
@@ -155,6 +238,7 @@ export function createDaytonaRunEnvironment(
       observe("agent.command.end", {
         id: handle.id,
         exitCode: result.exitCode,
+        durationMs: durationSince(commandStartedAt),
       });
       return {
         summary: `sandbox agent exited ${result.exitCode}` +
@@ -170,6 +254,7 @@ export function createDaytonaRunEnvironment(
       const handle = await ensureAgent();
       try {
         observe("candidate.collect.start", { id: handle.id });
+        const collectStartedAt = Date.now();
         pendingCandidate = await collectCandidate(
           handle.workspace(
             REMOTE_ROOT,
@@ -186,7 +271,10 @@ export function createDaytonaRunEnvironment(
           options.policy,
         );
         observe("candidate.collect.end", {
+          id: handle.id,
           operations: pendingCandidate.operations.length,
+          files: pendingCandidate.files.size,
+          durationMs: durationSince(collectStartedAt),
         });
       } catch (error) {
         pendingCandidate = undefined;
@@ -200,21 +288,35 @@ export function createDaytonaRunEnvironment(
       let cleanupError: unknown;
       try {
         observe("gate.create.start", {});
+        const gateCreateStartedAt = Date.now();
         gateHandle = await options.provider.create({
           role: "gate",
+          snapshot: gateSnapshot,
           envVars: {},
           ephemeral: true,
         });
-        observe("gate.create.end", { id: gateHandle.id });
+        observe("gate.create.end", {
+          id: gateHandle.id,
+          role: "gate",
+          durationMs: durationSince(gateCreateStartedAt),
+        });
+        observe("gate.upload.start", { id: gateHandle.id });
+        const initialUploadStartedAt = Date.now();
         await gateHandle.upload(
           [...baseline.files.values()],
           REMOTE_ROOT,
         );
-        await runSetup(gateHandle, options.policy.gateSetup, "gate setup");
+        observe("gate.upload.end", {
+          id: gateHandle.id,
+          files: baseline.files.size,
+          durationMs: durationSince(initialUploadStartedAt),
+        });
         const baselineMutablePaths = agentVisibleFiles(
           baseline,
           options.policy,
         ).map((file) => file.path);
+        observe("gate.upload.start", { id: gateHandle.id });
+        const candidateUploadStartedAt = Date.now();
         await gateHandle.remove(baselineMutablePaths, REMOTE_ROOT);
         await gateHandle.upload(
           [...pendingCandidate.files.values()],
@@ -226,11 +328,45 @@ export function createDaytonaRunEnvironment(
         );
         await gateHandle.upload(protectedFiles, REMOTE_ROOT);
         await gateHandle.verify(protectedFiles, REMOTE_ROOT);
-        await gateHandle.setNetworkBlocked(true);
+        observe("gate.upload.end", {
+          id: gateHandle.id,
+          files: pendingCandidate.files.size + protectedFiles.length,
+          removed: baselineMutablePaths.length,
+          verified: protectedFiles.length,
+          durationMs: durationSince(candidateUploadStartedAt),
+        });
+        observe("gate.setup.start", { id: gateHandle.id });
+        const gateSetupStartedAt = Date.now();
+        await runSetup(gateHandle, options.policy.gateSetup, "gate setup");
+        observe("gate.setup.end", {
+          id: gateHandle.id,
+          commands: options.policy.gateSetup.length,
+          durationMs: durationSince(gateSetupStartedAt),
+        });
+        const blockGateNetwork = shouldBlockGateNetwork(contracts);
+        observe("gate.network.start", { id: gateHandle.id });
+        const networkStartedAt = Date.now();
+        if (blockGateNetwork) {
+          await gateHandle.setNetworkBlocked(true);
+        }
+        observe("gate.network.end", {
+          id: gateHandle.id,
+          blocked: blockGateNetwork,
+          ...(!blockGateNetwork ? { reason: "loopback-http" } : {}),
+          durationMs: durationSince(networkStartedAt),
+        });
+        observe("gate.run.start", { id: gateHandle.id });
+        const gateRunStartedAt = Date.now();
         report = await gate.run(contracts, {
           ...ctx,
           cwd: REMOTE_ROOT,
           execution: createDaytonaExecutionTarget(gateHandle, REMOTE_ROOT),
+        });
+        observe("gate.run.end", {
+          id: gateHandle.id,
+          outcome: report.outcome,
+          results: report.results.length,
+          durationMs: durationSince(gateRunStartedAt),
         });
         await gateHandle.verify(protectedFiles, REMOTE_ROOT);
         observe("gate.result", {
@@ -243,11 +379,22 @@ export function createDaytonaRunEnvironment(
         );
       } finally {
         if (gateHandle) {
+          observe("gate.cleanup.start", { id: gateHandle.id });
+          const cleanupStartedAt = Date.now();
           try {
             await gateHandle.delete();
-            observe("gate.cleanup", { id: gateHandle.id });
+            observe("gate.cleanup.end", {
+              id: gateHandle.id,
+              outcome: "deleted",
+              durationMs: durationSince(cleanupStartedAt),
+            });
           } catch (error) {
             cleanupError = error;
+            observe("gate.cleanup.end", {
+              id: gateHandle.id,
+              outcome: "error",
+              durationMs: durationSince(cleanupStartedAt),
+            });
           }
         }
       }
@@ -291,8 +438,14 @@ export function createDaytonaRunEnvironment(
         agentHandle &&
         (!options.policy.retainOnFailure || published)
       ) {
+        observe("agent.cleanup.start", { id: agentHandle.id });
+        const cleanupStartedAt = Date.now();
         await agentHandle.delete();
-        observe("agent.cleanup", { id: agentHandle.id });
+        observe("agent.cleanup.end", {
+          id: agentHandle.id,
+          outcome: "deleted",
+          durationMs: durationSince(cleanupStartedAt),
+        });
       }
       closed = true;
     },

@@ -13,9 +13,15 @@ import { test } from "node:test";
 import { GateCore } from "../src/gate.js";
 import { commandPlugin } from "../src/plugins/command.js";
 import {
+  CLAUDE_COMMAND,
+} from "../src/harness/sandbox/daytona.js";
+import {
   createDaytonaRunEnvironment,
 } from "../src/harness/sandbox/environment.js";
 import { loadSandboxPolicy } from "../src/harness/sandbox/policy.js";
+import {
+  CLAUDE_TOOLCHAIN_PREFLIGHT,
+} from "../src/harness/sandbox/toolchain.js";
 import { workspaceFile } from "../src/harness/sandbox/workspace.js";
 import type {
   SandboxCreateRequest,
@@ -43,6 +49,12 @@ const modelEnvironment = {
   ANTHROPIC_REASONING_MODEL: "reasoning",
 };
 
+const configuredClaudeEnvironment = {
+  ...modelEnvironment,
+  HARNESS_DAYTONA_AGENT_SNAPSHOT: "harness-agent-claude-2.1.145-r1",
+  HARNESS_DAYTONA_GATE_SNAPSHOT: "harness-gate-runtime-latest",
+};
+
 function createGitFixture(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "harness-daytona-environment-"));
   spawnSync("git", ["init"], { cwd: root, stdio: "ignore" });
@@ -64,11 +76,15 @@ function createGitFixture(files: Record<string, string>): string {
   return root;
 }
 
-function policy() {
+function policy(setup: {
+  agentSetup?: string[];
+  gateSetup?: string[];
+} = {}) {
   return loadSandboxPolicy({
     sandbox: {
       candidateRoots: ["src"],
       protectedPaths: ["contracts"],
+      ...setup,
     },
   });
 }
@@ -83,6 +99,12 @@ interface ScriptedProvider extends SandboxProvider {
 class RecordingHandle implements SandboxHandle {
   readonly files = new Map<string, WorkspaceFile>();
   readonly commands: string[] = [];
+  readonly executeCalls: Array<{
+    command: string;
+    cwd: string;
+    env: Record<string, string>;
+    timeoutMs: number | undefined;
+  }> = [];
   readonly ptyCommands: string[] = [];
   readonly networkBlocks: boolean[] = [];
   verifications = 0;
@@ -103,6 +125,7 @@ class RecordingHandle implements SandboxHandle {
       >;
       gateDeleteFails: boolean;
       mutateProtectedOnGate: boolean;
+      commandExitCodes: Record<string, number>;
     },
   ) {}
 
@@ -155,10 +178,39 @@ class RecordingHandle implements SandboxHandle {
 
   async execute(
     command: string,
-    _cwd: string,
+    cwd: string,
     env: Record<string, string> = {},
+    timeoutMs?: number,
   ) {
     this.commands.push(command);
+    this.executeCalls.push({ command, cwd, env, timeoutMs });
+    if (command === CLAUDE_TOOLCHAIN_PREFLIGHT) {
+      return {
+        exitCode: 0,
+        stdout:
+          "node=v22.14.0\nnpm=10.9.2\nnpx=10.9.2\n" +
+          "claude=2.1.145 (Claude Code)\nbash=/usr/bin/bash\n",
+        stderr: "",
+      };
+    }
+    if (this.role === "gate" && command === "assert-candidate-visible") {
+      const candidate = this.files.get("src/a.ts")?.content.toString();
+      return {
+        exitCode: candidate === "fixed\n" ? 0 : 42,
+        stdout: candidate ?? "(missing)",
+        stderr: candidate === "fixed\n"
+          ? ""
+          : `expected candidate content, got ${JSON.stringify(candidate)}`,
+      };
+    }
+    const configuredExitCode = this.provider.commandExitCodes[command];
+    if (configuredExitCode !== undefined) {
+      return {
+        exitCode: configuredExitCode,
+        stdout: "",
+        stderr: configuredExitCode === 0 ? "" : `${command}: not found`,
+      };
+    }
     if (this.role === "agent" && command === "fake-agent") {
       this.provider.agentPrompts.push(env.HARNESS_FEEDBACK ?? "");
       const content = this.provider.candidateVersions[
@@ -230,6 +282,7 @@ function scriptedProvider(options: {
   >;
   gateDeleteFails?: boolean;
   mutateProtectedOnGate?: boolean;
+  commandExitCodes?: Record<string, number>;
 }): ScriptedProvider {
   const state = {
     ...options,
@@ -237,6 +290,7 @@ function scriptedProvider(options: {
     candidateMutations: options.candidateMutations ?? [],
     gateDeleteFails: options.gateDeleteFails ?? false,
     mutateProtectedOnGate: options.mutateProtectedOnGate ?? false,
+    commandExitCodes: options.commandExitCodes ?? {},
     agentPrompts: [] as string[],
     agentRuns: 0,
     gateRuns: 0,
@@ -323,7 +377,7 @@ test("multiple attempts reuse one agent and create a fresh gate each time", asyn
   assert.ok(gates.every((handle) => handle.verifications === 2));
 });
 
-test("gate sandboxes receive no model credentials or Claude installation", async () => {
+test("gate sandboxes use Gate runtime snapshots without model credentials or Claude installation", async () => {
   const root = createGitFixture({ "src/a.ts": "before\n" });
   const provider = scriptedProvider({
     candidateVersions: ["fixed\n"],
@@ -334,7 +388,7 @@ test("gate sandboxes receive no model credentials or Claude installation", async
     root,
     policy: policy(),
     agent: { kind: "claude" },
-    environment: modelEnvironment,
+    environment: configuredClaudeEnvironment,
   });
 
   await runLoop({
@@ -349,8 +403,19 @@ test("gate sandboxes receive no model credentials or Claude installation", async
   const gateRequest = provider.requests.find(
     (request) => request.role === "gate",
   );
+  const agentRequest = provider.requests.find(
+    (request) => request.role === "agent",
+  );
   const gateHandle = provider.handles.find(
     (handle) => handle.role === "gate",
+  );
+  assert.equal(
+    agentRequest?.snapshot,
+    configuredClaudeEnvironment.HARNESS_DAYTONA_AGENT_SNAPSHOT,
+  );
+  assert.equal(
+    gateRequest?.snapshot,
+    configuredClaudeEnvironment.HARNESS_DAYTONA_GATE_SNAPSHOT,
   );
   assert.deepEqual(gateRequest?.envVars, {});
   assert.equal(
@@ -360,12 +425,301 @@ test("gate sandboxes receive no model credentials or Claude installation", async
   const agentHandle = provider.handles.find(
     (handle) => handle.role === "agent",
   );
+  const agentCommands = [
+    ...(agentHandle?.commands ?? []),
+    ...(agentHandle?.ptyCommands ?? []),
+  ];
   assert.equal(
-    agentHandle?.ptyCommands.some((command) =>
-      command.includes("npm install")
+    agentCommands.some((command) =>
+      command.includes("@anthropic-ai/claude-code")
     ),
     false,
   );
+  assert.equal(
+    agentCommands.some((command) => command.includes("npm install -g")),
+    false,
+  );
+});
+
+test("Claude Daytona observations report safe stages without prompt or credential text", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["broken\n", "fixed\n"],
+    gateExitCodes: [1, 0],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: {
+      ...configuredClaudeEnvironment,
+      DAYTONA_API_KEY: "daytona-secret-key",
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const outcome = await runLoop({
+    task: "fix highly sensitive task text",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    initialFeedback: "private reviewer feedback",
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  const events = observations.map(([event]) => event);
+  for (const event of [
+    "agent.create.start",
+    "agent.upload.end",
+    "agent.preflight.end",
+    "agent.setup.end",
+    "agent.command.end",
+    "candidate.collect.end",
+    "gate.create.end",
+    "gate.upload.end",
+    "gate.setup.end",
+    "gate.network.end",
+    "gate.run.end",
+    "gate.cleanup.end",
+    "agent.cleanup.end",
+  ]) {
+    assert.ok(events.includes(event), `missing observation: ${event}`);
+  }
+  const ended = observations.filter(([event]) => event.endsWith(".end"));
+  assert.ok(ended.length > 0);
+  for (const [, data] of ended) {
+    assert.equal(typeof (data as { durationMs?: unknown }).durationMs, "number");
+  }
+  const serialized = JSON.stringify(observations);
+  for (const secret of [
+    configuredClaudeEnvironment.ANTHROPIC_AUTH_TOKEN,
+    "daytona-secret-key",
+    "fix highly sensitive task text",
+    "private reviewer feedback",
+  ]) {
+    assert.equal(serialized.includes(secret), false);
+  }
+});
+
+test("Claude agent environment rejects blank runtime snapshot overrides before sandbox creation", () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  for (const [key, value] of [
+    ["HARNESS_DAYTONA_AGENT_SNAPSHOT", "   "],
+    ["HARNESS_DAYTONA_GATE_SNAPSHOT", "   "],
+  ] as const) {
+    const provider = scriptedProvider({
+      candidateVersions: ["fixed\n"],
+      gateExitCodes: [0],
+    });
+
+    assert.throws(
+      () =>
+        createDaytonaRunEnvironment({
+          provider,
+          root,
+          policy: policy(),
+          agent: { kind: "claude" },
+          environment: { ...modelEnvironment, [key]: value },
+        }),
+      new RegExp(key),
+    );
+    assert.deepEqual(provider.requests, []);
+  }
+});
+
+test("Claude agent setup executes after preflight without using a PTY", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy({ agentSetup: ["npm install", "npm test"] }),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+  });
+
+  await environment.runTask({ task: "fix it" });
+
+  const agent = provider.handles.find((handle) => handle.role === "agent")!;
+  assert.deepEqual(agent.commands.slice(0, 3), [
+    CLAUDE_TOOLCHAIN_PREFLIGHT,
+    "npm install",
+    "npm test",
+  ]);
+  assert.deepEqual(
+    agent.executeCalls.slice(0, 3).map((call) => call.timeoutMs),
+    [30_000, 10 * 60 * 1000, 10 * 60 * 1000],
+  );
+  assert.equal(agent.ptyCommands.includes("npm install"), false);
+  assert.equal(agent.ptyCommands.includes("npm test"), false);
+  assert.equal(agent.ptyCommands.includes(CLAUDE_COMMAND), false);
+  assert.equal(agent.commands.includes(CLAUDE_COMMAND), true);
+  assert.equal(
+    agent.executeCalls.find((call) => call.command === CLAUDE_COMMAND)
+      ?.timeoutMs,
+    20 * 60 * 1000,
+  );
+});
+
+test("agent setup failure stops later setup and deletes the sandbox", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    commandExitCodes: { "npm install": 127 },
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy({ agentSetup: ["npm install", "npm test"] }),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+  });
+
+  await assert.rejects(
+    environment.runTask({ task: "fix it" }),
+    /agent setup command 1 failed with exit 127/i,
+  );
+
+  const agent = provider.handles.find((handle) => handle.role === "agent")!;
+  assert.deepEqual(agent.commands, [
+    CLAUDE_TOOLCHAIN_PREFLIGHT,
+    "npm install",
+  ]);
+  assert.equal(agent.commands.includes("npm test"), false);
+  assert.deepEqual(agent.ptyCommands, []);
+  assert.equal(agent.deleted, 1);
+});
+
+test("command agent setup uses execute without Claude preflight", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy({ agentSetup: ["npm install"] }),
+    agent: { kind: "command", command: "fake-agent" },
+  });
+
+  await environment.runTask({ task: "fix it" });
+
+  const agent = provider.handles.find((handle) => handle.role === "agent")!;
+  assert.equal(agent.commands[0], "npm install");
+  assert.equal(agent.commands.includes(CLAUDE_TOOLCHAIN_PREFLIGHT), false);
+  assert.equal(agent.ptyCommands.includes("npm install"), false);
+  assert.deepEqual(agent.ptyCommands, ["fake-agent"]);
+  assert.equal(agent.executeCalls[0]?.timeoutMs, 10 * 60 * 1000);
+});
+
+test("gate setup uses execute and stops after the first failure", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    commandExitCodes: { "npm install": 127 },
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy({ gateSetup: ["npm install", "npm test"] }),
+    agent: { kind: "command", command: "fake-agent" },
+  });
+
+  await environment.runTask({ task: "fix it" });
+  const report = await environment.runGate({
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+  });
+
+  const gate = provider.handles.find((handle) => handle.role === "gate")!;
+  assert.equal(report.outcome, "fail");
+  assert.equal(report.results[0]?.status, "error");
+  assert.match(
+    report.results[0]?.errorReason ?? "",
+    /gate setup command 1 failed with exit 127/i,
+  );
+  assert.deepEqual(gate.commands, ["npm install"]);
+  assert.deepEqual(gate.ptyCommands, []);
+  assert.equal(gate.executeCalls[0]?.timeoutMs, 10 * 60 * 1000);
+  assert.equal(gate.deleted, 1);
+});
+
+test("gate setup runs after candidate files are assembled", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy({ gateSetup: ["assert-candidate-visible"] }),
+    agent: { kind: "command", command: "fake-agent" },
+  });
+
+  await environment.runTask({ task: "fix it" });
+  const report = await environment.runGate({
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+  });
+
+  const gate = provider.handles.find((handle) => handle.role === "gate")!;
+  assert.equal(report.outcome, "pass");
+  assert.deepEqual(gate.commands, [
+    "assert-candidate-visible",
+    "'/usr/bin/env' '--' 'true'",
+  ]);
+  assert.equal(gate.deleted, 1);
+});
+
+test("gate network remains open for loopback HTTP contracts", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "command", command: "fake-agent" },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await environment.runTask({ task: "fix it" });
+  await environment.runGate({
+    contracts: [{
+      id: "health",
+      type: "http",
+      trigger: {
+        baseUrl: "http://127.0.0.1:3000",
+        path: "/health",
+      },
+    }],
+    gate: new GateCore(),
+    ctx: { cwd: root },
+  });
+
+  const gate = provider.handles.find((handle) => handle.role === "gate")!;
+  assert.deepEqual(gate.networkBlocks, []);
+  const networkEnd = observations.find(([event]) => event === "gate.network.end");
+  assert.equal((networkEnd?.[1] as { id?: string }).id, gate.id);
+  assert.equal((networkEnd?.[1] as { blocked?: boolean }).blocked, false);
+  assert.equal((networkEnd?.[1] as { reason?: string }).reason, "loopback-http");
+  assert.equal(typeof (networkEnd?.[1] as { durationMs?: unknown }).durationMs, "number");
 });
 
 test("publication uses the evaluated candidate instead of recollecting agent files", async () => {

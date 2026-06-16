@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
   CLAUDE_COMMAND,
-  CLAUDE_INSTALL_COMMAND,
   configureLocalDaytonaProxy,
   getClaudeEnvironment,
   getDaytonaConfig,
   getLocalDaytonaNoProxy,
 } from "../src/harness/sandbox/daytona.js";
+import {
+  createGitFixture,
+  integrationPolicy,
+  runDaytonaIntegration,
+} from "./daytona-claude.js";
 
 const claudeEnvironment = {
   ANTHROPIC_AUTH_TOKEN: "token with ' quote",
@@ -106,8 +112,49 @@ test("Claude environment reports every missing required allowlisted variable", (
   );
 });
 
-test("Claude Code is installed under the sandbox user home and launched from it", () => {
-  assert.match(CLAUDE_INSTALL_COMMAND, /--prefix "\$HOME\/\.local"/);
-  assert.match(CLAUDE_COMMAND, /^exec "\$HOME\/\.local\/bin\/claude"/);
+test("Claude Code launches from the immutable image path", () => {
+  assert.match(CLAUDE_COMMAND, /^exec "\/usr\/local\/bin\/claude"/);
   assert.match(CLAUDE_COMMAND, /--dangerously-skip-permissions/);
+  assert.match(CLAUDE_COMMAND, /--output-format stream-json/);
+  assert.match(CLAUDE_COMMAND, /--verbose/);
+});
+
+test("Daytona Claude integration policy installs dependencies in the Agent sandbox", () => {
+  const policy = integrationPolicy();
+
+  assert.deepEqual(policy.candidateRoots, [
+    "src",
+    "package.json",
+    "package-lock.json",
+  ]);
+  assert.deepEqual(policy.protectedPaths, ["contracts", ".harness"]);
+  assert.deepEqual(policy.agentSetup, ["npm install"]);
+  assert.equal(policy.retainOnFailure, false);
+});
+
+test("Daytona Claude fixture includes an installable private package", () => {
+  const root = createGitFixture();
+  const packageJson = JSON.parse(
+    readFileSync(join(root, "package.json"), "utf8"),
+  );
+
+  assert.deepEqual(packageJson, {
+    name: "harness-daytona-integration-fixture",
+    version: "1.0.0",
+    private: true,
+  });
+});
+
+test("Daytona Claude integration rejects blank Agent snapshot overrides before running", async () => {
+  await assert.rejects(
+    () =>
+      runDaytonaIntegration({
+        RUN_DAYTONA_INTEGRATION: "1",
+        DAYTONA_API_KEY: "unused",
+        HARNESS_DAYTONA_AGENT_SNAPSHOT: "   ",
+        ANTHROPIC_AUTH_TOKEN: "token",
+        ANTHROPIC_MODEL: "model",
+      }),
+    /HARNESS_DAYTONA_AGENT_SNAPSHOT/,
+  );
 });

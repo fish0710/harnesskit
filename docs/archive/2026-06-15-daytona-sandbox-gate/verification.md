@@ -8,11 +8,11 @@
 npm run check
 ```
 
-2026-06-15 最终结果：
+2026-06-15 当前结果：
 
 ```text
-tests 212
-pass 212
+tests 236
+pass 236
 fail 0
 cancelled 0
 skipped 0
@@ -29,7 +29,32 @@ todo 0
 - 持久 agent / 全新 gate 生命周期；
 - gate 无模型凭证、无 Claude 安装；
 - Daytona SDK 文件、命令、PTY、网络和清理 adapter；
+- pinned Claude image、Agent Snapshot、preflight 和脱敏观测；
 - retry、review、escalation 和 publication 语义。
+
+## Agent 镜像与 Snapshot 验证
+
+版本锁定：
+
+```text
+Node.js 22.14.0
+Claude Code 2.1.145
+harness-daytona-claude:2.1.145-r1
+registry:6000/harness/harness-daytona-claude:2.1.145-r1
+harness-agent-claude-2.1.145-r1
+```
+
+构建和注册命令：
+
+```bash
+npm run snapshot:agent
+export HARNESS_DAYTONA_AGENT_SNAPSHOT=harness-agent-claude-2.1.145-r1
+```
+
+`snapshot:agent` 在 Daytona runner 内构建镜像、推送到
+`registry:6000/harness/...`、创建或激活 Snapshot，并用临时沙箱执行
+`node/npm/npx/claude` preflight。Snapshot 是宿主选择的 Agent 启动输入；
+Gate sandbox 创建请求不包含 Snapshot。
 
 ## 本地 Daytona 集成验证
 
@@ -43,6 +68,7 @@ npm run test:daytona
 
 ```text
 DAYTONA_API_URL=http://localhost:3000/api
+HARNESS_DAYTONA_AGENT_SNAPSHOT=harness-agent-claude-2.1.145-r1
 HTTP_PROXY=http://127.0.0.1:7897
 HTTPS_PROXY=http://127.0.0.1:7897
 NO_PROXY includes proxy.localhost
@@ -62,7 +88,7 @@ PASS Daytona agent/gate integration
 
 1. 创建临时 Git fixture；
 2. 创建 agent sandbox；
-3. 安装并运行 Claude Code；
+3. 从 host 选定 Snapshot 启动 Claude Code；
 4. 修改候选文件；
 5. 宿主收集候选字节；
 6. 创建独立 gate sandbox；
@@ -100,5 +126,6 @@ no_proxy=localhost,127.0.0.1,.localhost,proxy.localhost
 - Daytona API key 仅通过命令进程环境传入；
 - Anthropic token 仅注入 agent PTY；
 - gate sandbox 不接收模型凭证；
+- gate sandbox 不接收 Agent Snapshot；
 - 文档和源码中未写入真实 key；
 - 日志和归档只保留变量名与脱敏配置。

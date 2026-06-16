@@ -27,6 +27,8 @@ does not recollect the live agent workspace after a pass.
 ```bash
 export DAYTONA_API_KEY="<daytona-key>"
 export DAYTONA_API_URL="http://localhost:3000/api" # optional default
+export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-latest" # optional override
+export HARNESS_DAYTONA_GATE_SNAPSHOT="harness-gate-runtime-latest" # optional override
 export ANTHROPIC_AUTH_TOKEN="<short-lived-model-token>"
 export ANTHROPIC_BASE_URL="<approved-model-endpoint>"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="<model>"
@@ -45,6 +47,84 @@ environment variables and are never passed to gate sandboxes. Use scoped,
 short-lived model credentials: the model token is necessarily visible to the
 agent process and this design does not claim to prevent source disclosure to
 the approved model endpoint.
+
+Agent and Gate Snapshots are selected by the host control plane before sandbox
+creation. If the environment variables are absent, Harness defaults to
+`harness-agent-claude-latest` and `harness-gate-runtime-latest`. Gate sandboxes
+never receive model credentials or Langfuse credentials.
+
+For a remote Daytona control plane, set `DAYTONA_API_URL` to the remote API
+endpoint and provide the key through the shell environment. Do not commit API
+keys or model tokens to this repository.
+
+If a local proxy such as `127.0.0.1:7897` is closed, clear proxy variables for
+remote Daytona runs:
+
+```bash
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+export NO_PROXY="daytona.wieimmer.asia,localhost,127.0.0.1,proxy.localhost,.localhost"
+```
+
+## Agent Image And Snapshot
+
+Claude Code is no longer installed during `harness run`. The agent image is
+built once with pinned tool versions:
+
+```text
+Node.js: 22.14.0
+Claude Code: 2.1.145
+Docker image: harness-daytona-claude:2.1.145-r2
+Registry image: registry:6000/harness/harness-daytona-claude:2.1.145-r2
+Immutable Agent source Snapshot: harness-agent-claude-2.1.145-r2
+Default Agent Snapshot: harness-agent-claude-latest
+Default Gate Snapshot: harness-gate-runtime-latest
+```
+
+Build or replace the stable runtime Snapshots:
+
+```bash
+source ~/.zshrc
+npm run snapshot:runtime
+```
+
+`npm run snapshot:agent` derives `harness-agent-claude-latest` from the
+immutable r2 Snapshot and verifies:
+
+```text
+/usr/local/bin/node
+/usr/local/bin/npm
+/usr/local/bin/npx
+/usr/local/bin/claude
+/usr/bin/bash
+```
+
+`npm run snapshot:gate` derives `harness-gate-runtime-latest`, removes Claude
+from the derived sandbox, and verifies `/usr/bin/bash`, Node.js, npm, npx,
+python3, curl, and `command -v claude` failure.
+
+Both scripts print the final `export HARNESS_DAYTONA_*_SNAPSHOT=...` line after
+verification succeeds. To replace an existing latest Snapshot:
+
+```bash
+HARNESS_DAYTONA_REPLACE_LATEST=1 npm run snapshot:runtime
+```
+
+Upgrade requires a new immutable revision such as `r3`, then replacing the
+stable latest Snapshots. Rollback is selecting the previous immutable Snapshot
+value in the host environment or republishing latest from that source.
+
+Useful diagnosis commands:
+
+```bash
+docker exec daytona-runner-1 docker images \
+  'registry:6000/harness/harness-daytona-claude'
+npm run snapshot:agent
+npm run snapshot:gate
+npm run test:daytona
+npm run test:daytona:pty
+```
+
+Remove old Snapshots only after confirming no active run references them.
 
 ## Policy
 
@@ -100,9 +180,15 @@ npm run check
 Run the opt-in real service test:
 
 ```bash
+export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r2"
 npm run test:daytona
+npm run test:daytona:pty
 ```
 
 The integration test creates a temporary Git worktree, uses one Claude agent
 sandbox, validates the result in a separate gate sandbox, publishes the exact
 passing bytes, and deletes the sandboxes.
+
+The PTY integration test creates a temporary Agent sandbox from the selected
+Snapshot, creates the harness workspace directory, opens a real Daytona PTY
+session, verifies a sentinel command, and deletes the sandbox.
