@@ -3,6 +3,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
   unlinkSync,
@@ -115,6 +116,29 @@ function assertSafeDestination(root: string, path: string): void {
   }
 }
 
+function makeWritableForRemoval(path: string): void {
+  const stat = lstatIfPresent(path);
+  if (!stat) return;
+
+  if (stat.isSymbolicLink()) {
+    return;
+  }
+  if (stat.isDirectory()) {
+    chmodSync(path, 0o700);
+    for (const entry of readdirSync(path)) {
+      makeWritableForRemoval(join(path, entry));
+    }
+    chmodSync(path, 0o700);
+    return;
+  }
+  chmodSync(path, 0o600);
+}
+
+function removeMaterializedWorkspace(root: string): void {
+  makeWritableForRemoval(root);
+  rmSync(root, { recursive: true, force: true });
+}
+
 function writeWorkspaceFile(root: string, file: WorkspaceFile): void {
   const path = normalizeWorkspacePath(file.path);
   const destination = join(root, path);
@@ -185,7 +209,7 @@ export async function runHostLocalGate(
       cwd: root,
     });
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeMaterializedWorkspace(root);
   }
 }
 

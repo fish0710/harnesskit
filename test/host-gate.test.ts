@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -243,6 +244,63 @@ test("runHostLocalGate cleans the temporary root when a plugin throws", async ()
     assert.notEqual(observedCwd, "");
     assert.equal(existsSync(observedCwd), false);
   } finally {
+    cleanup(realRoot);
+  }
+});
+
+test("runHostLocalGate cleans non-writable candidate artifacts without overriding plugin result", async () => {
+  const realRoot = mkdtempSync(join(tmpdir(), "harness-real-root-"));
+  let observedCwd = "";
+  const lockedDirParts = ["generated", "locked"];
+  try {
+    const policy = loadSandboxPolicy({
+      sandbox: {
+        candidateRoots: ["src"],
+        protectedPaths: ["contracts"],
+      },
+    });
+    const plugin: Plugin = {
+      type: "miniprogram",
+      async run(contract, ctx) {
+        observedCwd = ctx.cwd;
+        const lockedDir = join(ctx.cwd, ...lockedDirParts);
+        mkdirSync(lockedDir, { recursive: true });
+        writeFileSync(join(lockedDir, "artifact.txt"), "candidate artifact\n");
+        chmodSync(join(lockedDir, "artifact.txt"), 0o444);
+        chmodSync(lockedDir, 0o555);
+        return {
+          id: contract.id,
+          type: this.type,
+          status: "pass",
+          durationMs: 1,
+          violations: [],
+        };
+      },
+    };
+
+    const report = await runHostLocalGate({
+      contracts: [{ id: "mp.host", type: "miniprogram" }],
+      gate: new GateCore().use(plugin),
+      ctx: { cwd: realRoot },
+      baseline: snapshot(realRoot, {
+        "src/a.ts": "before\n",
+        "contracts/mp.yaml": "trusted\n",
+      }),
+      candidate: candidate({ "src/a.ts": "after\n" }),
+      policy,
+    });
+
+    assert.equal(report.outcome, "pass");
+    assert.notEqual(observedCwd, "");
+    assert.equal(existsSync(observedCwd), false);
+  } finally {
+    if (observedCwd && existsSync(observedCwd)) {
+      const lockedDir = join(observedCwd, ...lockedDirParts);
+      const lockedFile = join(lockedDir, "artifact.txt");
+      if (existsSync(lockedFile)) chmodSync(lockedFile, 0o644);
+      if (existsSync(lockedDir)) chmodSync(lockedDir, 0o755);
+      cleanup(observedCwd);
+    }
     cleanup(realRoot);
   }
 });
