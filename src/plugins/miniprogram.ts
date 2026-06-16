@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { isAbsolute, normalize, resolve } from "node:path";
 
 import {
@@ -67,6 +67,14 @@ function parseDevtools(value: unknown): DevtoolsConfig {
   };
 }
 
+function isRegularFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export const miniprogramPlugin: Plugin = {
   type: "miniprogram",
 
@@ -116,6 +124,16 @@ export const miniprogramPlugin: Plugin = {
         errorReason: `小程序 runner 不存在: ${runner}`,
       };
     }
+    if (!isRegularFile(runnerAbs)) {
+      return {
+        id: contract.id,
+        type: this.type,
+        status: "error",
+        durationMs: 0,
+        violations: [],
+        errorReason: `小程序 runner 必须是文件: ${runner}`,
+      };
+    }
 
     const devtools = parseDevtools(contract.devtools);
     if (devtools.mode === "managed") {
@@ -150,7 +168,6 @@ export const miniprogramPlugin: Plugin = {
       timeoutMs,
       signal: ctx.signal,
       env: {
-        ...process.env,
         HARNESS_MINIPROGRAM_PROJECT: projectPath,
         HARNESS_MINIPROGRAM_PROJECT_ABS: projectAbs,
         HARNESS_MINIPROGRAM_WS_ENDPOINT: devtools.wsEndpoint,

@@ -133,8 +133,35 @@ test("miniprogram plugin classifies runner exit 0 as pass", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.command, process.execPath);
   assert.deepEqual(calls[0]!.args.slice(-1), ["test/fixtures/miniprogram-runner.js"]);
+  assert.deepEqual(Object.keys(calls[0]!.env ?? {}).sort(), [
+    "HARNESS_MINIPROGRAM_PROJECT",
+    "HARNESS_MINIPROGRAM_PROJECT_ABS",
+    "HARNESS_MINIPROGRAM_WS_ENDPOINT",
+  ]);
   assert.equal(calls[0]!.env?.HARNESS_MINIPROGRAM_PROJECT, "test/fixtures/mp-project");
+  assert.equal(
+    calls[0]!.env?.HARNESS_MINIPROGRAM_PROJECT_ABS,
+    `${process.cwd()}/test/fixtures/mp-project`,
+  );
   assert.equal(calls[0]!.env?.HARNESS_MINIPROGRAM_WS_ENDPOINT, "ws://127.0.0.1:9420");
+});
+
+test("miniprogram plugin rejects a directory runner before execution", async () => {
+  const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+  const result = await miniprogramPlugin.run(
+    {
+      id: "mp.runner.directory",
+      type: "miniprogram",
+      projectPath: "test/fixtures/mp-project",
+      runner: "test/fixtures",
+      devtools: { mode: "connect", wsEndpoint: "ws://127.0.0.1:9420" },
+    },
+    { cwd: process.cwd(), execution },
+  );
+
+  assert.equal(result.status, "error");
+  assert.match(result.errorReason ?? "", /runner|文件|file/i);
+  assert.equal(calls.length, 0);
 });
 
 test("miniprogram plugin classifies runner non-zero as fail", async () => {
@@ -179,4 +206,43 @@ test("miniprogram plugin rejects mismatched or incomplete evidence as error", as
 
   assert.equal(result.status, "error");
   assert.match(result.errorReason ?? "", /ID|不匹配|不可信/);
+});
+
+test("miniprogram plugin rejects incomplete or errored runner evidence as error", async (t) => {
+  const cases = [
+    {
+      name: "null exit code",
+      response: () => ({ exitCode: null }),
+      match: /退出码|证据|不可信/,
+    },
+    {
+      name: "invalid duration",
+      response: () => ({ exitCode: 0, durationMs: -1 }),
+      match: /耗时|证据|不可信/,
+    },
+    {
+      name: "execution target error",
+      response: () => ({ exitCode: null, error: "remote spawn failed" }),
+      match: /remote spawn failed/,
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const { execution } = fakeExecution(testCase.response);
+      const result = await miniprogramPlugin.run(
+        {
+          id: `mp.evidence.${testCase.name}`,
+          type: "miniprogram",
+          projectPath: "test/fixtures/mp-project",
+          runner: "test/fixtures/miniprogram-runner.js",
+          devtools: { mode: "connect", wsEndpoint: "ws://127.0.0.1:9420" },
+        },
+        { cwd: process.cwd(), execution },
+      );
+
+      assert.equal(result.status, "error");
+      assert.match(result.errorReason ?? "", testCase.match);
+    });
+  }
 });
