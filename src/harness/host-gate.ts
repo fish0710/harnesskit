@@ -10,7 +10,7 @@ import {
   type Stats,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { GateCore } from "../gate.js";
 import type { Contract, GateReport, RunContext } from "../types.js";
@@ -54,8 +54,9 @@ function lstatIfPresent(path: string): Stats | undefined {
 function assertInsideRoot(root: string, destination: string, path: string): void {
   const rel = relative(root, destination);
   if (
-    rel.startsWith("../") ||
+    isAbsolute(rel) ||
     rel === ".." ||
+    rel.startsWith(`..${sep}`) ||
     resolve(root, rel) !== destination
   ) {
     throw new Error(`主机候选路径越界: ${path}`);
@@ -69,8 +70,9 @@ function assertRealPathInsideRoot(
 ): void {
   const rel = relative(realRoot, realPath);
   if (
+    isAbsolute(rel) ||
     rel === ".." ||
-    rel.startsWith("../") ||
+    rel.startsWith(`..${sep}`) ||
     resolve(realRoot, rel) !== realPath
   ) {
     throw new Error(`主机候选父路径位于工作区外: ${path}`);

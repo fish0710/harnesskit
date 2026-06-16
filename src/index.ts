@@ -54,6 +54,7 @@ export {
   isHostLocalContract,
   materializeCandidateWorkspace,
   runHostLocalGate,
+  type HostLocalGateOptions,
 } from "./harness/host-gate.js";
 export { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
 export { writeRunRecord, lastRunRecord, type RunRecord } from "./harness/record.js";
