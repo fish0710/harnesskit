@@ -50,6 +50,11 @@ export {
   createDaytonaSdkProvider,
   createDaytonaExecutionTarget,
 } from "./harness/sandbox/daytona.js";
+export {
+  isHostLocalContract,
+  materializeCandidateWorkspace,
+  runHostLocalGate,
+} from "./harness/host-gate.js";
 export { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
 export { writeRunRecord, lastRunRecord, type RunRecord } from "./harness/record.js";
 export { createProject, type CreateResult } from "./harness/scaffold.js";
