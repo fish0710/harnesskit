@@ -30,6 +30,7 @@ import type {
   WorkspaceFile,
 } from "../src/harness/sandbox/types.js";
 import { runLoop, type GenerationBudget } from "../src/harness/run.js";
+import type { Plugin } from "../src/types.js";
 
 const budget: GenerationBudget = {
   maxAttempts: 3,
@@ -909,4 +910,93 @@ test("environment refuses publication when the latest gate did not pass", async 
   assert.equal((await environment.publish()).ok, false);
   await environment.close();
   assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "before\n");
+});
+
+test("Daytona gate runs miniprogram contracts on host materialized candidate", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+  });
+  const hostPlugin: Plugin = {
+    type: "miniprogram",
+    async run(contract, ctx) {
+      return {
+        id: contract.id,
+        type: this.type,
+        status: readFileSync(join(ctx.cwd, "src/a.ts"), "utf8") === "fixed\n"
+          ? "pass"
+          : "fail",
+        durationMs: 1,
+        violations: [],
+      };
+    },
+  };
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "command", command: "fake-agent" },
+  });
+
+  await environment.runTask({ task: "fix it" });
+  const report = await environment.runGate({
+    contracts: [
+      { id: "remote.command", type: "command", cmd: "true" },
+      { id: "mp.host", type: "miniprogram", projectPath: "src", runner: "contracts/gate.yaml" },
+    ],
+    gate: new GateCore().use(commandPlugin).use(hostPlugin),
+    ctx: { cwd: root },
+  });
+
+  assert.equal(report.outcome, "pass");
+  assert.equal(report.summary.total, 2);
+  const gate = provider.handles.find((handle) => handle.role === "gate")!;
+  assert.ok(gate.commands.some((command) => command.includes("'true'")));
+});
+
+test("Daytona run skips remote gate sandbox when only host-local contracts are selected", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [],
+  });
+  const hostPlugin: Plugin = {
+    type: "miniprogram",
+    async run(contract, ctx) {
+      return {
+        id: contract.id,
+        type: this.type,
+        status: readFileSync(join(ctx.cwd, "src/a.ts"), "utf8") === "fixed\n"
+          ? "pass"
+          : "fail",
+        durationMs: 1,
+        violations: [],
+      };
+    },
+  };
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "command", command: "fake-agent" },
+  });
+
+  await environment.runTask({ task: "fix it" });
+  const report = await environment.runGate({
+    contracts: [
+      { id: "mp.only", type: "miniprogram", projectPath: "src", runner: "contracts/gate.yaml" },
+    ],
+    gate: new GateCore().use(hostPlugin),
+    ctx: { cwd: root },
+  });
+
+  assert.equal(report.outcome, "pass");
+  assert.equal(provider.requests.filter((request) => request.role === "gate").length, 0);
 });
