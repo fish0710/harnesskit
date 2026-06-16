@@ -9,7 +9,9 @@ import {
   DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
   buildRunId,
   claudeObservabilityPaths,
+  claudeObservabilityVolumeSubpath,
   loadDaytonaObservabilityConfig,
+  mountedClaudeObservabilityPaths,
 } from "../src/harness/observability.js";
 import {
   RunRecorder,
@@ -138,12 +140,56 @@ test("claudeObservabilityPaths rejects disabled config and invalid attempts", ()
 test("claudeObservabilityPaths rejects run ids that are not safe path segments", () => {
   const config = loadDaytonaObservabilityConfig({});
 
-  for (const runId of ["", "../escape", "nested/run", "run\0id"]) {
+  for (const runId of ["", "../escape", "nested/run", "run\\id", "run\0id"]) {
     assert.throws(
       () => claudeObservabilityPaths(config, runId, 1),
       /runId/,
     );
   }
+});
+
+test("claudeObservabilityVolumeSubpath validates and scopes run volume subpaths", () => {
+  assert.equal(
+    claudeObservabilityVolumeSubpath("run-1"),
+    "runs/run-1",
+  );
+
+  for (const runId of ["", "../escape", "nested/run", "run\\id", "run\0id"]) {
+    assert.throws(
+      () => claudeObservabilityVolumeSubpath(runId),
+      /runId/,
+    );
+  }
+});
+
+test("mountedClaudeObservabilityPaths builds run-scoped sandbox paths", () => {
+  const config = loadDaytonaObservabilityConfig({
+    HARNESS_DAYTONA_OBSERVABILITY_MOUNT: "/harness-observability/",
+  });
+
+  const paths = mountedClaudeObservabilityPaths(config, 2);
+
+  assert.deepEqual(paths, {
+    runRoot: "/harness-observability",
+    attemptRoot: "/harness-observability/attempt-2",
+    claudeConfigDir: "/harness-observability/attempt-2/.claude",
+    manifestPath: "/harness-observability/attempt-2/manifest.json",
+  });
+});
+
+test("mountedClaudeObservabilityPaths rejects disabled config and invalid attempts", () => {
+  const disabled = loadDaytonaObservabilityConfig({
+    HARNESS_DAYTONA_OBSERVABILITY: "0",
+  });
+
+  assert.throws(
+    () => mountedClaudeObservabilityPaths(disabled, 1),
+    /disabled/,
+  );
+  assert.throws(
+    () => mountedClaudeObservabilityPaths(loadDaytonaObservabilityConfig({}), 0),
+    /attempt/,
+  );
 });
 
 test("createRunRecorder writes an initial v2 manifest before agent execution", () => {

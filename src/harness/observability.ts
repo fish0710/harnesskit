@@ -21,6 +21,13 @@ export interface ClaudeObservabilityPaths {
   manifestPath: string;
 }
 
+export interface MountedClaudeObservabilityPaths {
+  runRoot: string;
+  attemptRoot: string;
+  claudeConfigDir: string;
+  manifestPath: string;
+}
+
 type Environment = Record<string, string | undefined>;
 
 function isDisabled(value: string | undefined): boolean {
@@ -39,7 +46,7 @@ function normalizeMountPath(value: string): string {
       "HARNESS_DAYTONA_OBSERVABILITY_MOUNT must be an absolute POSIX path",
     );
   }
-  const normalized = posix.normalize(trimmed);
+  const normalized = posix.join(posix.normalize(trimmed), ".");
   if (normalized === "/") {
     throw new Error(
       "HARNESS_DAYTONA_OBSERVABILITY_MOUNT must not be the filesystem root",
@@ -53,6 +60,7 @@ function assertSafeRunId(runId: string): void {
     runId === "" ||
     runId.includes("\0") ||
     runId.includes("/") ||
+    runId.includes("\\") ||
     runId === "." ||
     runId === ".."
   ) {
@@ -118,6 +126,31 @@ export function claudeObservabilityPaths(
     throw new Error("attempt must be a positive safe integer");
   }
   const runRoot = posix.join(config.mountPath, "runs", runId);
+  const attemptRoot = posix.join(runRoot, `attempt-${attempt}`);
+  return {
+    runRoot,
+    attemptRoot,
+    claudeConfigDir: posix.join(attemptRoot, ".claude"),
+    manifestPath: posix.join(attemptRoot, "manifest.json"),
+  };
+}
+
+export function claudeObservabilityVolumeSubpath(runId: string): string {
+  assertSafeRunId(runId);
+  return posix.join("runs", runId);
+}
+
+export function mountedClaudeObservabilityPaths(
+  config: DaytonaObservabilityConfig,
+  attempt: number,
+): MountedClaudeObservabilityPaths {
+  if (!config.enabled) {
+    throw new Error("Mounted Claude observability paths are disabled");
+  }
+  if (!Number.isSafeInteger(attempt) || attempt <= 0) {
+    throw new Error("attempt must be a positive safe integer");
+  }
+  const runRoot = config.mountPath;
   const attemptRoot = posix.join(runRoot, `attempt-${attempt}`);
   return {
     runRoot,

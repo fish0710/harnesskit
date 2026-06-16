@@ -36,10 +36,13 @@ export {
   DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
   buildRunId,
   claudeObservabilityPaths,
+  claudeObservabilityVolumeSubpath,
   loadDaytonaObservabilityConfig,
+  mountedClaudeObservabilityPaths,
   type ClaudeObservabilityPaths,
   type DaytonaObservabilityBackend,
   type DaytonaObservabilityConfig,
+  type MountedClaudeObservabilityPaths,
 } from "./harness/observability.js";
 export {
   localExecutionTarget,
@@ -54,6 +57,7 @@ export {
 export {
   createDaytonaRunEnvironment,
   type DaytonaRunEnvironmentOptions,
+  type DaytonaRunObservabilityOptions,
   type SandboxAgentSpec,
 } from "./harness/sandbox/environment.js";
 export {
