@@ -2,7 +2,7 @@
 
 > 状态：当前实现
 >
-> 更新日期：2026-06-15
+> 更新日期：2026-06-16
 >
 > 适用范围：`harness run --driver claude` 与
 > `harness run --driver command`
@@ -66,13 +66,17 @@ Harness 将“执行任务”和“决定是否通过”拆成两个不同权限
 8. 宿主严格校验路径、文件类型、大小、哈希和保护路径。
 9. Harness 为当前 attempt 创建一个全新的 gate 沙箱。
 10. 宿主在 gate 沙箱中组装 baseline、候选文件和受保护测试资产。
-11. gate 沙箱关闭出站网络并执行宿主发出的合约命令。
-12. gate 沙箱把原始证据返回宿主，随后被删除。
-13. 宿主 `GateCore` 完成状态分类、聚合和决策。
-14. `fail` 或 `error` 生成受限诊断，反馈给原 agent 沙箱继续下一轮。
-15. `blocked` 停止自动循环，等待人工 verdict。
-16. 超出轮数、时间、token 或重复失败阈值时升级。
-17. `pass` 时 publisher 写回门禁验证过的精确候选快照。
+11. gate 沙箱在候选文件和受保护资产都组装完成后执行 `gateSetup`。
+12. 若本轮契约不需要 loopback HTTP，gate 沙箱关闭出站网络并执行宿主发出的合约命令。
+    若契约访问 `localhost`、`127.0.0.1` 或 `::1`，当前 Daytona
+    `networkBlockAll` 会同时阻断 loopback，因此本轮保持网络开启并在 observation 中记录
+    `reason=loopback-http`。
+13. gate 沙箱把原始证据返回宿主，随后被删除。
+14. 宿主 `GateCore` 完成状态分类、聚合和决策。
+15. `fail` 或 `error` 生成受限诊断，反馈给原 agent 沙箱继续下一轮。
+16. `blocked` 停止自动循环，等待人工 verdict。
+17. 超出轮数、时间、token 或重复失败阈值时升级。
+18. `pass` 时 publisher 写回门禁验证过的精确候选快照。
 
 agent 沙箱跨重试保留上下文；gate 沙箱每轮重新创建，避免继承 agent 控制的
 进程、缓存、凭证或隐藏状态。
@@ -115,7 +119,9 @@ gate 沙箱：
 - 不接收 Agent Snapshot；
 - 不接收 Anthropic 环境变量；
 - 不复用 agent 沙箱文件系统；
-- 合约执行期间关闭出站网络；
+- 对不依赖 loopback HTTP 的合约，执行期间关闭出站网络；
+- 对依赖 loopback HTTP 的合约，当前暂不启用 `networkBlockAll`，因为 Daytona
+  远端实现会阻断沙箱访问自身 `127.0.0.1` 服务；
 - 完成后删除。
 
 ### 6.3 证据不等于判定
@@ -170,14 +176,30 @@ SDK adapter 会把以下地址追加到 `NO_PROXY` 和 `no_proxy`：
 localhost,127.0.0.1,.localhost,proxy.localhost
 ```
 
+远端 Daytona 验证时，如果本机 7897 代理已关闭，应显式清理代理变量：
+
+```bash
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+export NO_PROXY="daytona.wieimmer.asia,localhost,127.0.0.1,proxy.localhost,.localhost"
+```
+
+当前实测结论是：Node/Daytona SDK 在清理代理变量后可以访问远端 API；继续保留
+已关闭的 7897 代理会导致 TLS tunnel 或 socket hang up 类错误。
+
 Daytona SDK 的文件和进程 API 使用相对 sandbox 路径。adapter 在 SDK 边界把
 内部逻辑路径 `/workspace/candidate` 转换为 `workspace/candidate`，并跳过空的
 multipart 上传。
 
-## 10. Claude Agent Snapshot
+## 10. Daytona Runtime Snapshots
 
-Claude Code 不在 run 阶段安装。宿主必须预先构建并选择 pinned Agent
-Snapshot：
+Claude Code 不在 run 阶段安装。宿主维护两个稳定 Snapshot 名称：
+
+| 用途 | 默认 Snapshot | 内容 |
+|---|---|---|
+| Agent | `harness-agent-claude-latest` | Node.js 22.14.0、npm/npx、Claude Code 2.1.145、`/usr/bin/bash` |
+| Gate | `harness-gate-runtime-latest` | Node.js 22.14.0、npm/npx、python3、curl、`/usr/bin/bash`；不暴露 `claude` 命令 |
+
+不可变源版本仍保留用于审计：
 
 ```text
 Node.js 22.14.0
@@ -187,16 +209,36 @@ registry:6000/harness/harness-daytona-claude:2.1.145-r2
 harness-agent-claude-2.1.145-r2
 ```
 
-运行时要求：
+运行时默认使用 latest。以下环境变量只用于显式覆盖：
 
 ```bash
-export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r2"
+export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-latest"
+export HARNESS_DAYTONA_GATE_SNAPSHOT="harness-gate-runtime-latest"
 ```
 
-`npm run snapshot:agent` 负责在 Daytona runner 内构建镜像、推送到内部 registry、
-创建或激活 Snapshot，并用临时沙箱验证 `/usr/local/bin/node`、`npm`、`npx`、
-`claude` 和 `/usr/bin/bash`。已有 Snapshot 的镜像名不匹配时必须发布新修订，不能
-覆盖旧的 immutable Snapshot。
+维护命令：
+
+```bash
+npm run snapshot:agent
+npm run snapshot:gate
+npm run snapshot:runtime
+```
+
+当前远端发布方式：
+
+1. `snapshot:agent` 从不可变 `harness-agent-claude-2.1.145-r2` 创建临时沙箱，
+   通过 preflight 后保存为 `harness-agent-claude-latest`。
+2. `snapshot:gate` 从同一个 r2 临时沙箱派生，使用 `sudo rm` 删除
+   `/opt/claude-code`、`/usr/local/bin/claude` 和用户级 Claude 配置，验证
+   `command -v claude` 失败后保存为 `harness-gate-runtime-latest`。
+3. 如果需要替换已有 latest，显式设置
+   `HARNESS_DAYTONA_REPLACE_LATEST=1`。脚本会等待旧 Snapshot 删除完成再创建。
+
+Gate Snapshot 只解决机器门禁运行时依赖，不改变信任边界：gate 沙箱仍不注入模型
+密钥、Langfuse 密钥或 agent 进程。
+
+HTTP evidence 使用 `HARNESS_HTTP_EVIDENCE ` marker 包裹 JSON 输出。这样即使
+Daytona/bash 在 stdout 前写入 locale warning，宿主也只解析 marker 后的证据 JSON。
 
 ## 11. 配置模型
 
@@ -213,7 +255,11 @@ export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r2"
       "test/gates"
     ],
     "agentSetup": [],
-    "gateSetup": [],
+    "gateSetup": [
+      "npm install",
+      "nohup npm start > /tmp/harness-server.log 2>&1 < /dev/null & echo $! > /tmp/harness-server.pid",
+      "for i in $(seq 1 50); do node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\" && exit 0; sleep 0.2; done; cat /tmp/harness-server.log; exit 1"
+    ],
     "limits": {
       "maxFiles": 10000,
       "maxFileBytes": 10485760,
@@ -226,6 +272,14 @@ export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r2"
 
 `candidateRoots` 是 allowlist，`protectedPaths` 是额外保护层。新项目由 scaffold
 写入显式策略；现有项目缺少配置时使用保守默认值。
+
+`gateSetup` 在 gate 沙箱完成候选覆盖和保护文件恢复后、关闭出站网络前执行。
+因此它适合安装 gate 侧依赖、清理测试状态、启动候选 HTTP 服务并轮询 ready。
+HTTP 契约中的 `127.0.0.1` 指 gate 沙箱内部服务，不是宿主机器。
+
+HTTP evidence 使用宿主生成的固定脚本采集 `status`、`headers` 和 `body`。
+脚本通过 base64 环境变量写入 gate 沙箱临时 `.mjs` 文件再执行，避免 Daytona
+`executeCommand` 在长 `node -e` 命令下污染 stdout，导致宿主无法解析 JSON evidence。
 
 ## 12. 失败与升级语义
 
@@ -241,14 +295,16 @@ export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r2"
 
 ## 13. 已验证状态
 
-2026-06-15 的验证结果：
+2026-06-16 的验证结果：
 
 - Daytona 控制面和 toolbox 可访问；
 - Claude Code 从 host 选择的 Agent Snapshot 启动；
 - agent 沙箱退出码为 0；
 - 独立 gate 沙箱执行合约，结果为 `pass 1/1`；
 - 通过后发布精确候选字节；
-- `npm run check`：236 个测试全部通过；
+- `npm run check`：244 个测试全部通过；
+- `node --test dist/test/daytona-environment.test.js`：16 个测试全部通过，其中包含
+  `gateSetup` 在候选覆盖后执行、loopback HTTP 不启用 `networkBlockAll` 的回归测试；
 - 运行结束后无 `harness.role` 残留沙箱；
 - API key 只通过进程环境传入，未写入仓库。
 

@@ -49,7 +49,7 @@ export type SandboxCreateRequest =
   })
   | (SandboxCreateBaseRequest & {
     role: "gate";
-    snapshot?: never;
+    snapshot?: string;
   });
 
 export interface SandboxCommandResult {

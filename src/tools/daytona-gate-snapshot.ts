@@ -5,12 +5,10 @@ import { pathToFileURL } from "node:url";
 import { Daytona } from "@daytona/sdk";
 
 import {
-  assertClaudeToolchain,
-  CLAUDE_TOOLCHAIN_PREFLIGHT,
-  DAYTONA_AGENT_IMAGE,
-  DAYTONA_AGENT_LATEST_SNAPSHOT,
-  DAYTONA_AGENT_REGISTRY_IMAGE,
   DAYTONA_AGENT_SNAPSHOT,
+  DAYTONA_GATE_IMAGE,
+  DAYTONA_GATE_LATEST_SNAPSHOT,
+  DAYTONA_GATE_REGISTRY_IMAGE,
 } from "../harness/sandbox/toolchain.js";
 import {
   configureLocalDaytonaProxy,
@@ -21,6 +19,7 @@ import {
 type DaytonaSnapshot = Awaited<ReturnType<Daytona["snapshot"]["get"]>>;
 
 type SnapshotIdentity = {
+  id?: string;
   name: string;
   imageName?: string;
   buildInfo?: {
@@ -32,39 +31,22 @@ type SnapshotIdentity = {
 
 type SnapshotSourceSandbox = Awaited<ReturnType<Daytona["create"]>>;
 
-export const DAYTONA_AGENT_DOCKERFILE =
-  "images/daytona/claude/Dockerfile";
+export const DAYTONA_GATE_DOCKERFILE = "images/daytona/gate/Dockerfile";
 
-export function readAgentDockerfile(): string {
-  return readFileSync(DAYTONA_AGENT_DOCKERFILE, "utf8");
-}
-
-export function assertCompatibleSnapshot(
-  snapshot: SnapshotIdentity,
-): void {
-  const matchesRegistryImage =
-    snapshot.imageName === DAYTONA_AGENT_REGISTRY_IMAGE;
-  const matchesBuildInfo =
-    snapshot.buildInfo?.dockerfileContent === readAgentDockerfile();
-  if (!matchesRegistryImage && !matchesBuildInfo) {
-    throw new Error(
-      `Existing immutable Snapshot ${snapshot.name} does not match ` +
-        `${DAYTONA_AGENT_REGISTRY_IMAGE} or current Dockerfile; ` +
-        `publish a new revision such as r2`,
-    );
-  }
+export function readGateDockerfile(): string {
+  return readFileSync(DAYTONA_GATE_DOCKERFILE, "utf8");
 }
 
 function quoteShell(value: string): string {
   return `'${value.replaceAll("'", `'\"'\"'`)}'`;
 }
 
-export function buildImageCommands(
+export function buildGateImageCommands(
   runner: string,
   context: string,
 ): Array<[string, string[]]> {
   const quotedContext = quoteShell(context);
-  const quotedDockerfileDir = quoteShell("images/daytona/claude");
+  const quotedDockerfileDir = quoteShell("images/daytona/gate");
   const prepareContext =
     `rm -rf ${quotedContext} && mkdir -p ${quotedContext}`;
   const transferContext =
@@ -82,7 +64,7 @@ export function buildImageCommands(
         "build",
         "--pull=false",
         "-t",
-        DAYTONA_AGENT_IMAGE,
+        DAYTONA_GATE_IMAGE,
         context,
       ],
     ],
@@ -96,10 +78,11 @@ export function buildImageCommands(
         "--rm",
         "--entrypoint",
         "/bin/sh",
-        DAYTONA_AGENT_IMAGE,
+        DAYTONA_GATE_IMAGE,
         "-lc",
-        "test -x /usr/bin/bash && " +
-          "node --version && npm --version && npx --version && claude --version",
+        "test -x /usr/bin/bash && node --version && " +
+          "npm --version && npx --version && python3 --version && " +
+          "curl --version",
       ],
     ],
     [
@@ -109,8 +92,8 @@ export function buildImageCommands(
         runner,
         "docker",
         "tag",
-        DAYTONA_AGENT_IMAGE,
-        DAYTONA_AGENT_REGISTRY_IMAGE,
+        DAYTONA_GATE_IMAGE,
+        DAYTONA_GATE_REGISTRY_IMAGE,
       ],
     ],
     [
@@ -120,7 +103,7 @@ export function buildImageCommands(
         runner,
         "docker",
         "push",
-        DAYTONA_AGENT_REGISTRY_IMAGE,
+        DAYTONA_GATE_REGISTRY_IMAGE,
       ],
     ],
   ];
@@ -175,32 +158,6 @@ function isNotFound(error: unknown): boolean {
   );
 }
 
-function isAccessDenied(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const shaped = error as Error & {
-    statusCode?: number;
-    response?: { status?: number; data?: { message?: string } };
-  };
-  return (
-    shaped.statusCode === 403 ||
-    shaped.response?.status === 403 ||
-    error.message === "Access denied" ||
-    shaped.response?.data?.message === "Access denied"
-  );
-}
-
-export function explainSnapshotCreateError(error: unknown): Error {
-  if (!isAccessDenied(error)) {
-    return error instanceof Error ? error : new Error(String(error));
-  }
-  return new Error(
-    `Daytona refused to create Snapshot ${DAYTONA_AGENT_LATEST_SNAPSHOT}. ` +
-      `The configured DAYTONA_API_KEY needs write:snapshots permission. ` +
-      `If publishing through a Daytona registry, the organization also needs ` +
-      `a configured Docker registry and the key needs registry write access.`,
-  );
-}
-
 function snapshotFailure(snapshot: SnapshotIdentity, reason: string): Error {
   const errorReason = snapshot.errorReason
     ? `: ${snapshot.errorReason}`
@@ -215,20 +172,34 @@ function isTerminalFailure(snapshot: SnapshotIdentity): boolean {
   return snapshot.state === "error" || snapshot.state === "build_failed";
 }
 
-async function ensureSnapshot(
+function assertCompatibleGateSnapshot(snapshot: SnapshotIdentity): void {
+  const matchesRegistryImage =
+    snapshot.imageName === DAYTONA_GATE_REGISTRY_IMAGE;
+  const matchesBuildInfo =
+    snapshot.buildInfo?.dockerfileContent === readGateDockerfile();
+  if (!matchesRegistryImage && !matchesBuildInfo) {
+    throw new Error(
+      `Existing Snapshot ${snapshot.name} does not match ` +
+        `${DAYTONA_GATE_REGISTRY_IMAGE} or current Gate Dockerfile; ` +
+        `delete or replace the latest Snapshot before publishing`,
+    );
+  }
+}
+
+async function ensureLatestGateSnapshot(
   daytona: Daytona,
   apiUrl: string,
 ): Promise<DaytonaSnapshot> {
   try {
-    const snapshot = await daytona.snapshot.get(DAYTONA_AGENT_LATEST_SNAPSHOT);
+    const snapshot = await daytona.snapshot.get(DAYTONA_GATE_LATEST_SNAPSHOT);
     if (process.env.HARNESS_DAYTONA_REPLACE_LATEST === "1") {
       await daytona.snapshot.delete(snapshot);
-      await waitForSnapshotDeleted(daytona, DAYTONA_AGENT_LATEST_SNAPSHOT);
+      await waitForSnapshotDeleted(daytona, DAYTONA_GATE_LATEST_SNAPSHOT);
     } else if (snapshot.state === "active") {
       return snapshot;
     } else {
       throw new Error(
-        `Snapshot ${DAYTONA_AGENT_LATEST_SNAPSHOT} is ${snapshot.state}. ` +
+        `Snapshot ${DAYTONA_GATE_LATEST_SNAPSHOT} is ${snapshot.state}. ` +
           `Set HARNESS_DAYTONA_REPLACE_LATEST=1 to replace it.`,
       );
     }
@@ -236,8 +207,8 @@ async function ensureSnapshot(
     if (!isNotFound(error)) throw error;
   }
 
-  await createLatestFromSourceSnapshot(daytona, apiUrl);
-  const snapshot = await daytona.snapshot.get(DAYTONA_AGENT_LATEST_SNAPSHOT);
+  await createLatestGateFromAgentRuntime(daytona, apiUrl);
+  const snapshot = await daytona.snapshot.get(DAYTONA_GATE_LATEST_SNAPSHOT);
   if (snapshot.state === "active") return snapshot;
   throw snapshotFailure(snapshot, "was not active after copy");
 }
@@ -259,13 +230,13 @@ async function waitForSnapshotDeleted(
   throw new Error(`Snapshot ${name} was not deleted before deadline`);
 }
 
-async function createLatestFromSourceSnapshot(
+async function createLatestGateFromAgentRuntime(
   daytona: Daytona,
   apiUrl: string,
 ): Promise<void> {
   const source = await daytona.snapshot.get(DAYTONA_AGENT_SNAPSHOT);
   if (source.state !== "active") {
-    throw snapshotFailure(source, "cannot be used as latest source");
+    throw snapshotFailure(source, "cannot be used as Gate runtime source");
   }
   let sandbox: SnapshotSourceSandbox | undefined;
   try {
@@ -278,19 +249,23 @@ async function createLatestFromSourceSnapshot(
     );
     rewriteRemoteToolboxProxy(sandbox, apiUrl);
     const result = await sandbox.process.executeCommand(
-      CLAUDE_TOOLCHAIN_PREFLIGHT,
+      "sudo rm -rf /opt/claude-code /usr/local/bin/claude " +
+        "$HOME/.claude $HOME/.config/claude*; " +
+        "test -x /usr/bin/bash && node --version && npm --version && " +
+        "npx --version && python3 --version && curl --version && " +
+        "! command -v claude",
     );
-    assertClaudeToolchain({
-      exitCode: result.exitCode,
-      stdout: result.result,
-      stderr: "",
-    });
+    const output = result.result.trim();
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Gate source cleanup failed with exit ${result.exitCode}: ` +
+          (output || "(no output)"),
+      );
+    }
     await sandbox._experimental_createSnapshot(
-      DAYTONA_AGENT_LATEST_SNAPSHOT,
+      DAYTONA_GATE_LATEST_SNAPSHOT,
       10 * 60,
     );
-  } catch (error) {
-    throw explainSnapshotCreateError(error);
   } finally {
     if (sandbox) {
       await daytona.delete(sandbox).catch(() => undefined);
@@ -298,30 +273,13 @@ async function createLatestFromSourceSnapshot(
   }
 }
 
-async function pollActiveSnapshot(
-  daytona: Daytona,
-  initial: DaytonaSnapshot,
-): Promise<DaytonaSnapshot> {
-  let snapshot = initial;
-  const deadline = Date.now() + 2 * 60 * 1000;
-  while (Date.now() < deadline) {
-    if (snapshot.state === "active") return snapshot;
-    if (isTerminalFailure(snapshot)) {
-      throw snapshotFailure(snapshot, "failed to activate");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    snapshot = await daytona.snapshot.get(DAYTONA_AGENT_LATEST_SNAPSHOT);
-  }
-  throw snapshotFailure(snapshot, "did not become active before deadline");
-}
-
-async function verifySnapshotToolchain(
+async function verifyGateSnapshotToolchain(
   daytona: Daytona,
   apiUrl: string,
 ): Promise<void> {
   const sandbox = await daytona.create(
     {
-      snapshot: DAYTONA_AGENT_LATEST_SNAPSHOT,
+      snapshot: DAYTONA_GATE_LATEST_SNAPSHOT,
       ephemeral: true,
     },
     { timeout: 120 },
@@ -329,13 +287,17 @@ async function verifySnapshotToolchain(
   rewriteRemoteToolboxProxy(sandbox, apiUrl);
   try {
     const result = await sandbox.process.executeCommand(
-      CLAUDE_TOOLCHAIN_PREFLIGHT,
+      "test -x /usr/bin/bash && node --version && npm --version && " +
+        "npx --version && python3 --version && curl --version && " +
+        "! command -v claude",
     );
-    assertClaudeToolchain({
-      exitCode: result.exitCode,
-      stdout: result.result,
-      stderr: "",
-    });
+    const output = result.result.trim();
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Gate snapshot toolchain preflight failed with exit ` +
+          `${result.exitCode}: ${output || "(no output)"}`,
+      );
+    }
   } finally {
     await daytona.delete(sandbox);
   }
@@ -343,21 +305,21 @@ async function verifySnapshotToolchain(
 
 export async function main(): Promise<void> {
   const runner = process.env.DAYTONA_RUNNER_CONTAINER || "daytona-runner-1";
-  const context = `/tmp/harness-agent-image-${process.pid}`;
+  const context = `/tmp/harness-gate-image-${process.pid}`;
   configureLocalDaytonaProxy(process.env);
   const config = getDaytonaConfig(process.env);
   try {
     if (shouldBuildWithRunner(process.env, config.apiUrl)) {
-      for (const [command, args] of buildImageCommands(runner, context)) {
+      for (const [command, args] of buildGateImageCommands(runner, context)) {
         runCommand(command, args);
       }
     }
 
     const daytona = new Daytona(config);
-    await ensureSnapshot(daytona, config.apiUrl);
-    await verifySnapshotToolchain(daytona, config.apiUrl);
+    await ensureLatestGateSnapshot(daytona, config.apiUrl);
+    await verifyGateSnapshotToolchain(daytona, config.apiUrl);
     console.log(
-      `export HARNESS_DAYTONA_AGENT_SNAPSHOT=${DAYTONA_AGENT_LATEST_SNAPSHOT}`,
+      `export HARNESS_DAYTONA_GATE_SNAPSHOT=${DAYTONA_GATE_LATEST_SNAPSHOT}`,
     );
   } finally {
     if (shouldBuildWithRunner(process.env, config.apiUrl)) {

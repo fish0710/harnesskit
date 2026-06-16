@@ -20,6 +20,8 @@
     "test:daytona": "npm run build && RUN_DAYTONA_INTEGRATION=1 node dist/test/daytona-claude.js",
     "test:daytona:pty": "npm run build && RUN_DAYTONA_PTY_INTEGRATION=1 node dist/test/daytona-pty.js",
     "snapshot:agent": "npm run build && node dist/src/tools/daytona-agent-snapshot.js",
+    "snapshot:gate": "npm run build && node dist/src/tools/daytona-gate-snapshot.js",
+    "snapshot:runtime": "npm run snapshot:agent && npm run snapshot:gate",
     "check": "npm run build && npm run test"
   },
   "license": "MIT",

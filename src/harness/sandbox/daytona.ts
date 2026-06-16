@@ -22,7 +22,10 @@ import type {
   SandboxProvider,
   WorkspaceFile,
 } from "./types.js";
-import { requireAgentSnapshot } from "./toolchain.js";
+import {
+  getGateSnapshot,
+  requireAgentSnapshot,
+} from "./toolchain.js";
 
 export const DEFAULT_DAYTONA_API_URL = "http://localhost:3000/api";
 export const CLAUDE_COMMAND =
@@ -36,6 +39,7 @@ const LOCAL_DAYTONA_NO_PROXY_HOSTS = [
   "proxy.localhost",
 ] as const;
 const MAX_EVIDENCE_BYTES = 1024 * 1024;
+const HTTP_EVIDENCE_MARKER = "HARNESS_HTTP_EVIDENCE ";
 const HTTP_EVIDENCE_SCRIPT = `
 const request = JSON.parse(process.env.HARNESS_HTTP_REQUEST);
 try {
@@ -64,7 +68,7 @@ try {
       ? new Uint8Array()
       : Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))),
   );
-  process.stdout.write(JSON.stringify({
+  process.stdout.write("${HTTP_EVIDENCE_MARKER}" + JSON.stringify({
     status: response.status,
     headers: Object.fromEntries(response.headers.entries()),
     body,
@@ -74,6 +78,28 @@ try {
   process.exitCode = 1;
 }
 `.trim();
+const HTTP_EVIDENCE_SCRIPT_B64 = Buffer.from(
+  HTTP_EVIDENCE_SCRIPT,
+  "utf8",
+).toString("base64");
+const HTTP_EVIDENCE_COMMAND = [
+  "set -e",
+  'script="$(mktemp /tmp/harness-http-evidence.XXXXXX.mjs)"',
+  'trap \'rm -f "$script"\' EXIT',
+  'printf %s "$HARNESS_HTTP_SCRIPT_B64" | base64 -d > "$script"',
+  'node "$script"',
+].join("; ");
+
+function parseHttpEvidenceEnvelope(stdout: string): unknown {
+  const lines = stdout.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index]!;
+    if (line.startsWith(HTTP_EVIDENCE_MARKER)) {
+      return JSON.parse(line.slice(HTTP_EVIDENCE_MARKER.length));
+    }
+  }
+  throw new Error("HTTP evidence marker is missing");
+}
 
 export const CLAUDE_ENVIRONMENT_VARIABLES = [
   "ANTHROPIC_AUTH_TOKEN",
@@ -745,9 +771,10 @@ export function createDaytonaExecutionTarget(
           throw request.signal.reason ?? new Error("Execution aborted");
         }
         const result = await handle.execute(
-          commandLine("node", ["-e", HTTP_EVIDENCE_SCRIPT]),
+          HTTP_EVIDENCE_COMMAND,
           remoteRoot,
           {
+            HARNESS_HTTP_SCRIPT_B64: HTTP_EVIDENCE_SCRIPT_B64,
             HARNESS_HTTP_REQUEST: JSON.stringify({
               url: request.url,
               method: request.method,
@@ -764,7 +791,7 @@ export function createDaytonaExecutionTarget(
             `HTTP evidence process exited ${result.exitCode}`,
           );
         }
-        const parsed: unknown = JSON.parse(result.stdout);
+        const parsed = parseHttpEvidenceEnvelope(result.stdout);
         if (
           typeof parsed !== "object" ||
           parsed === null ||
@@ -806,16 +833,13 @@ class DaytonaSdkProvider implements SandboxProvider {
   ) {}
 
   async create(request: SandboxCreateRequest): Promise<SandboxHandle> {
-    if (request.role !== "agent" && "snapshot" in request) {
-      throw new Error("Only agent sandboxes may use snapshots");
-    }
     const snapshot = request.snapshot?.trim();
     if (
-      request.role === "agent" &&
       request.snapshot !== undefined &&
       !snapshot
     ) {
-      throw new Error("Agent snapshot must not be empty");
+      const role = request.role === "agent" ? "Agent" : "Gate";
+      throw new Error(`${role} snapshot must not be empty`);
     }
     const sandbox = await this.client.create({
       language: "typescript",
@@ -854,6 +878,7 @@ export function createDaytonaManager(
   const environment = options.environment ?? process.env;
   getDaytonaConfig(environment);
   const agentSnapshot = requireAgentSnapshot(environment);
+  const gateSnapshot = getGateSnapshot(environment);
   configureLocalDaytonaProxy(environment);
   const provider = options.provider ?? createDaytonaSdkProvider(environment);
   return {
@@ -868,6 +893,7 @@ export function createDaytonaManager(
     createGateSandbox() {
       return provider.create({
         role: "gate",
+        snapshot: gateSnapshot,
         envVars: {},
         ephemeral: true,
       });

@@ -145,12 +145,13 @@ test("Daytona Claude fixture includes an installable private package", () => {
   });
 });
 
-test("Daytona Claude integration requires an Agent snapshot before running", async () => {
+test("Daytona Claude integration rejects blank Agent snapshot overrides before running", async () => {
   await assert.rejects(
     () =>
       runDaytonaIntegration({
         RUN_DAYTONA_INTEGRATION: "1",
         DAYTONA_API_KEY: "unused",
+        HARNESS_DAYTONA_AGENT_SNAPSHOT: "   ",
         ANTHROPIC_AUTH_TOKEN: "token",
         ANTHROPIC_MODEL: "model",
       }),

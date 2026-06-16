@@ -36,10 +36,9 @@ const modelEnvironment = {
   ANTHROPIC_REASONING_MODEL: "reasoning",
 };
 
-// @ts-expect-error Gate sandbox requests cannot include snapshots.
 const gateSnapshotTypeCheck: SandboxCreateRequest = {
   role: "gate",
-  snapshot: "harness-agent-claude-2.1.145-r1",
+  snapshot: "harness-gate-runtime-latest",
   envVars: {},
   ephemeral: true,
 };
@@ -49,6 +48,7 @@ function completeEnvironment(): Record<string, string> {
   return {
     DAYTONA_API_KEY: "daytona-control-plane-key",
     HARNESS_DAYTONA_AGENT_SNAPSHOT: "harness-agent-claude-2.1.145-r1",
+    HARNESS_DAYTONA_GATE_SNAPSHOT: "harness-gate-runtime-latest",
     ANTHROPIC_API_KEY: "must-not-be-forwarded",
     HARNESS_GATE_SIGNING_KEY: "must-not-be-forwarded",
     ...modelEnvironment,
@@ -84,7 +84,7 @@ test("manager keeps model credentials out of both sandbox-level environments", a
   assert.equal("HARNESS_GATE_SIGNING_KEY" in created[0]!.envVars, false);
 });
 
-test("manager passes configured Agent snapshot only to Agent sandbox creation", async () => {
+test("manager passes configured Agent and Gate snapshots to their sandbox creation", async () => {
   const created: CreateRequest[] = [];
   const provider = {
     async create(request: CreateRequest) {
@@ -97,6 +97,7 @@ test("manager passes configured Agent snapshot only to Agent sandbox creation", 
     environment: {
       ...completeEnvironment(),
       HARNESS_DAYTONA_AGENT_SNAPSHOT: "  harness-agent-claude-2.1.145-r1  ",
+      HARNESS_DAYTONA_GATE_SNAPSHOT: "  harness-gate-runtime-latest  ",
     },
   });
 
@@ -106,7 +107,7 @@ test("manager passes configured Agent snapshot only to Agent sandbox creation", 
   assert.equal(created[0]?.role, "agent");
   assert.equal(created[0]?.snapshot, "harness-agent-claude-2.1.145-r1");
   assert.equal(created[1]?.role, "gate");
-  assert.equal(Object.hasOwn(created[1]!, "snapshot"), false);
+  assert.equal(created[1]?.snapshot, "harness-gate-runtime-latest");
 });
 
 test("manager rejects a missing Daytona API key before provider creation", () => {
@@ -125,8 +126,13 @@ test("manager rejects a missing Daytona API key before provider creation", () =>
   assert.equal(createCalls, 0);
 });
 
-test("manager rejects missing or blank Agent snapshot before provider creation", () => {
-  for (const snapshot of [undefined, "", "   "]) {
+test("manager rejects blank Agent or Gate snapshot before provider creation", () => {
+  for (const [key, value] of [
+    ["HARNESS_DAYTONA_AGENT_SNAPSHOT", ""],
+    ["HARNESS_DAYTONA_AGENT_SNAPSHOT", "   "],
+    ["HARNESS_DAYTONA_GATE_SNAPSHOT", ""],
+    ["HARNESS_DAYTONA_GATE_SNAPSHOT", "   "],
+  ] as const) {
     let createCalls = 0;
     const provider = {
       async create(_request: CreateRequest) {
@@ -135,15 +141,11 @@ test("manager rejects missing or blank Agent snapshot before provider creation",
       },
     };
     const environment = completeEnvironment();
-    if (snapshot === undefined) {
-      delete environment.HARNESS_DAYTONA_AGENT_SNAPSHOT;
-    } else {
-      environment.HARNESS_DAYTONA_AGENT_SNAPSHOT = snapshot;
-    }
+    environment[key] = value;
 
     assert.throws(
       () => createDaytonaManager({ provider, environment }),
-      /HARNESS_DAYTONA_AGENT_SNAPSHOT/,
+      new RegExp(key),
     );
     assert.equal(createCalls, 0);
   }
@@ -170,6 +172,7 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
   });
   await provider.create({
     role: "gate",
+    snapshot: "  harness-gate-runtime-latest  ",
     envVars: {},
     ephemeral: true,
   });
@@ -185,6 +188,7 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
     },
     {
       language: "typescript",
+      snapshot: "harness-gate-runtime-latest",
       labels: { "harness.role": "gate" },
       envVars: {},
       ephemeral: true,
@@ -265,7 +269,7 @@ test("SDK provider rejects empty Agent snapshot requests before client create", 
   assert.deepEqual(created, []);
 });
 
-test("SDK provider rejects runtime Gate snapshot requests before client create", async () => {
+test("SDK provider rejects empty Gate snapshot requests before client create", async () => {
   const created: CreatedSdkRequest[] = [];
   const sdkSandbox = fakeSdkSandbox();
   const provider = createDaytonaSdkProviderFromClient({
@@ -282,11 +286,11 @@ test("SDK provider rejects runtime Gate snapshot requests before client create",
     () =>
       provider.create({
         role: "gate",
-        snapshot: "harness-agent-claude-2.1.145-r1",
+        snapshot: "   ",
         envVars: {},
         ephemeral: true,
-      } as unknown as SandboxCreateRequest),
-    /Only agent sandboxes may use snapshots/,
+      }),
+    /Gate snapshot must not be empty/,
   );
   assert.deepEqual(created, []);
 });
@@ -716,6 +720,87 @@ test("remote HTTP target converts malformed envelopes into error evidence", asyn
   assert.equal(evidence.executionId, "http-id");
   assert.ok(evidence.error);
   assert.equal(evidence.status, undefined);
+});
+
+test("remote HTTP target avoids inline node eval for the evidence script", async () => {
+  const calls: Array<{ command: string; env: Record<string, string> }> = [];
+  const handle = {
+    ...recordingHandle("http"),
+    async execute(command: string, _cwd: string, env: Record<string, string>) {
+      calls.push({ command, env });
+      if (command.includes(" '-e' ") || command.includes(" -e ")) {
+        return {
+          exitCode: 0,
+          stdout: "/usr/bin/bash: polluted stdout",
+          stderr: "",
+        };
+      }
+      return {
+        exitCode: 0,
+        stdout:
+          "HARNESS_HTTP_EVIDENCE " +
+          JSON.stringify({
+            status: 200,
+            headers: { "content-type": "application/json" },
+            body: "{\"status\":\"ok\"}",
+          }),
+        stderr: "",
+      };
+    },
+  };
+  const target = createDaytonaExecutionTarget(
+    handle,
+    "/workspace/candidate",
+  );
+
+  const evidence = await target.request({
+    executionId: "http-id",
+    url: "http://127.0.0.1:3000/health",
+    method: "GET",
+  });
+
+  assert.equal(evidence.executionId, "http-id");
+  assert.equal(evidence.status, 200);
+  assert.equal(evidence.error, undefined);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.command, /HARNESS_HTTP_SCRIPT_B64/);
+  assert.equal(typeof calls[0]!.env.HARNESS_HTTP_SCRIPT_B64, "string");
+  assert.equal(typeof calls[0]!.env.HARNESS_HTTP_REQUEST, "string");
+});
+
+test("remote HTTP target ignores shell stdout before the evidence marker", async () => {
+  const handle = {
+    ...recordingHandle("http"),
+    async execute() {
+      return {
+        exitCode: 0,
+        stdout:
+          "/usr/bin/bash: warning: setlocale failed\n" +
+          "HARNESS_HTTP_EVIDENCE " +
+          JSON.stringify({
+            status: 204,
+            headers: { "x-gate": "ok" },
+            body: "",
+          }),
+        stderr: "",
+      };
+    },
+  };
+  const target = createDaytonaExecutionTarget(
+    handle,
+    "/workspace/candidate",
+  );
+
+  const evidence = await target.request({
+    executionId: "http-id",
+    url: "http://127.0.0.1:3000/health",
+    method: "GET",
+  });
+
+  assert.equal(evidence.executionId, "http-id");
+  assert.equal(evidence.status, 204);
+  assert.equal(evidence.headers["x-gate"], "ok");
+  assert.equal(evidence.error, undefined);
 });
 
 test("SDK handle deletes the underlying sandbox", async () => {

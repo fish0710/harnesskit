@@ -9,6 +9,16 @@ export const DAYTONA_AGENT_REGISTRY_IMAGE =
   `registry:6000/harness/${DAYTONA_AGENT_IMAGE}`;
 export const DAYTONA_AGENT_SNAPSHOT =
   `harness-agent-claude-${DAYTONA_AGENT_RELEASE}`;
+export const DAYTONA_AGENT_LATEST_SNAPSHOT = "harness-agent-claude-latest";
+
+export const DAYTONA_GATE_RELEASE = `node-${NODE_VERSION}-r1`;
+export const DAYTONA_GATE_IMAGE =
+  `harness-daytona-gate:${DAYTONA_GATE_RELEASE}`;
+export const DAYTONA_GATE_REGISTRY_IMAGE =
+  `registry:6000/harness/${DAYTONA_GATE_IMAGE}`;
+export const DAYTONA_GATE_SNAPSHOT =
+  `harness-gate-runtime-${DAYTONA_GATE_RELEASE}`;
+export const DAYTONA_GATE_LATEST_SNAPSHOT = "harness-gate-runtime-latest";
 
 export const CLAUDE_TOOLCHAIN_PREFLIGHT = [
   "set -eu",
@@ -67,11 +77,26 @@ export function assertClaudeToolchain(
 }
 
 export function requireAgentSnapshot(environment: Environment): string {
-  const snapshot = environment.HARNESS_DAYTONA_AGENT_SNAPSHOT?.trim();
+  if (environment.HARNESS_DAYTONA_AGENT_SNAPSHOT === undefined) {
+    return DAYTONA_AGENT_LATEST_SNAPSHOT;
+  }
+  const snapshot = environment.HARNESS_DAYTONA_AGENT_SNAPSHOT.trim();
   if (!snapshot) {
     throw new Error(
-      "Missing required environment variable: " +
-        "HARNESS_DAYTONA_AGENT_SNAPSHOT",
+      "HARNESS_DAYTONA_AGENT_SNAPSHOT must not be blank",
+    );
+  }
+  return snapshot;
+}
+
+export function getGateSnapshot(environment: Environment): string {
+  if (environment.HARNESS_DAYTONA_GATE_SNAPSHOT === undefined) {
+    return DAYTONA_GATE_LATEST_SNAPSHOT;
+  }
+  const snapshot = environment.HARNESS_DAYTONA_GATE_SNAPSHOT.trim();
+  if (!snapshot) {
+    throw new Error(
+      "HARNESS_DAYTONA_GATE_SNAPSHOT must not be blank",
     );
   }
   return snapshot;

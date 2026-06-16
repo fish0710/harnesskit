@@ -6,14 +6,21 @@ import {
   CLAUDE_CODE_VERSION,
   CLAUDE_TOOLCHAIN_PREFLIGHT,
   DAYTONA_AGENT_IMAGE,
+  DAYTONA_AGENT_LATEST_SNAPSHOT,
   DAYTONA_AGENT_REGISTRY_IMAGE,
   DAYTONA_AGENT_RELEASE,
   DAYTONA_AGENT_SNAPSHOT,
+  DAYTONA_GATE_IMAGE,
+  DAYTONA_GATE_LATEST_SNAPSHOT,
+  DAYTONA_GATE_REGISTRY_IMAGE,
+  DAYTONA_GATE_RELEASE,
+  DAYTONA_GATE_SNAPSHOT,
   NODE_VERSION,
+  getGateSnapshot,
   requireAgentSnapshot,
 } from "../src/harness/sandbox/toolchain.js";
 
-test("agent image release is pinned to the approved local toolchain", () => {
+test("runtime image releases are pinned to stable latest snapshot names", () => {
   assert.equal(NODE_VERSION, "22.14.0");
   assert.equal(CLAUDE_CODE_VERSION, "2.1.145");
   assert.equal(DAYTONA_AGENT_RELEASE, "2.1.145-r2");
@@ -26,6 +33,15 @@ test("agent image release is pinned to the approved local toolchain", () => {
     DAYTONA_AGENT_SNAPSHOT,
     "harness-agent-claude-2.1.145-r2",
   );
+  assert.equal(DAYTONA_AGENT_LATEST_SNAPSHOT, "harness-agent-claude-latest");
+  assert.equal(DAYTONA_GATE_RELEASE, "node-22.14.0-r1");
+  assert.equal(DAYTONA_GATE_IMAGE, "harness-daytona-gate:node-22.14.0-r1");
+  assert.equal(
+    DAYTONA_GATE_REGISTRY_IMAGE,
+    "registry:6000/harness/harness-daytona-gate:node-22.14.0-r1",
+  );
+  assert.equal(DAYTONA_GATE_SNAPSHOT, "harness-gate-runtime-node-22.14.0-r1");
+  assert.equal(DAYTONA_GATE_LATEST_SNAPSHOT, "harness-gate-runtime-latest");
 });
 
 test("preflight accepts the exact image toolchain", () => {
@@ -110,19 +126,30 @@ test("preflight rejects missing npm or npx output", () => {
   );
 });
 
-test("Claude runs require an explicit host-selected Agent Snapshot", () => {
+test("Claude runs default to the stable Agent latest Snapshot", () => {
   assert.equal(
     requireAgentSnapshot({
       HARNESS_DAYTONA_AGENT_SNAPSHOT: ` ${DAYTONA_AGENT_SNAPSHOT} `,
     }),
     DAYTONA_AGENT_SNAPSHOT,
   );
-  assert.throws(
-    () => requireAgentSnapshot({}),
-    /HARNESS_DAYTONA_AGENT_SNAPSHOT/,
-  );
+  assert.equal(requireAgentSnapshot({}), DAYTONA_AGENT_LATEST_SNAPSHOT);
   assert.throws(
     () => requireAgentSnapshot({ HARNESS_DAYTONA_AGENT_SNAPSHOT: "   " }),
     /HARNESS_DAYTONA_AGENT_SNAPSHOT/,
+  );
+});
+
+test("Gate runs default to the stable Gate latest Snapshot", () => {
+  assert.equal(getGateSnapshot({}), DAYTONA_GATE_LATEST_SNAPSHOT);
+  assert.equal(
+    getGateSnapshot({
+      HARNESS_DAYTONA_GATE_SNAPSHOT: ` ${DAYTONA_GATE_SNAPSHOT} `,
+    }),
+    DAYTONA_GATE_SNAPSHOT,
+  );
+  assert.throws(
+    () => getGateSnapshot({ HARNESS_DAYTONA_GATE_SNAPSHOT: "   " }),
+    /HARNESS_DAYTONA_GATE_SNAPSHOT/,
   );
 });

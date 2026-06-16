@@ -1,5 +1,5 @@
 import { aggregate } from "../../aggregate.js";
-import type { CheckResult, GateReport } from "../../types.js";
+import type { CheckResult, Contract, GateReport } from "../../types.js";
 import type {
   EnvironmentTaskInput,
   RunEnvironment,
@@ -25,6 +25,7 @@ import {
 import {
   assertClaudeToolchain,
   CLAUDE_TOOLCHAIN_PREFLIGHT,
+  getGateSnapshot,
   requireAgentSnapshot,
 } from "./toolchain.js";
 
@@ -73,6 +74,38 @@ function durationSince(startedAt: number): number {
   return Math.max(0, Date.now() - startedAt);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isLoopbackHost(value: string): boolean {
+  return value === "localhost" ||
+    value === "127.0.0.1" ||
+    value === "::1" ||
+    value.endsWith(".localhost");
+}
+
+function urlUsesLoopback(value: string): boolean {
+  try {
+    return isLoopbackHost(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function contractUsesLoopbackHttp(contract: Contract): boolean {
+  if (contract.type !== "http" || !isRecord(contract.trigger)) {
+    return false;
+  }
+  const { url, baseUrl } = contract.trigger;
+  return (typeof url === "string" && urlUsesLoopback(url)) ||
+    (typeof baseUrl === "string" && urlUsesLoopback(baseUrl));
+}
+
+function shouldBlockGateNetwork(contracts: Contract[]): boolean {
+  return !contracts.some(contractUsesLoopbackHttp);
+}
+
 async function runSetup(
   handle: SandboxHandle,
   commands: string[],
@@ -102,6 +135,7 @@ export function createDaytonaRunEnvironment(
   const agentSnapshot = options.agent.kind === "claude"
     ? requireAgentSnapshot(environment)
     : undefined;
+  const gateSnapshot = getGateSnapshot(environment);
   let agentHandle: SandboxHandle | undefined;
   let pendingCandidate: CandidateSnapshot | undefined;
   let approvedCandidate: CandidateSnapshot | undefined;
@@ -257,6 +291,7 @@ export function createDaytonaRunEnvironment(
         const gateCreateStartedAt = Date.now();
         gateHandle = await options.provider.create({
           role: "gate",
+          snapshot: gateSnapshot,
           envVars: {},
           ephemeral: true,
         });
@@ -275,14 +310,6 @@ export function createDaytonaRunEnvironment(
           id: gateHandle.id,
           files: baseline.files.size,
           durationMs: durationSince(initialUploadStartedAt),
-        });
-        observe("gate.setup.start", { id: gateHandle.id });
-        const gateSetupStartedAt = Date.now();
-        await runSetup(gateHandle, options.policy.gateSetup, "gate setup");
-        observe("gate.setup.end", {
-          id: gateHandle.id,
-          commands: options.policy.gateSetup.length,
-          durationMs: durationSince(gateSetupStartedAt),
         });
         const baselineMutablePaths = agentVisibleFiles(
           baseline,
@@ -308,12 +335,24 @@ export function createDaytonaRunEnvironment(
           verified: protectedFiles.length,
           durationMs: durationSince(candidateUploadStartedAt),
         });
+        observe("gate.setup.start", { id: gateHandle.id });
+        const gateSetupStartedAt = Date.now();
+        await runSetup(gateHandle, options.policy.gateSetup, "gate setup");
+        observe("gate.setup.end", {
+          id: gateHandle.id,
+          commands: options.policy.gateSetup.length,
+          durationMs: durationSince(gateSetupStartedAt),
+        });
+        const blockGateNetwork = shouldBlockGateNetwork(contracts);
         observe("gate.network.start", { id: gateHandle.id });
         const networkStartedAt = Date.now();
-        await gateHandle.setNetworkBlocked(true);
+        if (blockGateNetwork) {
+          await gateHandle.setNetworkBlocked(true);
+        }
         observe("gate.network.end", {
           id: gateHandle.id,
-          blocked: true,
+          blocked: blockGateNetwork,
+          ...(!blockGateNetwork ? { reason: "loopback-http" } : {}),
           durationMs: durationSince(networkStartedAt),
         });
         observe("gate.run.start", { id: gateHandle.id });

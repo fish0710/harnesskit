@@ -13,7 +13,10 @@ import { runLoop } from "../src/harness/run.js";
 import { createDaytonaSdkProvider } from "../src/harness/sandbox/daytona.js";
 import { createDaytonaRunEnvironment } from "../src/harness/sandbox/environment.js";
 import { loadSandboxPolicy } from "../src/harness/sandbox/policy.js";
-import { requireAgentSnapshot } from "../src/harness/sandbox/toolchain.js";
+import {
+  getGateSnapshot,
+  requireAgentSnapshot,
+} from "../src/harness/sandbox/toolchain.js";
 import type {
   SandboxCreateRequest,
   SandboxPolicy,
@@ -70,6 +73,7 @@ export async function runDaytonaIntegration(
   }
 
   const agentSnapshot = requireAgentSnapshot(environment);
+  const gateSnapshot = getGateSnapshot(environment);
   const createRequests: SandboxCreateRequest[] = [];
   const sdkProvider = createDaytonaSdkProvider(environment);
   const provider: SandboxProvider = {
@@ -146,9 +150,11 @@ export async function runDaytonaIntegration(
       }`,
     );
   }
-  if (gateRequests[0]?.snapshot !== undefined) {
+  if (gateRequests[0]?.snapshot !== gateSnapshot) {
     throw new Error(
-      `Expected gate snapshot undefined, got ${gateRequests[0]?.snapshot}`,
+      `Expected gate snapshot ${gateSnapshot}, got ${
+        gateRequests[0]?.snapshot ?? "undefined"
+      }`,
     );
   }
   console.log("PASS Daytona agent/gate integration");
