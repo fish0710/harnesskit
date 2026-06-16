@@ -64,6 +64,38 @@ test("miniprogram plugin errors on invalid project or runner paths", async () =>
   assert.match(result.errorReason ?? "", /路径|path|越界|absolute|绝对/);
 });
 
+test("miniprogram plugin rejects backslash traversal paths", async (t) => {
+  const cases = [
+    {
+      name: "project path parent traversal",
+      projectPath: "..\\outside",
+      runner: "test/fixtures/miniprogram-runner.js",
+    },
+    {
+      name: "runner nested parent traversal",
+      projectPath: "test/fixtures/mp-project",
+      runner: "foo\\..\\..\\outside",
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const result = await miniprogramPlugin.run(
+        {
+          id: `mp.invalid.${testCase.name}`,
+          type: "miniprogram",
+          projectPath: testCase.projectPath,
+          runner: testCase.runner,
+        },
+        { cwd: process.cwd() },
+      );
+
+      assert.equal(result.status, "error");
+      assert.match(result.errorReason ?? "", /路径|path|越界|absolute|绝对/);
+    });
+  }
+});
+
 test("miniprogram plugin classifies runner exit 0 as pass", async () => {
   const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
   const result = await miniprogramPlugin.run(

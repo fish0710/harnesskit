@@ -30,8 +30,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function safeRelativePath(value: unknown): string | undefined {
   if (typeof value !== "string" || value.trim() === "") return undefined;
-  if (isAbsolute(value)) return undefined;
-  const normalized = normalize(value);
+  const slashPath = value.replaceAll("\\", "/");
+  if (isAbsolute(value) || isAbsolute(slashPath)) return undefined;
+  const normalized = normalize(slashPath);
   if (normalized === "." || normalized === ".." || normalized.startsWith("../")) {
     return undefined;
   }
