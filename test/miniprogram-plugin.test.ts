@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { relative } from "node:path";
 
 import { GateCore } from "../src/gate.js";
@@ -206,6 +207,63 @@ test("miniprogram plugin rejects a directory project.config.json before executio
     assert.equal(calls.length, 0);
   } finally {
     rmSync(projectAbs, { recursive: true, force: true });
+  }
+});
+
+test("miniprogram plugin rejects runner symlink escape before execution", async () => {
+  const outsideDir = mkdtempSync(`${tmpdir()}/mp-runner-outside-`);
+  const linkDir = mkdtempSync(`${process.cwd()}/test/fixtures/mp-runner-link-`);
+  try {
+    const outsideRunner = `${outsideDir}/runner.js`;
+    writeFileSync(outsideRunner, "process.exit(0)\n");
+    symlinkSync(outsideRunner, `${linkDir}/runner.js`);
+
+    const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+    const result = await miniprogramPlugin.run(
+      {
+        id: "mp.runner.symlink.escape",
+        type: "miniprogram",
+        projectPath: "test/fixtures/mp-project",
+        runner: relative(process.cwd(), `${linkDir}/runner.js`),
+        devtools: { mode: "connect", wsEndpoint: "ws://127.0.0.1:9420" },
+      },
+      { cwd: process.cwd(), execution },
+    );
+
+    assert.equal(result.status, "error");
+    assert.match(result.errorReason ?? "", /runner|工作区|workspace|越界|symlink|符号链接/i);
+    assert.equal(calls.length, 0);
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+    rmSync(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("miniprogram plugin rejects project path symlink escape before execution", async () => {
+  const outsideProject = mkdtempSync(`${tmpdir()}/mp-project-outside-`);
+  const linkDir = mkdtempSync(`${process.cwd()}/test/fixtures/mp-project-link-`);
+  try {
+    writeFileSync(`${outsideProject}/project.config.json`, "{}\n");
+    symlinkSync(outsideProject, `${linkDir}/project`);
+
+    const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+    const result = await miniprogramPlugin.run(
+      {
+        id: "mp.project.symlink.escape",
+        type: "miniprogram",
+        projectPath: relative(process.cwd(), `${linkDir}/project`),
+        runner: "test/fixtures/miniprogram-runner.js",
+        devtools: { mode: "connect", wsEndpoint: "ws://127.0.0.1:9420" },
+      },
+      { cwd: process.cwd(), execution },
+    );
+
+    assert.equal(result.status, "error");
+    assert.match(result.errorReason ?? "", /项目|工作区|workspace|越界|symlink|符号链接/i);
+    assert.equal(calls.length, 0);
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+    rmSync(outsideProject, { recursive: true, force: true });
   }
 });
 

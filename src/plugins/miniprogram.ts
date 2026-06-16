@@ -1,5 +1,5 @@
-import { existsSync, statSync } from "node:fs";
-import { isAbsolute, normalize, resolve } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, normalize, relative, resolve, sep } from "node:path";
 
 import {
   commandEvidenceError,
@@ -67,6 +67,28 @@ function parseDevtools(value: unknown): DevtoolsConfig {
   };
 }
 
+function realPath(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
+function isPathInside(root: string, path: string): boolean {
+  const relativePath = relative(root, path);
+  return (
+    relativePath === "" ||
+    (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
+  );
+}
+
+function realPathInside(root: string, path: string): string | undefined {
+  const resolved = realPath(path);
+  if (!resolved || !isPathInside(root, resolved)) return undefined;
+  return resolved;
+}
+
 function isRegularFile(path: string): boolean {
   try {
     return statSync(path).isFile();
@@ -103,6 +125,17 @@ export const miniprogramPlugin: Plugin = {
     const projectAbs = resolve(ctx.cwd, projectPath);
     const runnerAbs = resolve(ctx.cwd, runner);
     const projectConfigAbs = resolve(projectAbs, "project.config.json");
+    const workspaceRoot = realPath(ctx.cwd);
+    if (!workspaceRoot) {
+      return {
+        id: contract.id,
+        type: this.type,
+        status: "error",
+        durationMs: 0,
+        violations: [],
+        errorReason: "工作区路径不存在或无法解析",
+      };
+    }
     if (!existsSync(projectAbs)) {
       return {
         id: contract.id,
@@ -113,7 +146,18 @@ export const miniprogramPlugin: Plugin = {
         errorReason: `小程序项目目录不存在: ${projectPath}`,
       };
     }
-    if (!isDirectory(projectAbs)) {
+    const projectReal = realPathInside(workspaceRoot, projectAbs);
+    if (!projectReal) {
+      return {
+        id: contract.id,
+        type: this.type,
+        status: "error",
+        durationMs: 0,
+        violations: [],
+        errorReason: `小程序项目路径必须位于工作区内: ${projectPath}`,
+      };
+    }
+    if (!isDirectory(projectReal)) {
       return {
         id: contract.id,
         type: this.type,
@@ -133,7 +177,18 @@ export const miniprogramPlugin: Plugin = {
         errorReason: `小程序项目缺少 project.config.json: ${projectPath}`,
       };
     }
-    if (!isRegularFile(projectConfigAbs)) {
+    const projectConfigReal = realPathInside(workspaceRoot, projectConfigAbs);
+    if (!projectConfigReal) {
+      return {
+        id: contract.id,
+        type: this.type,
+        status: "error",
+        durationMs: 0,
+        violations: [],
+        errorReason: `小程序 project.config.json 必须位于工作区内: ${projectPath}`,
+      };
+    }
+    if (!isRegularFile(projectConfigReal)) {
       return {
         id: contract.id,
         type: this.type,
@@ -153,7 +208,18 @@ export const miniprogramPlugin: Plugin = {
         errorReason: `小程序 runner 不存在: ${runner}`,
       };
     }
-    if (!isRegularFile(runnerAbs)) {
+    const runnerReal = realPathInside(workspaceRoot, runnerAbs);
+    if (!runnerReal) {
+      return {
+        id: contract.id,
+        type: this.type,
+        status: "error",
+        durationMs: 0,
+        violations: [],
+        errorReason: `小程序 runner 必须位于工作区内: ${runner}`,
+      };
+    }
+    if (!isRegularFile(runnerReal)) {
       return {
         id: contract.id,
         type: this.type,
