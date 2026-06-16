@@ -13,6 +13,7 @@ import {
 import { bootPlugin } from "../src/plugins/boot.js";
 import { commandPlugin } from "../src/plugins/command.js";
 import { httpPlugin } from "../src/plugins/http.js";
+import { miniprogramPlugin } from "../src/plugins/miniprogram.js";
 import { structurePlugin } from "../src/plugins/structure.js";
 
 function unusedRequest(): Promise<never> {
@@ -318,6 +319,41 @@ test("boot plugin rejects invalid finite exit code domains", async (t) => {
       assert.equal(result.status, "error");
     });
   }
+});
+
+test("miniprogram plugin sends trusted runner execution request", async () => {
+  let call: CommandExecutionRequest | undefined;
+  const execution: ExecutionTarget = {
+    async execute(request) {
+      call = request;
+      return {
+        executionId: request.executionId,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 8,
+      };
+    },
+    request: unusedRequest,
+  };
+
+  const result = await miniprogramPlugin.run(
+    {
+      id: "mp.remote",
+      type: "miniprogram",
+      projectPath: "test/fixtures/mp-project",
+      runner: "test/fixtures/miniprogram-runner.js",
+      devtools: { mode: "connect", wsEndpoint: "ws://127.0.0.1:9420" },
+      timeoutMs: 1234,
+    },
+    { cwd: process.cwd(), execution },
+  );
+
+  assert.equal(result.status, "pass");
+  assert.ok(call?.executionId);
+  assert.equal(call.command, process.execPath);
+  assert.deepEqual(call.args, ["test/fixtures/miniprogram-runner.js"]);
+  assert.equal(call.timeoutMs, 1234);
 });
 
 test("boot plugin rejects invalid duration evidence domains", async (t) => {
