@@ -11,7 +11,7 @@ import type { CheckResult, Contract, Plugin, RunContext } from "../types.js";
 interface DevtoolsConfig {
   mode?: "managed" | "connect";
   cliPath?: string;
-  autoPort?: number;
+  autoPort?: unknown;
   trustProject?: boolean;
   wsEndpoint?: string;
 }
@@ -64,7 +64,7 @@ function parseDevtools(value: unknown): DevtoolsConfig {
   return {
     mode,
     ...(typeof value.cliPath === "string" ? { cliPath: value.cliPath } : {}),
-    ...(typeof value.autoPort === "number" ? { autoPort: value.autoPort } : {}),
+    ...("autoPort" in value ? { autoPort: value.autoPort } : {}),
     ...(typeof value.trustProject === "boolean" ? { trustProject: value.trustProject } : {}),
     ...(typeof value.wsEndpoint === "string" ? { wsEndpoint: value.wsEndpoint } : {}),
   };
@@ -307,7 +307,18 @@ export const miniprogramPlugin: Plugin = {
           errorReason: `微信开发者工具 CLI 不存在: ${cliPath}`,
         };
       }
-      devtoolsPort = devtools.autoPort ?? DEFAULT_AUTO_PORT;
+      const candidatePort = devtools.autoPort === undefined ? DEFAULT_AUTO_PORT : devtools.autoPort;
+      if (typeof candidatePort !== "number") {
+        return {
+          id: contract.id,
+          type: this.type,
+          status: "error",
+          durationMs: 0,
+          violations: [],
+          errorReason: `微信开发者工具 autoPort 必须是有效 TCP 端口: ${String(candidatePort)}`,
+        };
+      }
+      devtoolsPort = candidatePort;
       if (!isValidTcpPort(devtoolsPort)) {
         return {
           id: contract.id,

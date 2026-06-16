@@ -426,6 +426,46 @@ test("miniprogram plugin starts managed DevTools before runner", async () => {
   assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "19420");
 });
 
+test("miniprogram plugin starts managed DevTools with real project path for symlink project", async () => {
+  const projectReal = mkdtempSync(`${process.cwd()}/test/fixtures/mp-managed-project-real-`);
+  const linkDir = mkdtempSync(`${process.cwd()}/test/fixtures/mp-managed-link-`);
+  try {
+    writeFileSync(`${projectReal}/project.config.json`, "{}\n");
+    symlinkSync(projectReal, `${linkDir}/project-link`);
+
+    const projectPath = relative(process.cwd(), `${linkDir}/project-link`);
+    const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+    const result = await miniprogramPlugin.run(
+      {
+        id: "mp.managed.symlink.project",
+        type: "miniprogram",
+        projectPath,
+        runner: "test/fixtures/miniprogram-runner.js",
+        devtools: {
+          mode: "managed",
+          cliPath: "/Applications/WeChatDevTools/cli",
+          autoPort: 19420,
+        },
+      },
+      { cwd: process.cwd(), execution },
+    );
+
+    assert.equal(result.status, "pass");
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0]!.args, [
+      "auto",
+      "--project",
+      projectReal,
+      "--auto-port",
+      "19420",
+      "--trust-project",
+    ]);
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+    rmSync(projectReal, { recursive: true, force: true });
+  }
+});
+
 test("miniprogram plugin does not forward ambient env to local managed DevTools startup", async () => {
   const cliDir = mkdtempSync(`${process.cwd()}/test/fixtures/mp-devtools-cli-`);
   const cliPath = `${cliDir}/cli.js`;
@@ -558,6 +598,8 @@ test("miniprogram plugin rejects invalid managed DevTools autoPort before execut
     { name: "non-integer", autoPort: 19420.5 },
     { name: "NaN", autoPort: Number.NaN },
     { name: "too large", autoPort: 65536 },
+    { name: "string", autoPort: "19420" },
+    { name: "null", autoPort: null },
   ];
 
   for (const testCase of cases) {
