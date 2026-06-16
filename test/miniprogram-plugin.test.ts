@@ -389,3 +389,63 @@ test("miniprogram plugin rejects incomplete or errored runner evidence as error"
     });
   }
 });
+
+test("miniprogram plugin starts managed DevTools before runner", async () => {
+  const { execution, calls } = fakeExecution((request) => ({
+    exitCode: request.command === "/Applications/WeChatDevTools/cli" ? 0 : 0,
+  }));
+  const result = await miniprogramPlugin.run(
+    {
+      id: "mp.managed",
+      type: "miniprogram",
+      projectPath: "test/fixtures/mp-project",
+      runner: "test/fixtures/miniprogram-runner.js",
+      devtools: {
+        mode: "managed",
+        cliPath: "/Applications/WeChatDevTools/cli",
+        autoPort: 19420,
+        trustProject: true,
+      },
+    },
+    { cwd: process.cwd(), execution },
+  );
+
+  assert.equal(result.status, "pass");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]!.command, "/Applications/WeChatDevTools/cli");
+  assert.deepEqual(calls[0]!.args, [
+    "auto",
+    "--project",
+    resolve(process.cwd(), "test/fixtures/mp-project"),
+    "--auto-port",
+    "19420",
+    "--trust-project",
+  ]);
+  assert.deepEqual(calls[0]!.env, {});
+  assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_WS_ENDPOINT, "ws://127.0.0.1:19420");
+  assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "19420");
+});
+
+test("miniprogram plugin reports managed DevTools startup failure as error", async () => {
+  const { execution } = fakeExecution((request) => ({
+    exitCode: request.command === "/Applications/WeChatDevTools/cli" ? 2 : 0,
+    stderr: request.command === "/Applications/WeChatDevTools/cli" ? "trust failed" : "",
+  }));
+  const result = await miniprogramPlugin.run(
+    {
+      id: "mp.devtools-error",
+      type: "miniprogram",
+      projectPath: "test/fixtures/mp-project",
+      runner: "test/fixtures/miniprogram-runner.js",
+      devtools: {
+        mode: "managed",
+        cliPath: "/Applications/WeChatDevTools/cli",
+        autoPort: 19420,
+      },
+    },
+    { cwd: process.cwd(), execution },
+  );
+
+  assert.equal(result.status, "error");
+  assert.match(result.errorReason ?? "", /DevTools|trust failed|退出码 2/);
+});

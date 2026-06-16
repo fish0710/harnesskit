@@ -24,6 +24,9 @@ interface MiniProgramContract extends Contract {
   timeoutMs?: unknown;
 }
 
+const DEFAULT_DEVTOOLS_CLI = "/Applications/wechatwebdevtools.app/Contents/MacOS/cli";
+const DEFAULT_AUTO_PORT = 9420;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -103,6 +106,59 @@ function isDirectory(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+async function startManagedDevtools(
+  contract: Contract,
+  ctx: RunContext,
+  cliPath: string,
+  projectAbs: string,
+  port: number,
+  trustProject: boolean,
+  timeoutMs: number | undefined,
+): Promise<CheckResult | undefined> {
+  const args = [
+    "auto",
+    "--project",
+    projectAbs,
+    "--auto-port",
+    String(port),
+    ...(trustProject ? ["--trust-project"] : []),
+  ];
+  const id = executionId();
+  const evidence = await (ctx.execution ?? localExecutionTarget).execute({
+    executionId: id,
+    command: cliPath,
+    args,
+    cwd: ctx.cwd,
+    timeoutMs,
+    signal: ctx.signal,
+    env: ctx.execution ? {} : { ...process.env },
+  });
+  const evidenceError = commandEvidenceError(id, evidence);
+  if (evidenceError) {
+    return {
+      id: contract.id,
+      type: "miniprogram",
+      status: "error",
+      durationMs: evidence.durationMs,
+      violations: [],
+      errorReason: `微信开发者工具启动失败或证据不可信: ${evidenceError}`,
+    };
+  }
+  if (evidence.exitCode !== 0) {
+    return {
+      id: contract.id,
+      type: "miniprogram",
+      status: "error",
+      durationMs: evidence.durationMs,
+      violations: [],
+      errorReason: `微信开发者工具启动退出码 ${evidence.exitCode}: ${
+        boundedCommandOutput(evidence.stderr, evidence.stdout) ?? "(无输出)"
+      }`,
+    };
+  }
+  return undefined;
 }
 
 export const miniprogramPlugin: Plugin = {
@@ -231,29 +287,46 @@ export const miniprogramPlugin: Plugin = {
     }
 
     const devtools = parseDevtools(contract.devtools);
+    const expectedExit = typeof contract.expectExit === "number" ? contract.expectExit : 0;
+    const timeoutMs = typeof contract.timeoutMs === "number" ? contract.timeoutMs : undefined;
+    let wsEndpoint = devtools.wsEndpoint;
+    let devtoolsPort: number | undefined;
     if (devtools.mode === "managed") {
-      return {
-        id: contract.id,
-        type: this.type,
-        status: "error",
-        durationMs: 0,
-        violations: [],
-        errorReason: "managed DevTools mode will be implemented in the next task",
-      };
+      const cliPath = devtools.cliPath ?? DEFAULT_DEVTOOLS_CLI;
+      if (!existsSync(cliPath) && !ctx.execution) {
+        return {
+          id: contract.id,
+          type: this.type,
+          status: "error",
+          durationMs: 0,
+          violations: [],
+          errorReason: `微信开发者工具 CLI 不存在: ${cliPath}`,
+        };
+      }
+      devtoolsPort = devtools.autoPort ?? DEFAULT_AUTO_PORT;
+      const startupError = await startManagedDevtools(
+        contract,
+        ctx,
+        cliPath,
+        projectReal,
+        devtoolsPort,
+        devtools.trustProject !== false,
+        timeoutMs,
+      );
+      if (startupError) return startupError;
+      wsEndpoint = `ws://127.0.0.1:${devtoolsPort}`;
     }
-    if (!devtools.wsEndpoint) {
+    if (!wsEndpoint) {
       return {
         id: contract.id,
         type: this.type,
         status: "error",
         durationMs: 0,
         violations: [],
-        errorReason: "connect mode requires devtools.wsEndpoint",
+        errorReason: "miniprogram devtools requires a WebSocket endpoint",
       };
     }
 
-    const expectedExit = typeof contract.expectExit === "number" ? contract.expectExit : 0;
-    const timeoutMs = typeof contract.timeoutMs === "number" ? contract.timeoutMs : undefined;
     const id = executionId();
     const evidence = await (ctx.execution ?? localExecutionTarget).execute({
       executionId: id,
@@ -265,7 +338,10 @@ export const miniprogramPlugin: Plugin = {
       env: {
         HARNESS_MINIPROGRAM_PROJECT: projectPath,
         HARNESS_MINIPROGRAM_PROJECT_ABS: projectReal,
-        HARNESS_MINIPROGRAM_WS_ENDPOINT: devtools.wsEndpoint,
+        HARNESS_MINIPROGRAM_WS_ENDPOINT: wsEndpoint,
+        ...(devtoolsPort !== undefined
+          ? { HARNESS_MINIPROGRAM_DEVTOOLS_PORT: String(devtoolsPort) }
+          : {}),
       },
     });
     const durationMs = evidence.durationMs;
