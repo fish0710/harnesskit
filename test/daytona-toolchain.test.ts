@@ -16,15 +16,15 @@ import {
 test("agent image release is pinned to the approved local toolchain", () => {
   assert.equal(NODE_VERSION, "22.14.0");
   assert.equal(CLAUDE_CODE_VERSION, "2.1.145");
-  assert.equal(DAYTONA_AGENT_RELEASE, "2.1.145-r1");
-  assert.equal(DAYTONA_AGENT_IMAGE, "harness-daytona-claude:2.1.145-r1");
+  assert.equal(DAYTONA_AGENT_RELEASE, "2.1.145-r2");
+  assert.equal(DAYTONA_AGENT_IMAGE, "harness-daytona-claude:2.1.145-r2");
   assert.equal(
     DAYTONA_AGENT_REGISTRY_IMAGE,
-    "registry:6000/harness/harness-daytona-claude:2.1.145-r1",
+    "registry:6000/harness/harness-daytona-claude:2.1.145-r2",
   );
   assert.equal(
     DAYTONA_AGENT_SNAPSHOT,
-    "harness-agent-claude-2.1.145-r1",
+    "harness-agent-claude-2.1.145-r2",
   );
 });
 
@@ -34,7 +34,7 @@ test("preflight accepts the exact image toolchain", () => {
       exitCode: 0,
       stdout:
         "node=v22.14.0\nnpm=10.9.2\nnpx=10.9.2\n" +
-        "claude=2.1.145 (Claude Code)\n",
+        "claude=2.1.145 (Claude Code)\nbash=/usr/bin/bash\n",
       stderr: "",
     })
   );
@@ -44,7 +44,7 @@ test("preflight accepts the exact image toolchain", () => {
   assert.match(CLAUDE_TOOLCHAIN_PREFLIGHT, /\/usr\/local\/bin\/claude/);
   assert.match(
     CLAUDE_TOOLCHAIN_PREFLIGHT,
-    /node=%s\\nnpm=%s\\nnpx=%s\\nclaude=%s\\n/,
+    /node=%s\\nnpm=%s\\nnpx=%s\\nclaude=%s\\nbash=%s\\n/,
   );
 });
 
@@ -67,7 +67,7 @@ test("preflight rejects drifted Node.js and Claude Code versions", () => {
         exitCode: 0,
         stdout:
           "node=v22.15.0\nnpm=10.9.2\nnpx=10.9.2\n" +
-          "claude=2.1.145 (Claude Code)\n",
+          "claude=2.1.145 (Claude Code)\nbash=/usr/bin/bash\n",
         stderr: "",
       }),
     /expected Node\.js 22\.14\.0.*22\.15\.0/i,
@@ -78,7 +78,7 @@ test("preflight rejects drifted Node.js and Claude Code versions", () => {
         exitCode: 0,
         stdout:
           "node=v22.14.0\nnpm=10.9.2\nnpx=10.9.2\n" +
-          "claude=2.1.177 (Claude Code)\n",
+          "claude=2.1.177 (Claude Code)\nbash=/usr/bin/bash\n",
         stderr: "",
       }),
     /expected Claude Code 2\.1\.145.*2\.1\.177/i,

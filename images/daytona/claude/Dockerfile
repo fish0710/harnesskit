@@ -6,8 +6,12 @@ ARG CLAUDE_CODE_VERSION=2.1.145
 USER root
 
 RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends bash; \
+    rm -rf /var/lib/apt/lists/*; \
     node_bin="/usr/local/nvm/versions/node/v${NODE_VERSION}/bin"; \
     claude_prefix="/opt/claude-code"; \
+    test -x /usr/bin/bash; \
     test -x "${node_bin}/node"; \
     test -x "${node_bin}/npm"; \
     test -x "${node_bin}/npx"; \

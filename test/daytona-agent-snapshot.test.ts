@@ -8,6 +8,7 @@ import {
   readAgentDockerfile,
 } from "../src/tools/daytona-agent-snapshot.js";
 import {
+  assertClaudeToolchain,
   DAYTONA_AGENT_IMAGE,
   DAYTONA_AGENT_REGISTRY_IMAGE,
   DAYTONA_AGENT_SNAPSHOT,
@@ -53,7 +54,8 @@ test("build plan targets the Daytona runner and internal registry", () => {
           "/bin/sh",
           DAYTONA_AGENT_IMAGE,
           "-lc",
-          "node --version && npm --version && npx --version && claude --version",
+          "test -x /usr/bin/bash && node --version && " +
+            "npm --version && npx --version && claude --version",
         ],
       ],
       [
@@ -117,4 +119,21 @@ test("snapshot create access denial explains required Daytona permissions", () =
   const explained = explainSnapshotCreateError(new Error("Access denied"));
   assert.match(explained.message, /write:snapshots/);
   assert.match(explained.message, /Docker registry/);
+});
+
+test("preflight rejects Agent images without bash for PTY startup", () => {
+  assert.throws(
+    () =>
+      assertClaudeToolchain({
+        exitCode: 0,
+        stdout: [
+          "node=v22.14.0",
+          "npm=10.9.2",
+          "npx=10.9.2",
+          "claude=2.1.145 (Claude Code)",
+        ].join("\n"),
+        stderr: "",
+      }),
+    /bash/i,
+  );
 });

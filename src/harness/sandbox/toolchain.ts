@@ -2,7 +2,7 @@ import type { SandboxCommandResult } from "./types.js";
 
 export const NODE_VERSION = "22.14.0";
 export const CLAUDE_CODE_VERSION = "2.1.145";
-export const DAYTONA_AGENT_RELEASE = `${CLAUDE_CODE_VERSION}-r1`;
+export const DAYTONA_AGENT_RELEASE = `${CLAUDE_CODE_VERSION}-r2`;
 export const DAYTONA_AGENT_IMAGE =
   `harness-daytona-claude:${DAYTONA_AGENT_RELEASE}`;
 export const DAYTONA_AGENT_REGISTRY_IMAGE =
@@ -16,8 +16,11 @@ export const CLAUDE_TOOLCHAIN_PREFLIGHT = [
   'npm_version=$("/usr/local/bin/npm" --version)',
   'npx_version=$("/usr/local/bin/npx" --version)',
   'claude_version=$("/usr/local/bin/claude" --version)',
-  'printf "node=%s\\nnpm=%s\\nnpx=%s\\nclaude=%s\\n" ' +
-    '"$node_version" "$npm_version" "$npx_version" "$claude_version"',
+  'bash_path="$(command -v bash)"',
+  'test "$bash_path" = "/usr/bin/bash"',
+  'printf "node=%s\\nnpm=%s\\nnpx=%s\\nclaude=%s\\nbash=%s\\n" ' +
+    '"$node_version" "$npm_version" "$npx_version" "$claude_version" ' +
+    '"$bash_path"',
 ].join("; ");
 
 type Environment = Record<string, string | undefined>;
@@ -37,6 +40,7 @@ export function assertClaudeToolchain(
   const npm = /^npm=([^\s]+)$/m.exec(result.stdout)?.[1];
   const npx = /^npx=([^\s]+)$/m.exec(result.stdout)?.[1];
   const claude = /^claude=([^\s]+)/m.exec(result.stdout)?.[1];
+  const bash = /^bash=([^\s]+)$/m.exec(result.stdout)?.[1];
   if (node !== NODE_VERSION) {
     throw new Error(
       `Expected Node.js ${NODE_VERSION}, observed ${node ?? "missing"}`,
@@ -52,6 +56,12 @@ export function assertClaudeToolchain(
     throw new Error(
       `Expected Claude Code ${CLAUDE_CODE_VERSION}, ` +
         `observed ${claude ?? "missing"}`,
+    );
+  }
+  if (bash !== "/usr/bin/bash") {
+    throw new Error(
+      `Expected /usr/bin/bash for Daytona PTY startup, ` +
+        `observed ${bash ?? "missing"}`,
     );
   }
 }

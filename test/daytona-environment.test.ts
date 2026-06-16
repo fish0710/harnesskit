@@ -188,7 +188,7 @@ class RecordingHandle implements SandboxHandle {
         exitCode: 0,
         stdout:
           "node=v22.14.0\nnpm=10.9.2\nnpx=10.9.2\n" +
-          "claude=2.1.145 (Claude Code)\n",
+          "claude=2.1.145 (Claude Code)\nbash=/usr/bin/bash\n",
         stderr: "",
       };
     }

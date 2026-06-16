@@ -27,7 +27,7 @@ does not recollect the live agent workspace after a pass.
 ```bash
 export DAYTONA_API_KEY="<daytona-key>"
 export DAYTONA_API_URL="http://localhost:3000/api" # optional default
-export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r1"
+export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r2"
 export ANTHROPIC_AUTH_TOKEN="<short-lived-model-token>"
 export ANTHROPIC_BASE_URL="<approved-model-endpoint>"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="<model>"
@@ -64,9 +64,9 @@ built once with pinned tool versions:
 ```text
 Node.js: 22.14.0
 Claude Code: 2.1.145
-Docker image: harness-daytona-claude:2.1.145-r1
-Registry image: registry:6000/harness/harness-daytona-claude:2.1.145-r1
-Daytona Snapshot: harness-agent-claude-2.1.145-r1
+Docker image: harness-daytona-claude:2.1.145-r2
+Registry image: registry:6000/harness/harness-daytona-claude:2.1.145-r2
+Daytona Snapshot: harness-agent-claude-2.1.145-r2
 ```
 
 Build, push, register, activate, and verify the Snapshot:
@@ -74,7 +74,7 @@ Build, push, register, activate, and verify the Snapshot:
 ```bash
 source ~/.zshrc
 npm run snapshot:agent
-export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r1"
+export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r2"
 ```
 
 `npm run snapshot:agent` builds the image inside the Daytona runner container,
@@ -86,6 +86,7 @@ Daytona Snapshot, starts a temporary sandbox from that Snapshot, and verifies:
 /usr/local/bin/npm
 /usr/local/bin/npx
 /usr/local/bin/claude
+/usr/bin/bash
 ```
 
 The script prints the final `export HARNESS_DAYTONA_AGENT_SNAPSHOT=...` line
@@ -102,6 +103,7 @@ docker exec daytona-runner-1 docker images \
   'registry:6000/harness/harness-daytona-claude'
 npm run snapshot:agent
 npm run test:daytona
+npm run test:daytona:pty
 ```
 
 Remove old Snapshots only after confirming no active run references them.
@@ -160,10 +162,15 @@ npm run check
 Run the opt-in real service test:
 
 ```bash
-export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r1"
+export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r2"
 npm run test:daytona
+npm run test:daytona:pty
 ```
 
 The integration test creates a temporary Git worktree, uses one Claude agent
 sandbox, validates the result in a separate gate sandbox, publishes the exact
 passing bytes, and deletes the sandboxes.
+
+The PTY integration test creates a temporary Agent sandbox from the selected
+Snapshot, creates the harness workspace directory, opens a real Daytona PTY
+session, verifies a sentinel command, and deletes the sandbox.

@@ -182,20 +182,20 @@ Snapshot：
 ```text
 Node.js 22.14.0
 Claude Code 2.1.145
-harness-daytona-claude:2.1.145-r1
-registry:6000/harness/harness-daytona-claude:2.1.145-r1
-harness-agent-claude-2.1.145-r1
+harness-daytona-claude:2.1.145-r2
+registry:6000/harness/harness-daytona-claude:2.1.145-r2
+harness-agent-claude-2.1.145-r2
 ```
 
 运行时要求：
 
 ```bash
-export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r1"
+export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-2.1.145-r2"
 ```
 
 `npm run snapshot:agent` 负责在 Daytona runner 内构建镜像、推送到内部 registry、
-创建或激活 Snapshot，并用临时沙箱验证 `/usr/local/bin/node`、`npm`、`npx`
-和 `claude`。已有 Snapshot 的镜像名不匹配时必须发布新修订，例如 `r2`，不能
+创建或激活 Snapshot，并用临时沙箱验证 `/usr/local/bin/node`、`npm`、`npx`、
+`claude` 和 `/usr/bin/bash`。已有 Snapshot 的镜像名不匹配时必须发布新修订，不能
 覆盖旧的 immutable Snapshot。
 
 ## 11. 配置模型

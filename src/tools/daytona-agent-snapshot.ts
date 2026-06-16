@@ -95,7 +95,8 @@ export function buildImageCommands(
         "/bin/sh",
         DAYTONA_AGENT_IMAGE,
         "-lc",
-        "node --version && npm --version && npx --version && claude --version",
+        "test -x /usr/bin/bash && " +
+          "node --version && npm --version && npx --version && claude --version",
       ],
     ],
     [
