@@ -62,5 +62,6 @@ export { bootPlugin } from "./plugins/boot.js";
 export { reviewPlugin } from "./plugins/review.js";
 export { httpPlugin } from "./plugins/http.js";
 export { structurePlugin } from "./plugins/structure.js";
+export { miniprogramPlugin } from "./plugins/miniprogram.js";
 export { createInvariantPlugin, type Property } from "./plugins/invariant.js";
 export { spawnCapture, type SpawnResult } from "./util/spawn.js";
