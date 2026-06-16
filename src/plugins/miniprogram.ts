@@ -108,6 +108,10 @@ function isDirectory(path: string): boolean {
   }
 }
 
+function isValidTcpPort(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
 async function startManagedDevtools(
   contract: Contract,
   ctx: RunContext,
@@ -133,7 +137,7 @@ async function startManagedDevtools(
     cwd: ctx.cwd,
     timeoutMs,
     signal: ctx.signal,
-    env: ctx.execution ? {} : { ...process.env },
+    env: {},
   });
   const evidenceError = commandEvidenceError(id, evidence);
   if (evidenceError) {
@@ -304,6 +308,16 @@ export const miniprogramPlugin: Plugin = {
         };
       }
       devtoolsPort = devtools.autoPort ?? DEFAULT_AUTO_PORT;
+      if (!isValidTcpPort(devtoolsPort)) {
+        return {
+          id: contract.id,
+          type: this.type,
+          status: "error",
+          durationMs: 0,
+          violations: [],
+          errorReason: `微信开发者工具 autoPort 必须是有效 TCP 端口: ${devtoolsPort}`,
+        };
+      }
       const startupError = await startManagedDevtools(
         contract,
         ctx,

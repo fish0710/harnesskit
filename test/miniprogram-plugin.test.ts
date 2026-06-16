@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { relative, resolve } from "node:path";
 
@@ -426,8 +426,54 @@ test("miniprogram plugin starts managed DevTools before runner", async () => {
   assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "19420");
 });
 
+test("miniprogram plugin does not forward ambient env to local managed DevTools startup", async () => {
+  const cliDir = mkdtempSync(`${process.cwd()}/test/fixtures/mp-devtools-cli-`);
+  const cliPath = `${cliDir}/cli.js`;
+  const originalSecret = process.env.HARNESS_LEAK_TEST_SECRET;
+  try {
+    writeFileSync(
+      cliPath,
+      [
+        "#!/bin/sh",
+        "if [ -n \"$HARNESS_LEAK_TEST_SECRET\" ]; then",
+        "  echo 'ambient env leaked' >&2",
+        "  exit 3",
+        "fi",
+        "exit 0",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(cliPath, 0o755);
+    process.env.HARNESS_LEAK_TEST_SECRET = "contract-controlled-cli-must-not-see-this";
+
+    const result = await miniprogramPlugin.run(
+      {
+        id: "mp.managed.local-env",
+        type: "miniprogram",
+        projectPath: "test/fixtures/mp-project",
+        runner: "test/fixtures/miniprogram-runner.js",
+        devtools: {
+          mode: "managed",
+          cliPath,
+          autoPort: 19420,
+        },
+      },
+      { cwd: process.cwd() },
+    );
+
+    assert.equal(result.status, "pass");
+  } finally {
+    if (originalSecret === undefined) {
+      delete process.env.HARNESS_LEAK_TEST_SECRET;
+    } else {
+      process.env.HARNESS_LEAK_TEST_SECRET = originalSecret;
+    }
+    rmSync(cliDir, { recursive: true, force: true });
+  }
+});
+
 test("miniprogram plugin reports managed DevTools startup failure as error", async () => {
-  const { execution } = fakeExecution((request) => ({
+  const { execution, calls } = fakeExecution((request) => ({
     exitCode: request.command === "/Applications/WeChatDevTools/cli" ? 2 : 0,
     stderr: request.command === "/Applications/WeChatDevTools/cli" ? "trust failed" : "",
   }));
@@ -448,4 +494,93 @@ test("miniprogram plugin reports managed DevTools startup failure as error", asy
 
   assert.equal(result.status, "error");
   assert.match(result.errorReason ?? "", /DevTools|trust failed|退出码 2/);
+  assert.equal(calls.length, 1);
+});
+
+test("miniprogram plugin rejects managed DevTools startup evidence errors before runner", async (t) => {
+  const cases = [
+    {
+      name: "mismatched executionId",
+      response: () => ({ executionId: "forged", exitCode: 0 }),
+      match: /ID|不匹配|不可信/,
+    },
+    {
+      name: "execution target error",
+      response: () => ({ exitCode: null, error: "remote spawn failed" }),
+      match: /remote spawn failed/,
+    },
+    {
+      name: "null exit code",
+      response: () => ({ exitCode: null }),
+      match: /退出码|证据|不可信/,
+    },
+    {
+      name: "invalid exit code",
+      response: () => ({ exitCode: 1.5 }),
+      match: /退出码|证据|不可信/,
+    },
+    {
+      name: "invalid duration",
+      response: () => ({ exitCode: 0, durationMs: -1 }),
+      match: /耗时|证据|不可信/,
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const { execution, calls } = fakeExecution(testCase.response);
+      const result = await miniprogramPlugin.run(
+        {
+          id: `mp.devtools.evidence.${testCase.name}`,
+          type: "miniprogram",
+          projectPath: "test/fixtures/mp-project",
+          runner: "test/fixtures/miniprogram-runner.js",
+          devtools: {
+            mode: "managed",
+            cliPath: "/Applications/WeChatDevTools/cli",
+            autoPort: 19420,
+          },
+        },
+        { cwd: process.cwd(), execution },
+      );
+
+      assert.equal(result.status, "error");
+      assert.match(result.errorReason ?? "", testCase.match);
+      assert.equal(calls.length, 1);
+    });
+  }
+});
+
+test("miniprogram plugin rejects invalid managed DevTools autoPort before execution", async (t) => {
+  const cases = [
+    { name: "zero", autoPort: 0 },
+    { name: "negative", autoPort: -1 },
+    { name: "non-integer", autoPort: 19420.5 },
+    { name: "NaN", autoPort: Number.NaN },
+    { name: "too large", autoPort: 65536 },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+      const result = await miniprogramPlugin.run(
+        {
+          id: `mp.devtools.port.${testCase.name}`,
+          type: "miniprogram",
+          projectPath: "test/fixtures/mp-project",
+          runner: "test/fixtures/miniprogram-runner.js",
+          devtools: {
+            mode: "managed",
+            cliPath: "/Applications/WeChatDevTools/cli",
+            autoPort: testCase.autoPort,
+          },
+        },
+        { cwd: process.cwd(), execution },
+      );
+
+      assert.equal(result.status, "error");
+      assert.match(result.errorReason ?? "", /autoPort|port|端口/);
+      assert.equal(calls.length, 0);
+    });
+  }
 });
