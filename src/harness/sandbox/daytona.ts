@@ -1,4 +1,4 @@
-import { Daytona, type FileInfo } from "@daytona/sdk";
+import { Daytona, type FileInfo, type VolumeMount } from "@daytona/sdk";
 import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
@@ -172,6 +172,7 @@ export interface DaytonaSdkSandbox {
 }
 
 export interface DaytonaSdkClient {
+  readonly volume?: DaytonaVolumeService;
   create(params: {
     language: string;
     snapshot?: string;
@@ -179,8 +180,16 @@ export interface DaytonaSdkClient {
     envVars: Record<string, string>;
     ephemeral: boolean;
     networkBlockAll: boolean;
+    volumes?: VolumeMount[];
   }): Promise<DaytonaSdkSandbox>;
   delete(sandbox: DaytonaSdkSandbox): Promise<void>;
+}
+
+export interface DaytonaVolumeService {
+  get(
+    name: string,
+    create?: boolean,
+  ): Promise<{ id: string; name: string }>;
 }
 
 type DaytonaSdkSandboxInternals = DaytonaSdkSandbox & {
@@ -330,6 +339,59 @@ function assertRemoteCwd(remoteRoot: string, cwd: string): void {
   ) {
     throw new Error(`Remote execution cwd escapes workspace: ${cwd}`);
   }
+}
+
+function normalizeVolumeName(volumeName: string): string {
+  const trimmed = volumeName.trim();
+  if (trimmed === "" || trimmed.includes("\0")) {
+    throw new Error("Daytona volumeName must not be blank or contain NUL");
+  }
+  return trimmed;
+}
+
+function normalizeVolumeMountPath(mountPath: string): string {
+  const trimmed = mountPath.trim();
+  if (
+    trimmed === "" ||
+    trimmed.includes("\0") ||
+    !posix.isAbsolute(trimmed)
+  ) {
+    throw new Error("Daytona volume mountPath must be an absolute POSIX path");
+  }
+  const normalized = posix.normalize(trimmed);
+  if (
+    normalized === "/" ||
+    normalized === "/workspace" ||
+    normalized.startsWith("/workspace/")
+  ) {
+    throw new Error(
+      "Daytona volume mountPath must not be root or overlap the workspace",
+    );
+  }
+  return normalized;
+}
+
+function normalizeVolumeSubpath(subpath: string | undefined): string | undefined {
+  if (subpath === undefined) return undefined;
+  const trimmed = subpath.trim();
+  if (
+    trimmed === "" ||
+    trimmed.includes("\0") ||
+    trimmed.includes("\\") ||
+    posix.isAbsolute(trimmed) ||
+    trimmed.split("/").some((segment) => segment === "." || segment === "..")
+  ) {
+    throw new Error("Daytona volume subpath must be a relative POSIX path");
+  }
+  const normalized = posix.normalize(trimmed);
+  if (
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith("../")
+  ) {
+    throw new Error("Daytona volume subpath must not escape the volume");
+  }
+  return normalized;
 }
 
 function fileKind(info: FileInfo): RemoteFileEntry["kind"] {
@@ -841,6 +903,7 @@ class DaytonaSdkProvider implements SandboxProvider {
       const role = request.role === "agent" ? "Agent" : "Gate";
       throw new Error(`${role} snapshot must not be empty`);
     }
+    const volumes = await this.resolveVolumes(request);
     const sandbox = await this.client.create({
       language: "typescript",
       ...(snapshot ? { snapshot } : {}),
@@ -848,9 +911,39 @@ class DaytonaSdkProvider implements SandboxProvider {
       envVars: request.envVars,
       ephemeral: request.ephemeral,
       networkBlockAll: false,
+      ...(volumes.length > 0 ? { volumes } : {}),
     });
     if (this.apiUrl) rewriteRemoteToolboxProxy(sandbox, this.apiUrl);
     return new DaytonaSandboxHandle(this.client, sandbox);
+  }
+
+  private async resolveVolumes(
+    request: SandboxCreateRequest,
+  ): Promise<VolumeMount[]> {
+    const requested = request.volumes ?? [];
+    if (requested.length === 0) return [];
+    const validated = requested.map((mount) => {
+      const subpath = normalizeVolumeSubpath(mount.subpath);
+      return {
+        volumeName: normalizeVolumeName(mount.volumeName),
+        mountPath: normalizeVolumeMountPath(mount.mountPath),
+        ...(subpath ? { subpath } : {}),
+      };
+    });
+    const service = this.client.volume;
+    if (!service) {
+      throw new Error("Daytona volume service is required for volume mounts");
+    }
+    return Promise.all(
+      validated.map(async (mount) => {
+        const volume = await service.get(mount.volumeName, true);
+        return {
+          volumeId: volume.id,
+          mountPath: mount.mountPath,
+          ...(mount.subpath ? { subpath: mount.subpath } : {}),
+        };
+      }),
+    );
   }
 }
 

@@ -16,6 +16,7 @@ interface CreateRequest {
   snapshot?: string;
   envVars: Record<string, string>;
   ephemeral: boolean;
+  volumes?: Array<{ volumeName: string; mountPath: string; subpath?: string }>;
 }
 
 interface CreatedSdkRequest {
@@ -24,6 +25,8 @@ interface CreatedSdkRequest {
   labels?: Record<string, string>;
   envVars?: Record<string, string>;
   ephemeral?: boolean;
+  networkBlockAll?: boolean;
+  volumes?: Array<{ volumeId: string; mountPath: string; subpath?: string }>;
 }
 
 const modelEnvironment = {
@@ -199,6 +202,194 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
     Object.values(created[1]?.envVars ?? {}).includes("agent-token"),
     false,
   );
+});
+
+test("SDK provider resolves requested volumes before sandbox creation", async () => {
+  const created: CreatedSdkRequest[] = [];
+  const volumeGets: Array<{ name: string; create: boolean | undefined }> = [];
+  const sdkSandbox = fakeSdkSandbox();
+  const provider = createDaytonaSdkProviderFromClient({
+    volume: {
+      async get(name: string, create?: boolean) {
+        volumeGets.push({ name, create });
+        return { id: "volume-123", name, __brand: "Volume" as const };
+      },
+    },
+    async create(request: CreatedSdkRequest) {
+      created.push(request);
+      return sdkSandbox;
+    },
+    async delete() {
+      sdkSandbox.calls.deleted++;
+    },
+  });
+
+  await provider.create({
+    role: "agent",
+    snapshot: "harness-agent-claude-latest",
+    envVars: {},
+    ephemeral: false,
+    volumes: [{
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+      subpath: "runs/run-123",
+    }],
+  });
+
+  assert.deepEqual(volumeGets, [{
+    name: "harness-claude-observability",
+    create: true,
+  }]);
+  assert.deepEqual(created[0]?.volumes, [{
+    volumeId: "volume-123",
+    mountPath: "/harness-observability",
+    subpath: "runs/run-123",
+  }]);
+});
+
+test("SDK provider fails closed when volume service is missing for a volume request", async () => {
+  const created: CreatedSdkRequest[] = [];
+  const sdkSandbox = fakeSdkSandbox();
+  const provider = createDaytonaSdkProviderFromClient({
+    async create(request: CreatedSdkRequest) {
+      created.push(request);
+      return sdkSandbox;
+    },
+    async delete() {
+      sdkSandbox.calls.deleted++;
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      provider.create({
+        role: "agent",
+        envVars: {},
+        ephemeral: false,
+        volumes: [{
+          volumeName: "harness-claude-observability",
+          mountPath: "/harness-observability",
+        }],
+      }),
+    /Daytona volume service is required/,
+  );
+  assert.deepEqual(created, []);
+});
+
+test("SDK provider rejects blank volume names before volume resolution", async () => {
+  const created: CreatedSdkRequest[] = [];
+  const volumeGets: string[] = [];
+  const sdkSandbox = fakeSdkSandbox();
+  const provider = createDaytonaSdkProviderFromClient({
+    volume: {
+      async get(name: string) {
+        volumeGets.push(name);
+        return { id: "volume-123", name };
+      },
+    },
+    async create(request: CreatedSdkRequest) {
+      created.push(request);
+      return sdkSandbox;
+    },
+    async delete() {
+      sdkSandbox.calls.deleted++;
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      provider.create({
+        role: "agent",
+        envVars: {},
+        ephemeral: false,
+        volumes: [{
+          volumeName: "   ",
+          mountPath: "/harness-observability",
+        }],
+      }),
+    /volumeName/i,
+  );
+  assert.deepEqual(created, []);
+  assert.deepEqual(volumeGets, []);
+});
+
+test("SDK provider rejects unsafe volume mount paths before sandbox creation", async () => {
+  for (const mountPath of ["", "relative/path", "/", "/tmp/\0bad", "/workspace", "/workspace/candidate"]) {
+    const created: CreatedSdkRequest[] = [];
+    const volumeGets: string[] = [];
+    const sdkSandbox = fakeSdkSandbox();
+    const provider = createDaytonaSdkProviderFromClient({
+      volume: {
+        async get(name: string) {
+          volumeGets.push(name);
+          return { id: "volume-123", name };
+        },
+      },
+      async create(request: CreatedSdkRequest) {
+        created.push(request);
+        return sdkSandbox;
+      },
+      async delete() {
+        sdkSandbox.calls.deleted++;
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        provider.create({
+          role: "agent",
+          envVars: {},
+          ephemeral: false,
+          volumes: [{
+            volumeName: "harness-claude-observability",
+            mountPath,
+          }],
+        }),
+      /volume mountPath/i,
+    );
+    assert.deepEqual(created, []);
+    assert.deepEqual(volumeGets, []);
+  }
+});
+
+test("SDK provider rejects unsafe volume subpaths before sandbox creation", async () => {
+  for (const subpath of ["", "/absolute", "../escape", "nested/../escape", "bad\0path", "bad\\path"]) {
+    const created: CreatedSdkRequest[] = [];
+    const volumeGets: string[] = [];
+    const sdkSandbox = fakeSdkSandbox();
+    const provider = createDaytonaSdkProviderFromClient({
+      volume: {
+        async get(name: string) {
+          volumeGets.push(name);
+          return { id: "volume-123", name };
+        },
+      },
+      async create(request: CreatedSdkRequest) {
+        created.push(request);
+        return sdkSandbox;
+      },
+      async delete() {
+        sdkSandbox.calls.deleted++;
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        provider.create({
+          role: "agent",
+          envVars: {},
+          ephemeral: false,
+          volumes: [{
+            volumeName: "harness-claude-observability",
+            mountPath: "/harness-observability",
+            subpath,
+          }],
+        }),
+      /volume subpath/i,
+    );
+    assert.deepEqual(created, []);
+    assert.deepEqual(volumeGets, []);
+  }
 });
 
 test("SDK provider keeps PTY toolbox URLs on the public toolbox proxy", async () => {

@@ -40,6 +40,13 @@ export interface CandidateSnapshot {
 interface SandboxCreateBaseRequest {
   envVars: Record<string, string>;
   ephemeral: boolean;
+  volumes?: SandboxVolumeMount[];
+}
+
+export interface SandboxVolumeMount {
+  volumeName: string;
+  mountPath: string;
+  subpath?: string;
 }
 
 export type SandboxCreateRequest =
