@@ -192,8 +192,15 @@ export function rewriteRemoteToolboxProxy(
 ): void {
   if (!shouldRewriteToolboxProxy(sandbox, apiUrl)) return;
   const patchable = sandbox as DaytonaSdkSandboxInternals;
-  const toolboxProxyUrl = `${apiUrl.replace(/\/$/, "")}/toolbox`;
-  const baseURL = `${toolboxProxyUrl}/${sandbox.id}/toolbox`;
+  const parsedApiUrl = new URL(apiUrl);
+  const apiPath = parsedApiUrl.pathname.replace(/\/$/, "");
+  parsedApiUrl.pathname = apiPath.endsWith("/api")
+    ? apiPath.slice(0, -"/api".length)
+    : apiPath;
+  const publicBaseUrl = parsedApiUrl.toString().replace(/\/$/, "");
+  const toolboxProxyUrl = `${publicBaseUrl}/toolbox`;
+  const restToolboxProxyUrl = `${apiUrl.replace(/\/$/, "")}/toolbox`;
+  const baseURL = `${restToolboxProxyUrl}/${sandbox.id}/toolbox`;
   sandbox.toolboxProxyUrl = toolboxProxyUrl;
   if (patchable.axiosInstance) {
     patchable.axiosInstance.defaults.baseURL = baseURL;

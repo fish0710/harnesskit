@@ -197,7 +197,7 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
   );
 });
 
-test("SDK provider rewrites localhost toolbox URLs for remote Daytona APIs", async () => {
+test("SDK provider keeps PTY toolbox URLs on the public toolbox proxy", async () => {
   const sdkSandbox = fakeSdkSandbox({
     toolboxProxyUrl: "http://proxy.localhost:4000/toolbox",
   });
@@ -215,7 +215,7 @@ test("SDK provider rewrites localhost toolbox URLs for remote Daytona APIs", asy
 
   assert.equal(
     sdkSandbox.toolboxProxyUrl,
-    "https://daytona.example.test:8443/api/toolbox",
+    "https://daytona.example.test:8443/toolbox",
   );
   assert.equal(
     sdkSandbox.axiosInstance.defaults.baseURL,
