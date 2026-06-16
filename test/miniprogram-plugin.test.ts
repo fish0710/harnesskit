@@ -76,6 +76,26 @@ test("miniprogram plugin rejects backslash traversal paths", async (t) => {
       projectPath: "test/fixtures/mp-project",
       runner: "foo\\..\\..\\outside",
     },
+    {
+      name: "project path internal slash traversal",
+      projectPath: "foo/../test/fixtures/mp-project",
+      runner: "test/fixtures/miniprogram-runner.js",
+    },
+    {
+      name: "project path internal backslash traversal",
+      projectPath: "foo\\..\\test/fixtures/mp-project",
+      runner: "test/fixtures/miniprogram-runner.js",
+    },
+    {
+      name: "project path Windows drive absolute",
+      projectPath: "C:\\outside",
+      runner: "test/fixtures/miniprogram-runner.js",
+    },
+    {
+      name: "runner Windows drive absolute",
+      projectPath: "test/fixtures/mp-project",
+      runner: "C:/outside",
+    },
   ];
 
   for (const testCase of cases) {
