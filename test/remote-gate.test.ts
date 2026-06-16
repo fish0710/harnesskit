@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 
 import type {
   CommandExecutionRequest,
@@ -352,7 +353,7 @@ test("miniprogram plugin sends trusted runner execution request", async () => {
   assert.equal(result.status, "pass");
   assert.ok(call?.executionId);
   assert.equal(call.command, process.execPath);
-  assert.deepEqual(call.args, ["test/fixtures/miniprogram-runner.js"]);
+  assert.deepEqual(call.args, [resolve(process.cwd(), "test/fixtures/miniprogram-runner.js")]);
   assert.equal(call.timeoutMs, 1234);
 });
 

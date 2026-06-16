@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { relative } from "node:path";
+import { relative, resolve } from "node:path";
 
 import { GateCore } from "../src/gate.js";
 import type {
@@ -99,6 +99,11 @@ test("miniprogram plugin rejects backslash traversal paths", async (t) => {
       projectPath: "test/fixtures/mp-project",
       runner: "C:/outside",
     },
+    {
+      name: "runner Windows drive relative",
+      projectPath: "test/fixtures/mp-project",
+      runner: "C:outside",
+    },
   ];
 
   for (const testCase of cases) {
@@ -135,7 +140,7 @@ test("miniprogram plugin classifies runner exit 0 as pass", async () => {
   assert.equal(result.status, "pass");
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.command, process.execPath);
-  assert.deepEqual(calls[0]!.args.slice(-1), ["test/fixtures/miniprogram-runner.js"]);
+  assert.deepEqual(calls[0]!.args, [resolve(process.cwd(), "test/fixtures/miniprogram-runner.js")]);
   assert.deepEqual(Object.keys(calls[0]!.env ?? {}).sort(), [
     "HARNESS_MINIPROGRAM_PROJECT",
     "HARNESS_MINIPROGRAM_PROJECT_ABS",
@@ -144,9 +149,44 @@ test("miniprogram plugin classifies runner exit 0 as pass", async () => {
   assert.equal(calls[0]!.env?.HARNESS_MINIPROGRAM_PROJECT, "test/fixtures/mp-project");
   assert.equal(
     calls[0]!.env?.HARNESS_MINIPROGRAM_PROJECT_ABS,
-    `${process.cwd()}/test/fixtures/mp-project`,
+    resolve(process.cwd(), "test/fixtures/mp-project"),
   );
   assert.equal(calls[0]!.env?.HARNESS_MINIPROGRAM_WS_ENDPOINT, "ws://127.0.0.1:9420");
+});
+
+test("miniprogram plugin executes accepted in-workspace symlinks by real path", async () => {
+  const projectReal = mkdtempSync(`${process.cwd()}/test/fixtures/mp-project-real-`);
+  const linkDir = mkdtempSync(`${process.cwd()}/test/fixtures/mp-real-link-`);
+  try {
+    const runnerReal = `${linkDir}/runner-real.js`;
+    writeFileSync(`${projectReal}/project.config.json`, "{}\n");
+    writeFileSync(runnerReal, "process.exit(0)\n");
+    symlinkSync(projectReal, `${linkDir}/project-link`);
+    symlinkSync(runnerReal, `${linkDir}/runner-link.js`);
+
+    const projectPath = relative(process.cwd(), `${linkDir}/project-link`);
+    const runnerPath = relative(process.cwd(), `${linkDir}/runner-link.js`);
+    const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+    const result = await miniprogramPlugin.run(
+      {
+        id: "mp.symlink.accepted",
+        type: "miniprogram",
+        projectPath,
+        runner: runnerPath,
+        devtools: { mode: "connect", wsEndpoint: "ws://127.0.0.1:9420" },
+      },
+      { cwd: process.cwd(), execution },
+    );
+
+    assert.equal(result.status, "pass");
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0]!.args, [runnerReal]);
+    assert.equal(calls[0]!.env?.HARNESS_MINIPROGRAM_PROJECT, projectPath);
+    assert.equal(calls[0]!.env?.HARNESS_MINIPROGRAM_PROJECT_ABS, projectReal);
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+    rmSync(projectReal, { recursive: true, force: true });
+  }
 });
 
 test("miniprogram plugin rejects a directory runner before execution", async () => {

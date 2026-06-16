@@ -31,7 +31,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function safeRelativePath(value: unknown): string | undefined {
   if (typeof value !== "string" || value.trim() === "") return undefined;
   const slashPath = value.replaceAll("\\", "/");
-  if (isAbsolute(value) || isAbsolute(slashPath) || /^[A-Za-z]:\//.test(slashPath)) {
+  if (isAbsolute(value) || isAbsolute(slashPath) || /^[A-Za-z]:/.test(slashPath)) {
     return undefined;
   }
   if (slashPath.split("/").includes("..")) return undefined;
@@ -258,13 +258,13 @@ export const miniprogramPlugin: Plugin = {
     const evidence = await (ctx.execution ?? localExecutionTarget).execute({
       executionId: id,
       command: process.execPath,
-      args: [runner],
+      args: [runnerReal],
       cwd: ctx.cwd,
       timeoutMs,
       signal: ctx.signal,
       env: {
         HARNESS_MINIPROGRAM_PROJECT: projectPath,
-        HARNESS_MINIPROGRAM_PROJECT_ABS: projectAbs,
+        HARNESS_MINIPROGRAM_PROJECT_ABS: projectReal,
         HARNESS_MINIPROGRAM_WS_ENDPOINT: devtools.wsEndpoint,
       },
     });
