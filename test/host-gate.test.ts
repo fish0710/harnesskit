@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  isHostLocalContract,
   materializeCandidateWorkspace,
   runHostLocalGate,
 } from "../src/harness/host-gate.js";
@@ -56,6 +57,11 @@ function cleanup(...roots: string[]): void {
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+test("isHostLocalContract identifies miniprogram contracts only", () => {
+  assert.equal(isHostLocalContract({ id: "mp", type: "miniprogram" }), true);
+  assert.equal(isHostLocalContract({ id: "cmd", type: "command" }), false);
+});
 
 test("materializeCandidateWorkspace writes candidate bytes and restores protected files", () => {
   const root = mkdtempSync(join(tmpdir(), "harness-host-gate-"));
