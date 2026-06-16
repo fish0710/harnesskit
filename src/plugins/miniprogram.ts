@@ -9,12 +9,16 @@ import {
 import type { CheckResult, Contract, Plugin, RunContext } from "../types.js";
 
 interface DevtoolsConfig {
-  mode?: "managed" | "connect";
+  mode: "managed" | "connect";
   cliPath?: string;
-  autoPort?: unknown;
+  autoPort?: number;
   trustProject?: boolean;
   wsEndpoint?: string;
 }
+
+type DevtoolsParseResult =
+  | { ok: true; config: DevtoolsConfig }
+  | { ok: false; errorReason: string };
 
 interface MiniProgramContract extends Contract {
   projectPath?: unknown;
@@ -58,18 +62,6 @@ function boundedCommandOutput(stderr: string, stdout: string): string | undefine
   return sections.length ? sections.join("\n") : undefined;
 }
 
-function parseDevtools(value: unknown): DevtoolsConfig {
-  if (!isRecord(value)) return { mode: "managed" };
-  const mode = value.mode === "connect" ? "connect" : "managed";
-  return {
-    mode,
-    ...(typeof value.cliPath === "string" ? { cliPath: value.cliPath } : {}),
-    ...("autoPort" in value ? { autoPort: value.autoPort } : {}),
-    ...(typeof value.trustProject === "boolean" ? { trustProject: value.trustProject } : {}),
-    ...(typeof value.wsEndpoint === "string" ? { wsEndpoint: value.wsEndpoint } : {}),
-  };
-}
-
 function realPath(path: string): string | undefined {
   try {
     return realpathSync(path);
@@ -110,6 +102,53 @@ function isDirectory(path: string): boolean {
 
 function isValidTcpPort(value: number): boolean {
   return Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function parseDevtools(value: unknown): DevtoolsParseResult {
+  if (value === undefined) return { ok: true, config: { mode: "managed" } };
+  if (!isRecord(value)) {
+    return { ok: false, errorReason: "miniprogram devtools 必须是对象" };
+  }
+
+  let mode: "managed" | "connect" = "managed";
+  if (hasOwn(value, "mode")) {
+    if (value.mode !== "managed" && value.mode !== "connect") {
+      return { ok: false, errorReason: "miniprogram devtools.mode 必须是 managed 或 connect" };
+    }
+    mode = value.mode;
+  }
+
+  const config: DevtoolsConfig = { mode };
+  if (hasOwn(value, "cliPath")) {
+    if (typeof value.cliPath !== "string") {
+      return { ok: false, errorReason: "miniprogram devtools.cliPath 必须是字符串" };
+    }
+    config.cliPath = value.cliPath;
+  }
+  if (hasOwn(value, "autoPort")) {
+    if (typeof value.autoPort !== "number" || !isValidTcpPort(value.autoPort)) {
+      return { ok: false, errorReason: "miniprogram devtools.autoPort 必须是有效 TCP 端口" };
+    }
+    config.autoPort = value.autoPort;
+  }
+  if (hasOwn(value, "trustProject")) {
+    if (typeof value.trustProject !== "boolean") {
+      return { ok: false, errorReason: "miniprogram devtools.trustProject 必须是布尔值" };
+    }
+    config.trustProject = value.trustProject;
+  }
+  if (hasOwn(value, "wsEndpoint")) {
+    if (typeof value.wsEndpoint !== "string") {
+      return { ok: false, errorReason: "miniprogram devtools.wsEndpoint 必须是字符串" };
+    }
+    config.wsEndpoint = value.wsEndpoint;
+  }
+
+  return { ok: true, config };
 }
 
 async function startManagedDevtools(
@@ -290,7 +329,18 @@ export const miniprogramPlugin: Plugin = {
       };
     }
 
-    const devtools = parseDevtools(contract.devtools);
+    const devtoolsParse = parseDevtools(contract.devtools);
+    if (!devtoolsParse.ok) {
+      return {
+        id: contract.id,
+        type: this.type,
+        status: "error",
+        durationMs: 0,
+        violations: [],
+        errorReason: devtoolsParse.errorReason,
+      };
+    }
+    const devtools = devtoolsParse.config;
     const expectedExit = typeof contract.expectExit === "number" ? contract.expectExit : 0;
     const timeoutMs = typeof contract.timeoutMs === "number" ? contract.timeoutMs : undefined;
     let wsEndpoint = devtools.wsEndpoint;
@@ -307,28 +357,7 @@ export const miniprogramPlugin: Plugin = {
           errorReason: `微信开发者工具 CLI 不存在: ${cliPath}`,
         };
       }
-      const candidatePort = devtools.autoPort === undefined ? DEFAULT_AUTO_PORT : devtools.autoPort;
-      if (typeof candidatePort !== "number") {
-        return {
-          id: contract.id,
-          type: this.type,
-          status: "error",
-          durationMs: 0,
-          violations: [],
-          errorReason: `微信开发者工具 autoPort 必须是有效 TCP 端口: ${String(candidatePort)}`,
-        };
-      }
-      devtoolsPort = candidatePort;
-      if (!isValidTcpPort(devtoolsPort)) {
-        return {
-          id: contract.id,
-          type: this.type,
-          status: "error",
-          durationMs: 0,
-          violations: [],
-          errorReason: `微信开发者工具 autoPort 必须是有效 TCP 端口: ${devtoolsPort}`,
-        };
-      }
+      devtoolsPort = devtools.autoPort ?? DEFAULT_AUTO_PORT;
       const startupError = await startManagedDevtools(
         contract,
         ctx,

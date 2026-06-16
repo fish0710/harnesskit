@@ -426,6 +426,90 @@ test("miniprogram plugin starts managed DevTools before runner", async () => {
   assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "19420");
 });
 
+test("miniprogram plugin uses managed DevTools defaults intentionally when omitted", async () => {
+  const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+  const result = await miniprogramPlugin.run(
+    {
+      id: "mp.managed.defaults",
+      type: "miniprogram",
+      projectPath: "test/fixtures/mp-project",
+      runner: "test/fixtures/miniprogram-runner.js",
+      devtools: {
+        mode: "managed",
+        cliPath: "/Applications/WeChatDevTools/cli",
+      },
+    },
+    { cwd: process.cwd(), execution },
+  );
+
+  assert.equal(result.status, "pass");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0]!.args, [
+    "auto",
+    "--project",
+    resolve(process.cwd(), "test/fixtures/mp-project"),
+    "--auto-port",
+    "9420",
+    "--trust-project",
+  ]);
+  assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_WS_ENDPOINT, "ws://127.0.0.1:9420");
+  assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "9420");
+});
+
+test("miniprogram plugin defaults omitted devtools to managed mode", async () => {
+  const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+  const result = await miniprogramPlugin.run(
+    {
+      id: "mp.devtools.omitted",
+      type: "miniprogram",
+      projectPath: "test/fixtures/mp-project",
+      runner: "test/fixtures/miniprogram-runner.js",
+    },
+    { cwd: process.cwd(), execution },
+  );
+
+  assert.equal(result.status, "pass");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]!.command, "/Applications/wechatwebdevtools.app/Contents/MacOS/cli");
+  assert.deepEqual(calls[0]!.args, [
+    "auto",
+    "--project",
+    resolve(process.cwd(), "test/fixtures/mp-project"),
+    "--auto-port",
+    "9420",
+    "--trust-project",
+  ]);
+});
+
+test("miniprogram plugin honors managed trustProject false", async () => {
+  const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+  const result = await miniprogramPlugin.run(
+    {
+      id: "mp.managed.untrusted",
+      type: "miniprogram",
+      projectPath: "test/fixtures/mp-project",
+      runner: "test/fixtures/miniprogram-runner.js",
+      devtools: {
+        mode: "managed",
+        cliPath: "/Applications/WeChatDevTools/cli",
+        autoPort: 19420,
+        trustProject: false,
+      },
+    },
+    { cwd: process.cwd(), execution },
+  );
+
+  assert.equal(result.status, "pass");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0]!.args, [
+    "auto",
+    "--project",
+    resolve(process.cwd(), "test/fixtures/mp-project"),
+    "--auto-port",
+    "19420",
+  ]);
+});
+
 test("miniprogram plugin starts managed DevTools with real project path for symlink project", async () => {
   const projectReal = mkdtempSync(`${process.cwd()}/test/fixtures/mp-managed-project-real-`);
   const linkDir = mkdtempSync(`${process.cwd()}/test/fixtures/mp-managed-link-`);
@@ -463,6 +547,37 @@ test("miniprogram plugin starts managed DevTools with real project path for syml
   } finally {
     rmSync(linkDir, { recursive: true, force: true });
     rmSync(projectReal, { recursive: true, force: true });
+  }
+});
+
+test("miniprogram plugin rejects malformed present devtools fields before execution", async (t) => {
+  const cases = [
+    { name: "devtools string", devtools: "managed" },
+    { name: "devtools null", devtools: null },
+    { name: "unknown mode", devtools: { mode: "auto" } },
+    { name: "numeric cliPath", devtools: { mode: "managed", cliPath: 7 } },
+    { name: "string trustProject", devtools: { mode: "managed", trustProject: "true" } },
+    { name: "numeric wsEndpoint", devtools: { mode: "connect", wsEndpoint: 9420 } },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+      const result = await miniprogramPlugin.run(
+        {
+          id: `mp.devtools.malformed.${testCase.name}`,
+          type: "miniprogram",
+          projectPath: "test/fixtures/mp-project",
+          runner: "test/fixtures/miniprogram-runner.js",
+          devtools: testCase.devtools,
+        },
+        { cwd: process.cwd(), execution },
+      );
+
+      assert.equal(result.status, "error");
+      assert.match(result.errorReason ?? "", /devtools|mode|cliPath|trustProject|wsEndpoint/i);
+      assert.equal(calls.length, 0);
+    });
   }
 });
 
