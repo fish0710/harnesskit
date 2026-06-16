@@ -32,6 +32,15 @@ export {
   type RunOptions, type RunOutcome, type GenerationBudget,
 } from "./harness/run.js";
 export {
+  DEFAULT_DAYTONA_OBSERVABILITY_MOUNT,
+  DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
+  buildRunId,
+  claudeObservabilityPaths,
+  loadDaytonaObservabilityConfig,
+  type ClaudeObservabilityPaths,
+  type DaytonaObservabilityConfig,
+} from "./harness/observability.js";
+export {
   localExecutionTarget,
   type ExecutionTarget,
   type CommandExecutionEvidence,
