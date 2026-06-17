@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -300,9 +300,7 @@ function optionalStringArray(value: unknown, field: string): string[] | undefine
 
 function parseLedgerTask(value: unknown): SeriesLedgerTask {
   if (!isRecord(value)) throw new Error("series ledger task 无效");
-  if (typeof value.id !== "string" || value.id === "") {
-    throw new Error("series ledger task id 无效");
-  }
+  const id = assertSafeSegment(value.id, "series ledger task id");
   if (typeof value.taskHash !== "string" || !/^[a-f0-9]{64}$/.test(value.taskHash)) {
     throw new Error("series ledger taskHash 无效");
   }
@@ -310,8 +308,8 @@ function parseLedgerTask(value: unknown): SeriesLedgerTask {
     throw new Error("series ledger task status 无效");
   }
 
-  return {
-    id: value.id,
+  const task: SeriesLedgerTask = {
+    id,
     taskHash: value.taskHash,
     status: value.status,
     changedFiles: optionalStringArray(value.changedFiles, "series ledger changedFiles"),
@@ -321,6 +319,29 @@ function parseLedgerTask(value: unknown): SeriesLedgerTask {
     completedAt: optionalString(value.completedAt, "series ledger completedAt"),
     errorReason: optionalString(value.errorReason, "series ledger errorReason"),
   };
+
+  if (task.status === "ready_to_commit") {
+    if (task.changedFiles === undefined) {
+      throw new Error("series ledger changedFiles 无效");
+    }
+    if (task.runRecord === undefined) {
+      throw new Error("series ledger runRecord 无效");
+    }
+  }
+
+  if (task.status === "completed" && task.completedAt === undefined) {
+    throw new Error("series ledger completedAt 无效");
+  }
+
+  if (
+    (task.status === "blocked" || task.status === "escalated" || task.status === "error") &&
+    task.errorReason === undefined &&
+    task.runRecord === undefined
+  ) {
+    throw new Error("series ledger terminal task 缺少 errorReason 或 runRecord");
+  }
+
+  return task;
 }
 
 function parseLedger(value: unknown, seriesId: string): SeriesLedger {
@@ -405,23 +426,23 @@ export function readSeriesLedger(cwd: string, seriesId: string): SeriesLedger | 
   const path = seriesLedgerPath(cwd, seriesId);
   if (!existsSync(path)) return undefined;
 
-  let parsed: unknown;
+  const raw = readFileSync(path, "utf8");
+
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parseLedger(JSON.parse(raw), seriesId);
   } catch (error) {
     throw new Error(
       `series ledger JSON 无效: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-
-  return parseLedger(parsed, seriesId);
 }
 
 export function writeSeriesLedger(cwd: string, ledger: SeriesLedger): string {
-  const path = seriesLedgerPath(cwd, ledger.seriesId);
+  const normalized = parseLedger(ledger, ledger.seriesId);
+  const path = seriesLedgerPath(cwd, normalized.seriesId);
   mkdirSync(join(path, ".."), { recursive: true });
-  const tempPath = `${path}.tmp`;
-  writeFileSync(tempPath, JSON.stringify(ledger, null, 2), "utf8");
+  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(tempPath, JSON.stringify(normalized, null, 2), "utf8");
   renameSync(tempPath, path);
   return path;
 }
@@ -461,6 +482,10 @@ export function decideTaskResume(input: {
   const existing = input.ledgerTask;
   if (!existing) return { action: "run" };
 
+  if (existing.status === "pending" || existing.status === "running") {
+    return { action: "run" };
+  }
+
   if (existing.status === "completed") {
     if (existing.taskHash !== input.taskHash) {
       return {
@@ -471,8 +496,25 @@ export function decideTaskResume(input: {
     return { action: "skip" };
   }
 
-  if (existing.status === "ready_to_commit" && existing.taskHash === input.taskHash) {
-    return { action: "commit" };
+  if (existing.status === "ready_to_commit") {
+    if (existing.taskHash === input.taskHash) {
+      return { action: "commit" };
+    }
+    return {
+      action: "stop",
+      reason: `task ${input.taskId} 已处于 ready_to_commit 状态，但当前配置与已发布文件不一致`,
+    };
+  }
+
+  if (
+    existing.status === "blocked" ||
+    existing.status === "escalated" ||
+    existing.status === "error"
+  ) {
+    return {
+      action: "stop",
+      reason: `task ${input.taskId} 已处于 ${existing.status} 状态，需人工处理后再继续`,
+    };
   }
 
   return { action: "run" };

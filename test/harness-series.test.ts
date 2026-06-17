@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -363,6 +363,114 @@ test("series ledger rejects malformed existing JSON", () => {
   );
 });
 
+test("series ledger rejects ready_to_commit without changedFiles", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const path = seriesLedgerPath(cwd, "order-refactor");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    schemaVersion: 1,
+    seriesId: "order-refactor",
+    status: "running",
+    configHash: "a".repeat(64),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:00.000Z",
+    tasks: [{
+      id: "one",
+      taskHash: "b".repeat(64),
+      status: "ready_to_commit",
+      runRecord: ".harness/runs/one.json",
+    }],
+  }), "utf8");
+
+  assert.throws(
+    () => readSeriesLedger(cwd, "order-refactor"),
+    /changedFiles/,
+  );
+});
+
+test("series ledger rejects completed task without completedAt", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const path = seriesLedgerPath(cwd, "order-refactor");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    schemaVersion: 1,
+    seriesId: "order-refactor",
+    status: "completed",
+    configHash: "a".repeat(64),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:00.000Z",
+    tasks: [{
+      id: "one",
+      taskHash: "b".repeat(64),
+      status: "completed",
+    }],
+  }), "utf8");
+
+  assert.throws(
+    () => readSeriesLedger(cwd, "order-refactor"),
+    /completedAt/,
+  );
+});
+
+test("series ledger keeps filesystem read failures distinct from JSON parse failures", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const path = seriesLedgerPath(cwd, "order-refactor");
+  mkdirSync(path, { recursive: true });
+
+  assert.throws(
+    () => readSeriesLedger(cwd, "order-refactor"),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.doesNotMatch(error.message, /series ledger JSON 无效/);
+      return true;
+    },
+  );
+});
+
+test("series ledger write rejects invalid ledger objects from JS callers", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+
+  assert.throws(
+    () => writeSeriesLedger(cwd, {
+      schemaVersion: 1,
+      seriesId: "order-refactor",
+      status: "running",
+      configHash: "a".repeat(64),
+      createdAt: "2026-06-17T00:00:00.000Z",
+      updatedAt: "2026-06-17T00:00:00.000Z",
+      tasks: [{
+        id: "bad/id",
+        taskHash: "b".repeat(64),
+        status: "pending",
+      }],
+    } as SeriesLedger),
+    /安全路径片段/,
+  );
+});
+
+test("series ledger write uses unique temp files and leaves no tmp artifacts", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const ledger: SeriesLedger = {
+    schemaVersion: 1,
+    seriesId: "order-refactor",
+    status: "running",
+    configHash: "a".repeat(64),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:01.000Z",
+    tasks: [],
+  };
+
+  writeSeriesLedger(cwd, ledger);
+  writeSeriesLedger(cwd, { ...ledger, updatedAt: "2026-06-17T00:00:02.000Z" });
+
+  assert.deepEqual(
+    readdirSync(dirname(seriesLedgerPath(cwd, "order-refactor"))).filter((entry) =>
+      entry.endsWith(".tmp")
+    ),
+    [],
+  );
+});
+
 test("decideTaskResume skips completed matching task and stops on hash drift", () => {
   assert.deepEqual(
     decideTaskResume({
@@ -396,7 +504,7 @@ test("decideTaskResume skips completed matching task and stops on hash drift", (
   );
 });
 
-test("decideTaskResume resumes ready_to_commit and reruns incomplete tasks", () => {
+test("decideTaskResume resumes ready_to_commit and reruns only pending or running tasks", () => {
   assert.deepEqual(
     decideTaskResume({
       taskId: "one",
@@ -414,6 +522,37 @@ test("decideTaskResume resumes ready_to_commit and reruns incomplete tasks", () 
   assert.deepEqual(
     decideTaskResume({
       taskId: "one",
+      taskHash: "hash-b",
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "ready_to_commit",
+        changedFiles: ["src/a.ts"],
+        runRecord: ".harness/runs/one.json",
+      },
+    }),
+    {
+      action: "stop",
+      reason: "task one 已处于 ready_to_commit 状态，但当前配置与已发布文件不一致",
+    },
+  );
+
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
+      taskHash: "hash-a",
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "pending",
+      },
+    }),
+    { action: "run" },
+  );
+
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
       taskHash: "hash-a",
       ledgerTask: {
         id: "one",
@@ -422,5 +561,58 @@ test("decideTaskResume resumes ready_to_commit and reruns incomplete tasks", () 
       },
     }),
     { action: "run" },
+  );
+});
+
+test("decideTaskResume stops terminal non-success states for manual handling", () => {
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
+      taskHash: "hash-a",
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "blocked",
+        errorReason: "needs review",
+      },
+    }),
+    {
+      action: "stop",
+      reason: "task one 已处于 blocked 状态，需人工处理后再继续",
+    },
+  );
+
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
+      taskHash: "hash-a",
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "escalated",
+        runRecord: ".harness/runs/one.json",
+      },
+    }),
+    {
+      action: "stop",
+      reason: "task one 已处于 escalated 状态，需人工处理后再继续",
+    },
+  );
+
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
+      taskHash: "hash-a",
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "error",
+        errorReason: "boom",
+      },
+    }),
+    {
+      action: "stop",
+      reason: "task one 已处于 error 状态，需人工处理后再继续",
+    },
   );
 });
