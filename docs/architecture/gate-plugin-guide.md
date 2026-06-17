@@ -221,6 +221,9 @@ runner 启动时只接收插件显式注入的环境变量：
 微信开发者工具。`harness run --driver claude` 下，agent 仍在 Daytona 沙箱中工作，
 但小程序验证留在宿主，避免远端沙箱反连本机 DevTools 的网络穿透问题。
 
+可复制的 runner 模板见 `examples/miniprogram/`，覆盖页面 smoke、点击、表单输入、
+页面跳转和异步请求 mock 等常见门禁形态。
+
 ### review
 
 用途：机器无法可靠判定时，把结构化问题交给人。
