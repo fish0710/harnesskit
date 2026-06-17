@@ -356,6 +356,7 @@ function parseLedger(value: unknown, seriesId: string): SeriesLedger {
     throw new Error("series ledger timestamp 无效");
   }
   if (!Array.isArray(value.tasks)) throw new Error("series ledger tasks 无效");
+  const ids = new Set<string>();
 
   return {
     schemaVersion: 1,
@@ -364,7 +365,14 @@ function parseLedger(value: unknown, seriesId: string): SeriesLedger {
     configHash: value.configHash,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
-    tasks: value.tasks.map((task) => parseLedgerTask(task)),
+    tasks: value.tasks.map((task) => {
+      const parsedTask = parseLedgerTask(task);
+      if (ids.has(parsedTask.id)) {
+        throw new Error(`重复 series ledger task id: ${parsedTask.id}`);
+      }
+      ids.add(parsedTask.id);
+      return parsedTask;
+    }),
   };
 }
 

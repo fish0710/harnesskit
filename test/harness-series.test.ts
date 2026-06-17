@@ -422,6 +422,37 @@ test("series ledger rejects completed task without completedAt", () => {
   );
 });
 
+test("series ledger rejects duplicate task ids", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const path = seriesLedgerPath(cwd, "order-refactor");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    schemaVersion: 1,
+    seriesId: "order-refactor",
+    status: "running",
+    configHash: "a".repeat(64),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:00.000Z",
+    tasks: [
+      {
+        id: "one",
+        taskHash: "b".repeat(64),
+        status: "pending",
+      },
+      {
+        id: "one",
+        taskHash: "c".repeat(64),
+        status: "running",
+      },
+    ],
+  }), "utf8");
+
+  assert.throws(
+    () => readSeriesLedger(cwd, "order-refactor"),
+    /重复 series ledger task id: one/,
+  );
+});
+
 test("series ledger keeps filesystem read failures distinct from JSON parse failures", () => {
   const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
   const path = seriesLedgerPath(cwd, "order-refactor");
@@ -455,6 +486,34 @@ test("series ledger write rejects invalid ledger objects from JS callers", () =>
       }],
     } as SeriesLedger),
     /安全路径片段/,
+  );
+});
+
+test("series ledger write rejects duplicate task ids from JS callers", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+
+  assert.throws(
+    () => writeSeriesLedger(cwd, {
+      schemaVersion: 1,
+      seriesId: "order-refactor",
+      status: "running",
+      configHash: "a".repeat(64),
+      createdAt: "2026-06-17T00:00:00.000Z",
+      updatedAt: "2026-06-17T00:00:00.000Z",
+      tasks: [
+        {
+          id: "one",
+          taskHash: "b".repeat(64),
+          status: "pending",
+        },
+        {
+          id: "one",
+          taskHash: "c".repeat(64),
+          status: "running",
+        },
+      ],
+    } as SeriesLedger),
+    /重复 series ledger task id: one/,
   );
 });
 
@@ -515,16 +574,32 @@ test("decideTaskResume skips completed matching task and stops on hash drift", (
 });
 
 test("decideTaskResume resumes ready_to_commit and reruns only pending or running tasks", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const ledger: SeriesLedger = {
+    schemaVersion: 1,
+    seriesId: "order-refactor",
+    status: "running",
+    configHash: "a".repeat(64),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:00.000Z",
+    tasks: [
+      {
+        id: "one",
+        taskHash: "a".repeat(64),
+        status: "ready_to_commit",
+        changedFiles: ["src/a.ts"],
+        runRecord: ".harness/runs/one.json",
+      },
+    ],
+  };
+  writeSeriesLedger(cwd, ledger);
+  const persistedReadyToCommit = readSeriesLedger(cwd, "order-refactor")?.tasks[0];
+
   assert.deepEqual(
     decideTaskResume({
       taskId: "one",
-      taskHash: "hash-a",
-      ledgerTask: {
-        id: "one",
-        taskHash: "hash-a",
-        status: "ready_to_commit",
-        changedFiles: ["src/a.ts"],
-      },
+      taskHash: "a".repeat(64),
+      ledgerTask: persistedReadyToCommit,
     }),
     { action: "commit" },
   );
