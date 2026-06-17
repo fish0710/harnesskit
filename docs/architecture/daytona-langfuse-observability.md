@@ -2,7 +2,7 @@
 
 > 状态：当前设计说明
 >
-> 更新日期：2026-06-16
+> 更新日期：2026-06-17
 >
 > 适用范围：`harness run --driver claude`、Daytona Agent Snapshot、
 > Langfuse/OpenTelemetry 观测
@@ -44,7 +44,51 @@ instrumentation 没有机会包裹沙箱内的 Claude CLI。
 - gate 沙箱不接收模型凭证，也不接收 Langfuse 凭证；
 - 宿主密钥不默认暴露给不可信代码。
 
-## 3. 为什么会提到 Node wrapper
+## 3. 当前已落地的 Daytona artifact 观测
+
+Daytona Claude 路径现在默认做 artifact 持久化，而不是 SDK trace 注入。
+
+每个 `harness run --driver claude` 会在远端 agent 启动前写入：
+
+```text
+.harness/runs/<runId>.json
+```
+
+该文件由宿主进程维护，记录 task、driver、status、observability 配置、raw
+observation events、agent/gate sandbox id、attempt、gate outcome 和 error
+reason。它不裁剪敏感信息，目标是保留完整排障线索。
+
+同时，agent sandbox 会挂载 Daytona volume：
+
+```text
+volume: harness-claude-observability
+mount: /harness-observability
+subpath: runs/<runId>
+```
+
+Claude Code 命令执行前，Harness 创建并注入：
+
+```text
+CLAUDE_CONFIG_DIR=/harness-observability/attempt-<n>/.claude
+HARNESS_RUN_ID=<runId>
+HARNESS_ATTEMPT=<n>
+```
+
+因此，沙箱删除后仍可通过 host manifest 定位对应 Daytona volume 中的
+`.claude` artifact。这个能力解决的是“Claude Code 做过什么、哪一步失败、
+对应哪个 sandbox/attempt”的持久排障问题。
+
+它不是 Langfuse trace：
+
+| 能力 | Daytona artifact persistence | Langfuse SDK trace |
+|---|---|---|
+| 数据来源 | Claude Code 写入的 `.claude` 目录和 host observation events | OpenTelemetry instrumentation 包裹 SDK 调用 |
+| 默认状态 | Daytona `--driver claude` 默认开启 | host SDK driver 有 key 时可启用 |
+| 存储位置 | Daytona volume + `.harness/runs` | Langfuse backend |
+| 是否需要 Langfuse key 进入 agent | 否 | 若在 agent 内 trace，通常需要 |
+| 是否看见 Claude 内部 token/span | 取决于 `.claude` artifact 内容 | 取决于 SDK instrumentation |
+
+## 4. 为什么会提到 Node wrapper
 
 Node wrapper 的目的不是“为了启动 Claude”，而是为了在沙箱内复现 host
 侧的观测机制。
@@ -62,7 +106,7 @@ host 一样的事情：
 CLI，不是由 Harness 代码直接调用的 SDK 对象。host 侧能 trace 的本质是
 “Node 进程里包住 SDK 调用”，不是“shell 环境里有 Langfuse key”。
 
-## 4. r3 快照内置 Langfuse 环境变量能不能做
+## 5. r3 快照内置 Langfuse 环境变量能不能做
 
 不建议把 Langfuse 环境变量静默固化进 r3 Snapshot。
 
@@ -82,7 +126,7 @@ CLI，不是由 Harness 代码直接调用的 SDK 对象。host 侧能 trace 的
 - 默认不传；
 - gate 永不传。
 
-## 5. 能否只同步 Langfuse 环境变量
+## 6. 能否只同步 Langfuse 环境变量
 
 只同步 `LANGFUSE_*` 到沙箱通常不足以产生 SDK trace。
 
@@ -97,9 +141,9 @@ CLI，不是由 Harness 代码直接调用的 SDK 对象。host 侧能 trace 的
 所以“同步环境变量”不是可靠方案；“同步环境变量 + 沙箱内 instrumentation 入口”
 才是可控方案。
 
-## 6. 推荐分层方案
+## 7. 推荐分层方案
 
-### 6.1 MVP：host 侧 loop trace
+### 7.1 MVP：host 侧 loop trace
 
 先在 host 进程中记录 Harness 自己掌控的 span：
 
@@ -129,7 +173,7 @@ CLI，不是由 Harness 代码直接调用的 SDK 对象。host 侧能 trace 的
 
 - 看不到 Claude 内部 token、tool 和模型 span。
 
-### 6.2 可选：agent 沙箱 SDK wrapper trace
+### 7.2 可选：agent 沙箱 SDK wrapper trace
 
 当确实需要 Claude 内部 trace 时，再启用：
 
@@ -145,7 +189,7 @@ CLI，不是由 Harness 代码直接调用的 SDK 对象。host 侧能 trace 的
 - trace 可能包含源码、prompt、工具输入输出；
 - 需要额外脱敏策略和密钥轮换策略。
 
-### 6.3 禁止：gate 沙箱 Langfuse 注入
+### 7.3 禁止：gate 沙箱 Langfuse 注入
 
 gate 沙箱不应注入 Langfuse：
 
@@ -154,7 +198,7 @@ gate 沙箱不应注入 Langfuse：
 - 多一份外部凭证就是多一个被候选代码读取的面；
 - gate 结果应由宿主记录，而不是由沙箱内观测上报决定。
 
-## 7. 对 r3 Snapshot 的建议
+## 8. 对 r3 Snapshot 的建议
 
 r3 可以包含：
 
@@ -186,12 +230,13 @@ export LANGFUSE_BASE_URL=...
 然后 Harness 只在 agent command env 中传入这些变量，不写入 Snapshot，不写入
 项目文件，不传给 gate。
 
-## 8. 当前建议
+## 9. 当前建议
 
 当前最小 loop 的优先级应是：
 
-1. 修正 gate setup 时序，让真实 HTTP 服务能在 gate 沙箱中启动。
-2. 用 `test_harness` 验证 agent -> gate loop。
+1. 保持 Daytona `.claude` artifact persistence 默认开启。
+2. 用 `.harness/runs/<runId>.json` 关联 host loop、sandbox id、attempt 和
+   volume artifact。
 3. 增加 host 侧 Harness loop Langfuse span。
 4. 再评估是否需要 r3 的 SDK wrapper trace。
 

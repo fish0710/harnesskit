@@ -15,6 +15,23 @@ npm run build
 node dist/src/cli.js run "implement the task" --driver claude
 ```
 
+Daytona Claude runs create a durable run record before the remote agent starts:
+
+```text
+.harness/runs/<runId>.json
+```
+
+By default, the agent sandbox also mounts Daytona volume
+`harness-claude-observability` at `/harness-observability`, scoped to
+`runs/<runId>`. Claude Code receives:
+
+```text
+CLAUDE_CONFIG_DIR=/harness-observability/attempt-<n>/.claude
+```
+
+Use the run record to correlate host-side events, sandbox ids, gate attempts,
+and the persisted `.claude` artifacts after the sandbox is deleted.
+
 `--driver command --agent-cmd "..."` uses the same Daytona isolation.
 There is no silent fallback to host execution. `--driver scaffold` is the only
 local mode and performs no mutations.

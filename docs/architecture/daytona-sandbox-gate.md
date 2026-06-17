@@ -2,7 +2,7 @@
 
 > 状态：当前实现
 >
-> 更新日期：2026-06-16
+> 更新日期：2026-06-17
 >
 > 适用范围：`harness run --driver claude` 与
 > `harness run --driver command`
@@ -57,26 +57,33 @@ Harness 将“执行任务”和“决定是否通过”拆成两个不同权限
 ![Agent 与 Gate 循环](../assets/daytona-sandbox-gate/agent-gate-loop.png)
 
 1. 宿主校验 Daytona、模型环境变量和 sandbox policy。
-2. Claude run 要求宿主显式选择 Agent Snapshot。
-3. 宿主加载并验证冻结合约，捕获当前 Git 工作区 baseline。
-4. Harness 从选定 Snapshot 创建一个 agent 沙箱并上传 agent 可见文件。
-5. 宿主执行 Node/npm/npx/Claude preflight 和 agent setup。
-6. Claude Code 或 command agent 在该沙箱中执行任务。
-7. 宿主通过 Daytona 文件 API 收集候选文件，不信任沙箱内的 Git。
-8. 宿主严格校验路径、文件类型、大小、哈希和保护路径。
-9. Harness 为当前 attempt 创建一个全新的 gate 沙箱。
-10. 宿主在 gate 沙箱中组装 baseline、候选文件和受保护测试资产。
-11. gate 沙箱在候选文件和受保护资产都组装完成后执行 `gateSetup`。
-12. 若本轮契约不需要 loopback HTTP，gate 沙箱关闭出站网络并执行宿主发出的合约命令。
+2. Claude run 先生成 `runId` 并写入 `.harness/runs/<runId>.json`。
+3. Claude run 要求宿主显式选择 Agent Snapshot。
+4. 宿主加载并验证冻结合约，捕获当前 Git 工作区 baseline。
+5. Harness 从选定 Snapshot 创建一个 agent 沙箱并上传 agent 可见文件。
+   对 Claude run，agent 沙箱额外挂载 Daytona volume
+   `harness-claude-observability`，subpath 为 `runs/<runId>`。
+6. 宿主执行 Node/npm/npx/Claude preflight 和 agent setup。
+7. Claude Code 或 command agent 在该沙箱中执行任务。Claude run 在命令启动前
+   创建 `/harness-observability/attempt-<n>/.claude`，并以
+   `CLAUDE_CONFIG_DIR` 指向该目录。
+8. 宿主通过 Daytona 文件 API 收集候选文件，不信任沙箱内的 Git。
+9. 宿主严格校验路径、文件类型、大小、哈希和保护路径。
+10. Harness 为当前 attempt 创建一个全新的 gate 沙箱。
+11. 宿主在 gate 沙箱中组装 baseline、候选文件和受保护测试资产。
+12. gate 沙箱在候选文件和受保护资产都组装完成后执行 `gateSetup`。
+13. 若本轮契约不需要 loopback HTTP，gate 沙箱关闭出站网络并执行宿主发出的合约命令。
     若契约访问 `localhost`、`127.0.0.1` 或 `::1`，当前 Daytona
     `networkBlockAll` 会同时阻断 loopback，因此本轮保持网络开启并在 observation 中记录
     `reason=loopback-http`。
-13. gate 沙箱把原始证据返回宿主，随后被删除。
-14. 宿主 `GateCore` 完成状态分类、聚合和决策。
-15. `fail` 或 `error` 生成受限诊断，反馈给原 agent 沙箱继续下一轮。
-16. `blocked` 停止自动循环，等待人工 verdict。
-17. 超出轮数、时间、token 或重复失败阈值时升级。
-18. `pass` 时 publisher 写回门禁验证过的精确候选快照。
+14. gate 沙箱把原始证据返回宿主，随后被删除。
+15. 宿主 `GateCore` 完成状态分类、聚合和决策。
+16. `fail` 或 `error` 生成受限诊断，反馈给原 agent 沙箱继续下一轮。
+17. `blocked` 停止自动循环，等待人工 verdict。
+18. 超出轮数、时间、token 或重复失败阈值时升级。
+19. `pass` 时 publisher 写回门禁验证过的精确候选快照。
+20. run manifest 持续记录 host 事件、agent/gate sandbox id、attempt 结果和
+    错误原因；`.claude` artifact 留在 Daytona volume 中。
 
 agent 沙箱跨重试保留上下文；gate 沙箱每轮重新创建，避免继承 agent 控制的
 进程、缓存、凭证或隐藏状态。
@@ -95,6 +102,8 @@ agent 沙箱跨重试保留上下文；gate 沙箱每轮重新创建，避免继
 | 命令退出码与输出 | gate 沙箱 | 宿主插件 | 原始证据 |
 | `CheckResult`、`GateReport` | 宿主 | run loop | 是 |
 | verdict、retry、escalation | 宿主或人工 | run loop | 是 |
+| `.harness/runs/<runId>.json` | 宿主 | 运维排障、最近运行状态 | 是 |
+| `.claude` artifact | Claude Code agent 沙箱 | 运维排障 | 否，作为原始 agent 记录处理 |
 
 ## 6. 门禁不可干预保证
 
@@ -118,6 +127,7 @@ gate 沙箱：
 - 不安装或启动 Claude Code；
 - 不接收 Agent Snapshot；
 - 不接收 Anthropic 环境变量；
+- 不接收 Daytona observability volume；
 - 不复用 agent 沙箱文件系统；
 - 对不依赖 loopback HTTP 的合约，执行期间关闭出站网络；
 - 对依赖 loopback HTTP 的合约，当前暂不启用 `networkBlockAll`，因为 Daytona
@@ -281,7 +291,61 @@ HTTP evidence 使用宿主生成的固定脚本采集 `status`、`headers` 和 `
 脚本通过 base64 环境变量写入 gate 沙箱临时 `.mjs` 文件再执行，避免 Daytona
 `executeCommand` 在长 `node -e` 命令下污染 stdout，导致宿主无法解析 JSON evidence。
 
-## 12. 失败与升级语义
+## 12. Claude Artifact Persistence
+
+`--driver claude` 默认开启 Daytona `.claude` 持久化。宿主在创建 Daytona
+provider 之前生成 `runId` 并写入：
+
+```text
+.harness/runs/<runId>.json
+```
+
+该 manifest 是 host 控制面记录，包含 task、driver、status、observability
+配置、raw observation events、sandbox ids、attempts、gate outcome 和错误原因。
+它不做敏感信息裁剪，应按敏感工程日志处理。
+
+默认持久化配置：
+
+```text
+HARNESS_DAYTONA_OBSERVABILITY=1
+HARNESS_DAYTONA_OBSERVABILITY_VOLUME=harness-claude-observability
+HARNESS_DAYTONA_OBSERVABILITY_MOUNT=/harness-observability
+```
+
+Agent sandbox 创建请求包含：
+
+```json
+{
+  "volumeName": "harness-claude-observability",
+  "mountPath": "/harness-observability",
+  "subpath": "runs/<runId>"
+}
+```
+
+因此同一个路径有两个视角：
+
+| 视角 | 路径 |
+|---|---|
+| Daytona volume durable root | `/harness-observability/runs/<runId>` |
+| Agent sandbox mounted run root | `/harness-observability` |
+| Attempt root in sandbox | `/harness-observability/attempt-<n>` |
+| Claude config dir in sandbox | `/harness-observability/attempt-<n>/.claude` |
+
+Harness 在执行 Claude 命令之前创建 `CLAUDE_CONFIG_DIR` 并注入：
+
+```text
+CLAUDE_CONFIG_DIR=/harness-observability/attempt-<n>/.claude
+HARNESS_RUN_ID=<runId>
+HARNESS_ATTEMPT=<n>
+HARNESS_OBSERVABILITY_RUN_ROOT=/harness-observability
+HARNESS_OBSERVABILITY_ATTEMPT_ROOT=/harness-observability/attempt-<n>
+```
+
+`agent.observability.start/end` 和 `agent.command.start/end` 都会进入 run
+manifest。即使 Daytona provider 创建、harness config 解析或 agent command
+执行失败，Claude run 也会尽量把 manifest 标为 `status: "error"` 并记录原因。
+
+## 13. 失败与升级语义
 
 | 门禁结果 | Harness 行为 |
 |---|---|
@@ -293,7 +357,7 @@ HTTP evidence 使用宿主生成的固定脚本采集 `status`、`headers` 和 `
 | 同一检查重复失败 | `human_review_contract` |
 | 上下文达到阈值 | `swap_instance` |
 
-## 13. 已验证状态
+## 14. 已验证状态
 
 2026-06-16 的验证结果：
 
@@ -308,7 +372,7 @@ HTTP evidence 使用宿主生成的固定脚本采集 `status`、`headers` 和 `
 - 运行结束后无 `harness.role` 残留沙箱；
 - API key 只通过进程环境传入，未写入仓库。
 
-## 14. 已知边界
+## 15. 已知边界
 
 - 模型 token 对 agent 进程可见，设计不保证源码不会发送到已批准模型端点。
 - gate 沙箱本身不是可信判定器，只是隔离的证据执行环境。
@@ -318,7 +382,7 @@ HTTP evidence 使用宿主生成的固定脚本采集 `status`、`headers` 和 `
   `run` 循环。
 - 当前实现不会自动 merge、push、批准 MR 或绕过 CI。
 
-## 15. 关联资料
+## 16. 关联资料
 
 - [归档索引](../archive/2026-06-15-daytona-sandbox-gate/README.md)
 - [原始设计规格](../superpowers/specs/2026-06-11-daytona-sandbox-gate-design.md)
