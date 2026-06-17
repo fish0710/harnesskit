@@ -7,6 +7,11 @@ import {
   selectTaskContracts,
   taskHash,
 } from "../src/harness/series.js";
+import type {
+  AutoCommitConfig,
+  TaskDefaults,
+  TaskSeriesTask,
+} from "../src/harness/series.js";
 
 const contracts: Contract[] = [
   { id: "smoke.boot", type: "command", cmd: "true" },
@@ -14,6 +19,16 @@ const contracts: Contract[] = [
   { id: "service.split", type: "command", stage: "service-refactor", cmd: "true" },
   { id: "service.smoke", type: "command", stage: "service-refactor", cmd: "true" },
 ];
+
+// @ts-expect-error taskHash must require defaults and not be assignable to a two-arg function
+const unsafeTaskHash: (task: TaskSeriesTask, autoCommit: AutoCommitConfig) => string = taskHash;
+void unsafeTaskHash;
+const safeTaskHash: (
+  task: TaskSeriesTask,
+  autoCommit: AutoCommitConfig,
+  defaults: TaskDefaults,
+) => string = taskHash;
+void safeTaskHash;
 
 test("series config parses defaults, tasks, and auto commit settings", () => {
   const config = loadTaskSeriesConfig({
@@ -220,10 +235,19 @@ test("taskHash changes when prompt, gate, or commit settings change", () => {
     tasks: [{ id: "one", task: "one", gate: { contracts: ["smoke.boot"] } }],
   })!;
 
-  const baseHash = taskHash(base.tasks[0]!, base.autoCommit);
-  assert.notEqual(baseHash, taskHash(changedPrompt.tasks[0]!, changedPrompt.autoCommit));
-  assert.notEqual(baseHash, taskHash(changedGate.tasks[0]!, changedGate.autoCommit));
-  assert.notEqual(baseHash, taskHash(changedCommit.tasks[0]!, changedCommit.autoCommit));
+  const baseHash = taskHash(base.tasks[0]!, base.autoCommit, base.taskDefaults);
+  assert.notEqual(
+    baseHash,
+    taskHash(changedPrompt.tasks[0]!, changedPrompt.autoCommit, changedPrompt.taskDefaults),
+  );
+  assert.notEqual(
+    baseHash,
+    taskHash(changedGate.tasks[0]!, changedGate.autoCommit, changedGate.taskDefaults),
+  );
+  assert.notEqual(
+    baseHash,
+    taskHash(changedCommit.tasks[0]!, changedCommit.autoCommit, changedCommit.taskDefaults),
+  );
 });
 
 test("taskHash changes when taskDefaults gate changes", () => {
@@ -239,5 +263,54 @@ test("taskHash changes when taskDefaults gate changes", () => {
   assert.notEqual(
     taskHash(base.tasks[0]!, base.autoCommit, base.taskDefaults),
     taskHash(changed.tasks[0]!, changed.autoCommit, changed.taskDefaults),
+  );
+});
+
+test("taskHash changes when taskDefaults gate stage changes", () => {
+  const base = loadTaskSeriesConfig({
+    taskDefaults: { gate: { stage: "domain" } },
+    tasks: [{ id: "one", task: "one" }],
+  })!;
+  const changed = loadTaskSeriesConfig({
+    taskDefaults: { gate: { stage: "service-refactor" } },
+    tasks: [{ id: "one", task: "one" }],
+  })!;
+
+  assert.notEqual(
+    taskHash(base.tasks[0]!, base.autoCommit, base.taskDefaults),
+    taskHash(changed.tasks[0]!, changed.autoCommit, changed.taskDefaults),
+  );
+});
+
+test("taskHash changes when merged selector from defaults and task gate changes", () => {
+  const base = loadTaskSeriesConfig({
+    taskDefaults: { gate: { contracts: ["smoke.boot"], stage: "domain" } },
+    tasks: [{ id: "one", task: "one", gate: { contracts: ["domain.model-boundary"] } }],
+  })!;
+  const changedDefaults = loadTaskSeriesConfig({
+    taskDefaults: { gate: { contracts: ["service.split"], stage: "domain" } },
+    tasks: [{ id: "one", task: "one", gate: { contracts: ["domain.model-boundary"] } }],
+  })!;
+  const changedTaskGate = loadTaskSeriesConfig({
+    taskDefaults: { gate: { contracts: ["smoke.boot"], stage: "domain" } },
+    tasks: [{ id: "one", task: "one", gate: { contracts: ["service.smoke"] } }],
+  })!;
+
+  const baseHash = taskHash(base.tasks[0]!, base.autoCommit, base.taskDefaults);
+  assert.notEqual(
+    baseHash,
+    taskHash(
+      changedDefaults.tasks[0]!,
+      changedDefaults.autoCommit,
+      changedDefaults.taskDefaults,
+    ),
+  );
+  assert.notEqual(
+    baseHash,
+    taskHash(
+      changedTaskGate.tasks[0]!,
+      changedTaskGate.autoCommit,
+      changedTaskGate.taskDefaults,
+    ),
   );
 });

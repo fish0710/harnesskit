@@ -279,7 +279,7 @@ export function selectTaskContracts(input: {
 export function taskHash(
   task: TaskSeriesTask,
   autoCommit: AutoCommitConfig,
-  defaults: TaskDefaults = {},
+  defaults: TaskDefaults,
 ): string {
   const payload = {
     id: task.id,
