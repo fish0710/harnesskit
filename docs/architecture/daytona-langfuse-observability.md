@@ -69,10 +69,16 @@ subpath: runs/<runId>
 Claude Code 命令执行前，Harness 创建并注入：
 
 ```text
-CLAUDE_CONFIG_DIR=/harness-observability/attempt-<n>/.claude
+CLAUDE_CONFIG_DIR=/harness-observability/.claude
 HARNESS_RUN_ID=<runId>
 HARNESS_ATTEMPT=<n>
 ```
+
+`/harness-observability/.claude` 是 agent 沙箱内的稳定 Claude config。首轮
+Claude attempt 从 stream-json 捕获 session id；后续 gate-fail retry 在同一
+agent sandbox 中使用 `claude --resume <sessionId>`。缺失或无法确认复用该
+session 时 fail closed，不启动新对话。跨 run 隔离仍由 Daytona
+`subpath: runs/<runId>` 保证，不同 run 映射到不同持久目录。
 
 因此，沙箱删除后仍可通过 host manifest 定位对应 Daytona volume 中的
 `.claude` artifact。这个能力解决的是“Claude Code 做过什么、哪一步失败、

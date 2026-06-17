@@ -69,8 +69,9 @@ Harness 将“执行任务”和“决定是否通过”拆成两个不同权限
    `harness-claude-observability`，subpath 为 `runs/<runId>`。
 6. 宿主执行 Node/npm/npx/Claude preflight 和 agent setup。
 7. Claude Code 或 command agent 在该沙箱中执行任务。Claude run 在命令启动前
-   创建 `/harness-observability/attempt-<n>/.claude`，并以
-   `CLAUDE_CONFIG_DIR` 指向该目录。
+   创建 `/harness-observability/.claude`，并以 `CLAUDE_CONFIG_DIR` 指向该目录。
+   首轮 Claude attempt 从 stream-json 捕获 session id；后续 gate-fail retry
+   在同一个 agent 沙箱中执行 `claude --resume <sessionId>`。
 8. 宿主通过 Daytona 文件 API 收集候选文件，不信任沙箱内的 Git。
 9. 宿主严格校验路径、文件类型、大小、哈希和保护路径。
 10. Harness 按执行域拆分契约：`miniprogram` 走 host-local，其它机器门禁走远端
@@ -93,7 +94,9 @@ Harness 将“执行任务”和“决定是否通过”拆成两个不同权限
 22. run manifest 持续记录 host 事件、agent/gate sandbox id、attempt 结果和
     错误原因；`.claude` artifact 留在 Daytona volume 中。
 
-agent 沙箱跨重试保留上下文；gate 沙箱每轮重新创建，避免继承 agent 控制的
+agent 沙箱跨重试保留上下文。Claude resume 必须复用首轮捕获的 session id；
+缺失 session id、resume 后产生不一致 session，或无法确认复用时，Harness
+fail closed，不启动新的对话。gate 沙箱每轮重新创建，避免继承 agent 控制的
 进程、缓存、凭证或隐藏状态。
 
 ## 5. 数据所有权
@@ -358,18 +361,28 @@ Agent sandbox 创建请求包含：
 |---|---|
 | Daytona volume durable root | `/harness-observability/runs/<runId>` |
 | Agent sandbox mounted run root | `/harness-observability` |
-| Attempt root in sandbox | `/harness-observability/attempt-<n>` |
-| Claude config dir in sandbox | `/harness-observability/attempt-<n>/.claude` |
+| Claude config dir in sandbox | `/harness-observability/.claude` |
 
 Harness 在执行 Claude 命令之前创建 `CLAUDE_CONFIG_DIR` 并注入：
 
 ```text
-CLAUDE_CONFIG_DIR=/harness-observability/attempt-<n>/.claude
+CLAUDE_CONFIG_DIR=/harness-observability/.claude
 HARNESS_RUN_ID=<runId>
 HARNESS_ATTEMPT=<n>
 HARNESS_OBSERVABILITY_RUN_ROOT=/harness-observability
-HARNESS_OBSERVABILITY_ATTEMPT_ROOT=/harness-observability/attempt-<n>
 ```
+
+`/harness-observability` 在 agent 沙箱内保持稳定，便于 `claude --resume`
+使用同一份 `.claude` 状态。跨 run 隔离不依赖沙箱内路径变化，而依赖 Daytona
+volume mount 的 `subpath: runs/<runId>`：不同 run 会映射到不同持久目录。
+
+强 resume 规则：
+
+- 首轮 Claude attempt 必须从 stream-json 输出捕获 session id。
+- gate fail 后的 retry 必须在同一个 agent sandbox 中执行
+  `claude --resume <sessionId>`。
+- 缺失 session id、resume 状态不可确认，或出现不一致 session 时，Harness
+  fail closed，不退回 fresh conversation。
 
 `agent.observability.start/end` 和 `agent.command.start/end` 都会进入 run
 manifest。即使 Daytona provider 创建、harness config 解析或 agent command

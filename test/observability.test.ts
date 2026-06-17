@@ -172,7 +172,7 @@ test("mountedClaudeObservabilityPaths builds run-scoped sandbox paths", () => {
   assert.deepEqual(paths, {
     runRoot: "/harness-observability",
     attemptRoot: "/harness-observability/attempt-2",
-    claudeConfigDir: "/harness-observability/attempt-2/.claude",
+    claudeConfigDir: "/harness-observability/.claude",
     manifestPath: "/harness-observability/attempt-2/manifest.json",
   });
 });
@@ -825,4 +825,138 @@ test("RunRecorder preserves repeated non-cyclic object references", () => {
 
   assert.deepEqual(data.first, { value: "kept" });
   assert.deepEqual(data.second, { value: "kept" });
+});
+
+test("RunRecorder records Claude session resume metadata", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-observability-record-"));
+  const recorder = createRunRecorder(cwd, {
+    runId: "run-claude-session",
+    createdAt: "2026-06-16T12:00:00.000Z",
+    task: "resume Claude session metadata",
+    driver: "daytona(claude)",
+    observability: {
+      enabled: true,
+      backend: "daytona-volume",
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+      runRoot: "/harness-observability/runs/run-claude-session",
+    },
+  });
+
+  recorder.recordEvent("agent.command.start", {
+    attempt: 1,
+    claudeConfigDir: "/harness-observability/.claude",
+    resume: false,
+  });
+  recorder.recordEvent("agent.command.end", {
+    attempt: 1,
+    exitCode: 0,
+    claudeSessionId: "session-abc",
+    resume: false,
+  });
+  recorder.recordEvent("agent.command.start", {
+    attempt: 2,
+    claudeConfigDir: "/harness-observability/.claude",
+    claudeSessionId: "session-abc",
+    resume: true,
+  });
+
+  const parsed = JSON.parse(readFileSync(recorder.path, "utf8"));
+
+  assert.equal(parsed.attempts[0].claudeSessionId, "session-abc");
+  assert.equal(parsed.attempts[1].resumedFromSessionId, "session-abc");
+  assert.equal(parsed.attempts[1].claudeConfigDir, "/harness-observability/.claude");
+});
+
+test("RunRecorder ignores unknown attempt events for attempt summaries", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-observability-record-"));
+  const recorder = createRunRecorder(cwd, {
+    runId: "run-unknown-attempt-events",
+    createdAt: "2026-06-16T12:00:00.000Z",
+    task: "ignore unknown attempt metadata",
+    driver: "daytona(claude)",
+    observability: {
+      enabled: true,
+      backend: "daytona-volume",
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+      runRoot: "/harness-observability/runs/run-unknown-attempt-events",
+    },
+  });
+
+  recorder.recordEvent("tool.output", {
+    attempt: 1,
+    claudeSessionId: "session-leak",
+  });
+  recorder.recordEvent("progress", { attempt: 2 });
+
+  const parsed = JSON.parse(readFileSync(recorder.path, "utf8"));
+
+  assert.equal(parsed.events.length, 3);
+  assert.equal(parsed.events[1].event, "tool.output");
+  assert.equal(parsed.events[2].event, "progress");
+  assert.deepEqual(parsed.attempts, []);
+
+  const existingAttemptCwd = mkdtempSync(join(tmpdir(), "harness-observability-record-"));
+  const existingAttemptRecorder = createRunRecorder(existingAttemptCwd, {
+    runId: "run-existing-attempt-unknown-events",
+    createdAt: "2026-06-16T12:00:00.000Z",
+    task: "ignore unknown attempt metadata on existing attempts",
+    driver: "daytona(claude)",
+    observability: {
+      enabled: true,
+      backend: "daytona-volume",
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+      runRoot: "/harness-observability/runs/run-existing-attempt-unknown-events",
+    },
+  });
+
+  existingAttemptRecorder.recordEvent("agent.command.start", {
+    id: "agent-1",
+    attempt: 1,
+    claudeConfigDir: "/harness-observability/.claude",
+  });
+  existingAttemptRecorder.recordEvent("tool.output", {
+    attempt: 1,
+    claudeSessionId: "session-leak",
+    gateOutcome: "pass",
+  });
+
+  const parsedExistingAttempt = JSON.parse(
+    readFileSync(existingAttemptRecorder.path, "utf8"),
+  );
+
+  assert.equal(parsedExistingAttempt.events.length, 3);
+  assert.equal(parsedExistingAttempt.events[2].event, "tool.output");
+  assert.equal(parsedExistingAttempt.attempts.length, 1);
+
+  const existingAttempt = parsedExistingAttempt.attempts[0] as Record<string, unknown>;
+
+  assert.deepEqual(Object.keys(existingAttempt).sort(), [
+    "agentSandboxId",
+    "attempt",
+    "claudeConfigDir",
+    "gateSandboxIds",
+    "startedAt",
+  ]);
+  assert.deepEqual(existingAttempt, {
+    attempt: 1,
+    agentSandboxId: "agent-1",
+    claudeConfigDir: "/harness-observability/.claude",
+    startedAt: existingAttempt.startedAt,
+    gateSandboxIds: [],
+  });
+  assert.equal(
+    (existingAttempt as Record<string, unknown>)["claudeSessionId"],
+    undefined,
+  );
+  assert.equal(
+    (existingAttempt as Record<string, unknown>)["resumedFromSessionId"],
+    undefined,
+  );
+  assert.equal(
+    (existingAttempt as Record<string, unknown>)["gateOutcome"],
+    undefined,
+  );
 });

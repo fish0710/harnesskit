@@ -155,7 +155,7 @@ export function mountedClaudeObservabilityPaths(
   return {
     runRoot,
     attemptRoot,
-    claudeConfigDir: posix.join(attemptRoot, ".claude"),
+    claudeConfigDir: posix.join(runRoot, ".claude"),
     manifestPath: posix.join(attemptRoot, "manifest.json"),
   };
 }
