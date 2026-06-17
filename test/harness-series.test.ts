@@ -1479,8 +1479,28 @@ test("runTaskSeries keeps ready_to_commit on resume when unrelated dirty source 
   const ledger = readSeriesLedger(cwd, "order-refactor")!;
   assert.equal(ledger.status, "running");
   assert.equal(ledger.tasks[0]?.status, "ready_to_commit");
-  assert.equal(ledger.tasks[0]?.commit, undefined);
+  const readyCommit = ledger.tasks[0]?.commit ?? "";
+  assert.match(readyCommit, /^[a-f0-9]{40}$/);
   assert.equal(runGit(["show", "--pretty=format:", "--name-only", "HEAD"], cwd), "src/task.ts");
+
+  unlinkSync(join(cwd, "src", "unrelated.ts"));
+  let executeCalls = 0;
+  assert.deepEqual(
+    await runTaskSeries({
+      cwd,
+      config,
+      contracts,
+      executeTask: async () => {
+        executeCalls++;
+        throw new Error("should not execute");
+      },
+    }),
+    { outcome: "completed" },
+  );
+  assert.equal(executeCalls, 0);
+  const completedLedger = readSeriesLedger(cwd, "order-refactor")!;
+  assert.equal(completedLedger.tasks[0]?.status, "completed");
+  assert.equal(completedLedger.tasks[0]?.commit, readyCommit);
 });
 
 test("runTaskSeries keeps ready_to_commit when post-commit clean check finds new dirty source", async () => {
@@ -1516,7 +1536,7 @@ test("runTaskSeries keeps ready_to_commit when post-commit clean check finds new
   const ledger = readSeriesLedger(cwd, "order-refactor")!;
   assert.equal(ledger.status, "running");
   assert.equal(ledger.tasks[0]?.status, "ready_to_commit");
-  assert.equal(ledger.tasks[0]?.commit, undefined);
+  assert.match(ledger.tasks[0]?.commit ?? "", /^[a-f0-9]{40}$/);
   assert.equal(runGit(["show", "--pretty=format:", "--name-only", "HEAD"], cwd), "src/task.ts");
 });
 

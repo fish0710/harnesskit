@@ -807,12 +807,18 @@ export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskS
           message: commitMessageForTask({ config, task, index, total }),
         })
         : { committed: false as const };
+      const readyTaskWithCommit: SeriesLedgerTask = commitResult.committed
+        ? { ...readyTask, commit: commitResult.commit }
+        : readyTask;
+      if (commitResult.committed) {
+        updateLedgerTask(ledger, readyTaskWithCommit);
+        writeUpdatedLedger(cwd, ledger);
+      }
       if (config.autoCommit.enabled) ensureCleanGitWorktree(cwd);
       const completedTask: SeriesLedgerTask = {
-        ...readyTask,
+        ...readyTaskWithCommit,
         status: "completed",
         completedAt: nowIso(),
-        ...(commitResult.committed ? { commit: commitResult.commit } : {}),
       };
       updateLedgerTask(ledger, completedTask);
       writeUpdatedLedger(cwd, ledger);
@@ -904,12 +910,18 @@ export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskS
         message: commitMessageForTask({ config, task, index, total }),
       })
       : { committed: false as const };
+    const readyTaskWithCommit: SeriesLedgerTask = commitResult.committed
+      ? { ...readyTask, commit: commitResult.commit }
+      : readyTask;
+    if (commitResult.committed) {
+      updateLedgerTask(ledger, readyTaskWithCommit);
+      writeUpdatedLedger(cwd, ledger);
+    }
     if (config.autoCommit.enabled) ensureCleanGitWorktree(cwd);
     const completedTask: SeriesLedgerTask = {
-      ...readyTask,
+      ...readyTaskWithCommit,
       status: "completed",
       completedAt: nowIso(),
-      ...(commitResult.committed ? { commit: commitResult.commit } : {}),
     };
     updateLedgerTask(ledger, completedTask);
     writeUpdatedLedger(cwd, ledger);
