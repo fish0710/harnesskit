@@ -1,14 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 import type { Contract } from "../src/types.js";
 import {
+  decideTaskResume,
   loadTaskSeriesConfig,
+  readSeriesLedger,
+  seriesLedgerPath,
   selectTaskContracts,
   taskHash,
+  writeSeriesLedger,
 } from "../src/harness/series.js";
 import type {
   AutoCommitConfig,
+  SeriesLedger,
   TaskDefaults,
   TaskSeriesTask,
 } from "../src/harness/series.js";
@@ -312,5 +320,107 @@ test("taskHash changes when merged selector from defaults and task gate changes"
       changedTaskGate.autoCommit,
       changedTaskGate.taskDefaults,
     ),
+  );
+});
+
+test("series ledger path is scoped by safe series id", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+
+  assert.equal(
+    seriesLedgerPath(cwd, "order-refactor"),
+    join(cwd, ".harness", "series", "order-refactor.json"),
+  );
+});
+
+test("series ledger writes atomically readable JSON", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const ledger: SeriesLedger = {
+    schemaVersion: 1,
+    seriesId: "order-refactor",
+    status: "running",
+    configHash: "a".repeat(64),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:00.000Z",
+    tasks: [],
+  };
+
+  const path = writeSeriesLedger(cwd, ledger);
+
+  assert.equal(path, seriesLedgerPath(cwd, "order-refactor"));
+  assert.equal(existsSync(path), true);
+  assert.deepEqual(readSeriesLedger(cwd, "order-refactor"), ledger);
+});
+
+test("series ledger rejects malformed existing JSON", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const path = seriesLedgerPath(cwd, "order-refactor");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "{ invalid", "utf8");
+
+  assert.throws(
+    () => readSeriesLedger(cwd, "order-refactor"),
+    /series ledger JSON 无效/,
+  );
+});
+
+test("decideTaskResume skips completed matching task and stops on hash drift", () => {
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
+      taskHash: "hash-a",
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "completed",
+        commit: "abc123",
+      },
+    }),
+    { action: "skip" },
+  );
+
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
+      taskHash: "hash-b",
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "completed",
+        commit: "abc123",
+      },
+    }),
+    {
+      action: "stop",
+      reason: "task one 已完成但配置已变化",
+    },
+  );
+});
+
+test("decideTaskResume resumes ready_to_commit and reruns incomplete tasks", () => {
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
+      taskHash: "hash-a",
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "ready_to_commit",
+        changedFiles: ["src/a.ts"],
+      },
+    }),
+    { action: "commit" },
+  );
+
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
+      taskHash: "hash-a",
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "running",
+      },
+    }),
+    { action: "run" },
   );
 });

@@ -1,4 +1,12 @@
 import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 
 import { selectByStage } from "../selector.js";
 import type { Contract } from "../types.js";
@@ -37,6 +45,45 @@ export interface TaskSeriesConfig {
   autoCommit: AutoCommitConfig;
   tasks: TaskSeriesTask[];
 }
+
+export type SeriesStatus = "running" | "completed" | "error";
+
+export type SeriesTaskStatus =
+  | "pending"
+  | "running"
+  | "ready_to_commit"
+  | "completed"
+  | "blocked"
+  | "escalated"
+  | "error";
+
+export interface SeriesLedgerTask {
+  id: string;
+  taskHash: string;
+  status: SeriesTaskStatus;
+  changedFiles?: string[];
+  commit?: string;
+  runRecord?: string;
+  startedAt?: string;
+  completedAt?: string;
+  errorReason?: string;
+}
+
+export interface SeriesLedger {
+  schemaVersion: 1;
+  seriesId: string;
+  status: SeriesStatus;
+  configHash: string;
+  createdAt: string;
+  updatedAt: string;
+  tasks: SeriesLedgerTask[];
+}
+
+export type TaskResumeDecision =
+  | { action: "skip" }
+  | { action: "commit" }
+  | { action: "run" }
+  | { action: "stop"; reason: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null) return false;
@@ -226,6 +273,80 @@ function effectiveGateForHash(
   });
 }
 
+function isSeriesStatus(value: unknown): value is SeriesStatus {
+  return value === "running" || value === "completed" || value === "error";
+}
+
+function isSeriesTaskStatus(value: unknown): value is SeriesTaskStatus {
+  return value === "pending" ||
+    value === "running" ||
+    value === "ready_to_commit" ||
+    value === "completed" ||
+    value === "blocked" ||
+    value === "escalated" ||
+    value === "error";
+}
+
+function optionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(`${field} 无效`);
+  return value;
+}
+
+function optionalStringArray(value: unknown, field: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  return stringArray(value, field);
+}
+
+function parseLedgerTask(value: unknown): SeriesLedgerTask {
+  if (!isRecord(value)) throw new Error("series ledger task 无效");
+  if (typeof value.id !== "string" || value.id === "") {
+    throw new Error("series ledger task id 无效");
+  }
+  if (typeof value.taskHash !== "string" || !/^[a-f0-9]{64}$/.test(value.taskHash)) {
+    throw new Error("series ledger taskHash 无效");
+  }
+  if (!isSeriesTaskStatus(value.status)) {
+    throw new Error("series ledger task status 无效");
+  }
+
+  return {
+    id: value.id,
+    taskHash: value.taskHash,
+    status: value.status,
+    changedFiles: optionalStringArray(value.changedFiles, "series ledger changedFiles"),
+    commit: optionalString(value.commit, "series ledger commit"),
+    runRecord: optionalString(value.runRecord, "series ledger runRecord"),
+    startedAt: optionalString(value.startedAt, "series ledger startedAt"),
+    completedAt: optionalString(value.completedAt, "series ledger completedAt"),
+    errorReason: optionalString(value.errorReason, "series ledger errorReason"),
+  };
+}
+
+function parseLedger(value: unknown, seriesId: string): SeriesLedger {
+  if (!isRecord(value)) throw new Error("series ledger 格式无效");
+  if (value.schemaVersion !== 1) throw new Error("series ledger schemaVersion 无效");
+  if (value.seriesId !== seriesId) throw new Error("series ledger seriesId 不匹配");
+  if (!isSeriesStatus(value.status)) throw new Error("series ledger status 无效");
+  if (typeof value.configHash !== "string" || !/^[a-f0-9]{64}$/.test(value.configHash)) {
+    throw new Error("series ledger configHash 无效");
+  }
+  if (typeof value.createdAt !== "string" || typeof value.updatedAt !== "string") {
+    throw new Error("series ledger timestamp 无效");
+  }
+  if (!Array.isArray(value.tasks)) throw new Error("series ledger tasks 无效");
+
+  return {
+    schemaVersion: 1,
+    seriesId,
+    status: value.status,
+    configHash: value.configHash,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    tasks: value.tasks.map((task) => parseLedgerTask(task)),
+  };
+}
+
 export function loadTaskSeriesConfig(config: unknown): TaskSeriesConfig | undefined {
   if (!isRecord(config)) throw new TypeError("Harness 配置必须是普通对象");
   if (!hasOwn(config, "tasks")) return undefined;
@@ -276,6 +397,41 @@ export function selectTaskContracts(input: {
   return result;
 }
 
+export function seriesLedgerPath(cwd: string, seriesId: string): string {
+  return join(cwd, ".harness", "series", `${assertSafeSegment(seriesId, "series.id")}.json`);
+}
+
+export function readSeriesLedger(cwd: string, seriesId: string): SeriesLedger | undefined {
+  const path = seriesLedgerPath(cwd, seriesId);
+  if (!existsSync(path)) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `series ledger JSON 无效: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  return parseLedger(parsed, seriesId);
+}
+
+export function writeSeriesLedger(cwd: string, ledger: SeriesLedger): string {
+  const path = seriesLedgerPath(cwd, ledger.seriesId);
+  mkdirSync(join(path, ".."), { recursive: true });
+  const tempPath = `${path}.tmp`;
+  writeFileSync(tempPath, JSON.stringify(ledger, null, 2), "utf8");
+  renameSync(tempPath, path);
+  return path;
+}
+
+export function configHash(config: TaskSeriesConfig): string {
+  return createHash("sha256")
+    .update(JSON.stringify(config))
+    .digest("hex");
+}
+
 export function taskHash(
   task: TaskSeriesTask,
   autoCommit: AutoCommitConfig,
@@ -295,4 +451,29 @@ export function taskHash(
   return createHash("sha256")
     .update(JSON.stringify(payload))
     .digest("hex");
+}
+
+export function decideTaskResume(input: {
+  taskId: string;
+  taskHash: string;
+  ledgerTask?: SeriesLedgerTask;
+}): TaskResumeDecision {
+  const existing = input.ledgerTask;
+  if (!existing) return { action: "run" };
+
+  if (existing.status === "completed") {
+    if (existing.taskHash !== input.taskHash) {
+      return {
+        action: "stop",
+        reason: `task ${input.taskId} 已完成但配置已变化`,
+      };
+    }
+    return { action: "skip" };
+  }
+
+  if (existing.status === "ready_to_commit" && existing.taskHash === input.taskHash) {
+    return { action: "commit" };
+  }
+
+  return { action: "run" };
 }
