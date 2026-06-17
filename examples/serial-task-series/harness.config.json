@@ -1,0 +1,26 @@
+{
+  "series": { "id": "order-refactor-example" },
+  "sandbox": {
+    "candidateRoots": ["src", "scripts"],
+    "protectedPaths": ["contracts", ".harness", "harness.config.json"]
+  },
+  "taskDefaults": {
+    "gate": { "contracts": ["domain.model-file"] }
+  },
+  "autoCommit": {
+    "enabled": false,
+    "messageTemplate": "harness example: {index}/{total} {id}"
+  },
+  "tasks": [
+    {
+      "id": "extract-domain-model",
+      "task": "Create the Order domain model.",
+      "gate": { "contracts": ["domain.model-file"] }
+    },
+    {
+      "id": "split-order-service",
+      "task": "Create the OrderService service layer.",
+      "gate": { "contracts": ["service.order-file"] }
+    }
+  ]
+}

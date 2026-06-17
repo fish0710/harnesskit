@@ -1,0 +1,8 @@
+{
+  "id": "domain.model-file",
+  "type": "command",
+  "stage": "domain",
+  "scenario": "The domain-model task writes the domain model file.",
+  "cmd": "sh",
+  "args": ["scripts/check-file.sh", "src/domain-model.ts", "Order"]
+}

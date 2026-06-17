@@ -68,6 +68,7 @@ export interface RunOutcome {
   attempts: number;
   report: GateReport;
   action?: Exclude<EscalationAction, { kind: "continue" }>;
+  publication?: PublicationResult;
   logs: string[];
 }
 
@@ -160,7 +161,13 @@ export async function runLoop(o: RunOptions): Promise<RunOutcome> {
           };
         }
         log("  ✓ 就绪:可开 MR(注意:绿不算放行,合入裁决在 CI 隔离环境)");
-        return { outcome: "ready_for_mr", attempts: state.attempts, report, logs };
+        return {
+          outcome: "ready_for_mr",
+          attempts: state.attempts,
+          report,
+          publication,
+          logs,
+        };
       }
       if (report.outcome === "blocked") {
         log("  ◐ 有待人工决策项,停下 → 运行 `harness review`");
