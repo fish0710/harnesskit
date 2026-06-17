@@ -1,0 +1,8 @@
+{
+  "id": "service.order-file",
+  "type": "command",
+  "stage": "service",
+  "scenario": "The service task writes the order service file.",
+  "cmd": "sh",
+  "args": ["scripts/check-file.sh", "src/order-service.ts", "OrderService"]
+}
