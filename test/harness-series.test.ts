@@ -941,6 +941,22 @@ test("commitPublishedChanges rejects git pathspec magic", () => {
     }),
     /Git pathspec/,
   );
+  assert.throws(
+    () => commitPublishedChanges({
+      cwd,
+      changedFiles: [":!src/task.ts"],
+      message: "feat: publish task",
+    }),
+    /Git pathspec/,
+  );
+  assert.throws(
+    () => commitPublishedChanges({
+      cwd,
+      changedFiles: [":^src/task.ts"],
+      message: "feat: publish task",
+    }),
+    /Git pathspec/,
+  );
   assert.equal(runGit(["rev-parse", "HEAD"], cwd), before);
   assert.equal(runGit(["diff", "--cached", "--name-only"], cwd), "");
 });

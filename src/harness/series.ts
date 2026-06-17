@@ -18,6 +18,7 @@ const AUTO_COMMIT_FIELDS = new Set(["enabled", "messageTemplate"]);
 const TASK_FIELDS = new Set(["id", "task", "gate", "commitMessage"]);
 const GATE_FIELDS = new Set(["contracts", "stage"]);
 const MESSAGE_PLACEHOLDERS = new Set(["id", "index", "total"]);
+const GIT_PATHSPEC_MAGIC_PREFIXES = [":(", ":/", ":!", ":^"];
 
 export interface TaskGateSelector {
   contracts?: string[];
@@ -180,7 +181,7 @@ function validateChangedFilePath(path: string): string {
   if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
     throw new Error(`changedFiles 路径无效: ${path}`);
   }
-  if (path.startsWith(":(") || path.startsWith(":/")) {
+  if (GIT_PATHSPEC_MAGIC_PREFIXES.some((prefix) => path.startsWith(prefix))) {
     throw new Error(`changedFiles 路径包含 Git pathspec magic: ${path}`);
   }
 
