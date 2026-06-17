@@ -384,7 +384,12 @@ test("series ledger rejects ready_to_commit without changedFiles", () => {
 
   assert.throws(
     () => readSeriesLedger(cwd, "order-refactor"),
-    /changedFiles/,
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /series ledger changedFiles 无效/);
+      assert.doesNotMatch(error.message, /series ledger JSON 无效/);
+      return true;
+    },
   );
 });
 
@@ -408,7 +413,12 @@ test("series ledger rejects completed task without completedAt", () => {
 
   assert.throws(
     () => readSeriesLedger(cwd, "order-refactor"),
-    /completedAt/,
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /series ledger completedAt 无效/);
+      assert.doesNotMatch(error.message, /series ledger JSON 无效/);
+      return true;
+    },
   );
 });
 

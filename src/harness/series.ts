@@ -427,14 +427,17 @@ export function readSeriesLedger(cwd: string, seriesId: string): SeriesLedger | 
   if (!existsSync(path)) return undefined;
 
   const raw = readFileSync(path, "utf8");
+  let parsed: unknown;
 
   try {
-    return parseLedger(JSON.parse(raw), seriesId);
+    parsed = JSON.parse(raw);
   } catch (error) {
     throw new Error(
       `series ledger JSON 无效: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+
+  return parseLedger(parsed, seriesId);
 }
 
 export function writeSeriesLedger(cwd: string, ledger: SeriesLedger): string {
