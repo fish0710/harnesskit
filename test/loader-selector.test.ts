@@ -32,6 +32,40 @@ test("loader: 已知 type 缺必填字段 → issue(http 缺 trigger)", () => {
   assert.ok(v.some((i) => /缺少必填字段 "trigger"/.test(i.message)));
 });
 
+test("loader: miniprogram 缺 projectPath 或 runner → issue", () => {
+  const missingProject = validateContract({
+    id: "mp.missing-project",
+    type: "miniprogram",
+    runner: "test/gates/miniprogram-runner.js",
+  });
+  assert.ok(
+    missingProject.some((issue) =>
+      /type="miniprogram" 缺少必填字段 "projectPath"/.test(issue.message)
+    ),
+  );
+
+  const missingRunner = validateContract({
+    id: "mp.missing-runner",
+    type: "miniprogram",
+    projectPath: "dist/dev/mp-weixin",
+  });
+  assert.ok(
+    missingRunner.some((issue) =>
+      /type="miniprogram" 缺少必填字段 "runner"/.test(issue.message)
+    ),
+  );
+
+  assert.deepEqual(
+    validateContract({
+      id: "mp.ok",
+      type: "miniprogram",
+      projectPath: "dist/dev/mp-weixin",
+      runner: "test/gates/miniprogram-runner.js",
+    }),
+    [],
+  );
+});
+
 test("loader: 数组文件 + 子目录递归", () => {
   const dir = mkdtempSync(join(tmpdir(), "gc-"));
   mkdirSync(join(dir, "sub"));

@@ -22,6 +22,7 @@ const REQUIRED_BY_TYPE: Record<string, string[]> = {
   http: ["trigger"],
   structure: ["tool"],
   invariant: ["property"],
+  miniprogram: ["projectPath", "runner"],
   review: [], // review 宽松:缺省给通用裁决
 };
 

@@ -23,6 +23,7 @@ import { bootPlugin } from "./plugins/boot.js";
 import { reviewPlugin } from "./plugins/review.js";
 import { httpPlugin } from "./plugins/http.js";
 import { structurePlugin } from "./plugins/structure.js";
+import { miniprogramPlugin } from "./plugins/miniprogram.js";
 import { createInvariantPlugin, type Property } from "./plugins/invariant.js";
 import { renderPretty, renderJson } from "./reporter.js";
 import { loadContracts, freezeContract, verifyFrozen, validateContract } from "./contracts.js";
@@ -92,7 +93,8 @@ async function buildGate(propertiesPath?: string): Promise<GateCore> {
     .use(bootPlugin)
     .use(reviewPlugin)
     .use(httpPlugin)
-    .use(structurePlugin);
+    .use(structurePlugin)
+    .use(miniprogramPlugin);
   const properties = await loadProperties(propertiesPath);
   if (Object.keys(properties).length > 0) gate.use(createInvariantPlugin(properties));
   return gate;

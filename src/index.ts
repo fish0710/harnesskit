@@ -59,6 +59,12 @@ export {
   createDaytonaSdkProvider,
   createDaytonaExecutionTarget,
 } from "./harness/sandbox/daytona.js";
+export {
+  isHostLocalContract,
+  materializeCandidateWorkspace,
+  runHostLocalGate,
+  type HostLocalGateOptions,
+} from "./harness/host-gate.js";
 export { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
 export { writeRunRecord, lastRunRecord, type RunRecord } from "./harness/record.js";
 export { createProject, type CreateResult } from "./harness/scaffold.js";
@@ -71,5 +77,6 @@ export { bootPlugin } from "./plugins/boot.js";
 export { reviewPlugin } from "./plugins/review.js";
 export { httpPlugin } from "./plugins/http.js";
 export { structurePlugin } from "./plugins/structure.js";
+export { miniprogramPlugin } from "./plugins/miniprogram.js";
 export { createInvariantPlugin, type Property } from "./plugins/invariant.js";
 export { spawnCapture, type SpawnResult } from "./util/spawn.js";

@@ -1,0 +1,11 @@
+id: mp.template.navigation
+type: miniprogram
+scenario: 小程序点击入口后应跳转到目标页面
+projectPath: dist/dev/mp-weixin
+runner: test/gates/miniprogram-navigation.js
+devtools:
+  mode: managed
+  autoPort: 9420
+  trustProject: true
+timeoutMs: 120000
+expectExit: 0
