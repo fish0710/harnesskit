@@ -874,6 +874,85 @@ test("commitPublishedChanges rejects unsafe changedFiles paths", () => {
   );
 });
 
+test("commitPublishedChanges rejects git pathspec magic", () => {
+  const cwd = gitRepo();
+
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "src", "a.ts"), "export const a = 1;\n", "utf8");
+  writeFileSync(join(cwd, "src", "b.ts"), "export const b = 1;\n", "utf8");
+  runGit(["add", "src/a.ts", "src/b.ts"], cwd);
+  runGit(["commit", "-m", "chore: add ts files"], cwd);
+  const before = runGit(["rev-parse", "HEAD"], cwd);
+
+  writeFileSync(join(cwd, "src", "a.ts"), "export const a = 2;\n", "utf8");
+  writeFileSync(join(cwd, "src", "b.ts"), "export const b = 2;\n", "utf8");
+
+  assert.throws(
+    () => commitPublishedChanges({
+      cwd,
+      changedFiles: [":(glob)**/*.ts"],
+      message: "feat: publish task",
+    }),
+    /Git pathspec/,
+  );
+  assert.equal(runGit(["rev-parse", "HEAD"], cwd), before);
+  assert.equal(runGit(["diff", "--cached", "--name-only"], cwd), "");
+});
+
+test("commitPublishedChanges does not include pre-existing staged unrelated files", () => {
+  const cwd = gitRepo();
+
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "src", "task.ts"), "export const value = 1;\n", "utf8");
+  writeFileSync(join(cwd, "unrelated.ts"), "export const unrelated = 1;\n", "utf8");
+  runGit(["add", "src/task.ts", "unrelated.ts"], cwd);
+  runGit(["commit", "-m", "chore: add published files"], cwd);
+
+  writeFileSync(join(cwd, "src", "task.ts"), "export const value = 2;\n", "utf8");
+  writeFileSync(join(cwd, "unrelated.ts"), "export const unrelated = 2;\n", "utf8");
+  runGit(["add", "unrelated.ts"], cwd);
+
+  const result = commitPublishedChanges({
+    cwd,
+    changedFiles: ["src/task.ts"],
+    message: "feat: publish task",
+  });
+
+  assert.deepEqual(result.committed, true);
+  assert.deepEqual(
+    runGit(["show", "--pretty=format:", "--name-only", "HEAD"], cwd)
+      .split("\n")
+      .filter(Boolean),
+    ["src/task.ts"],
+  );
+  assert.match(runGit(["status", "--short"], cwd), /^M  unrelated\.ts$/m);
+});
+
+test("commitPublishedChanges handles filenames with spaces as literal paths", () => {
+  const cwd = gitRepo();
+
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "src", "space name.ts"), "export const value = 1;\n", "utf8");
+  runGit(["add", "src/space name.ts"], cwd);
+  runGit(["commit", "-m", "chore: add spaced file"], cwd);
+
+  writeFileSync(join(cwd, "src", "space name.ts"), "export const value = 2;\n", "utf8");
+
+  const result = commitPublishedChanges({
+    cwd,
+    changedFiles: ["src/space name.ts"],
+    message: "feat: publish task",
+  });
+
+  assert.deepEqual(result.committed, true);
+  assert.deepEqual(
+    runGit(["show", "--pretty=format:", "--name-only", "HEAD"], cwd)
+      .split("\n")
+      .filter(Boolean),
+    ["src/space name.ts"],
+  );
+});
+
 test("commitPublishedChanges ignores tracked .harness changes when mixed with straightforward published paths", () => {
   const cwd = gitRepo();
 

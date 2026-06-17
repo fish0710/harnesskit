@@ -180,6 +180,15 @@ function validateChangedFilePath(path: string): string {
   if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
     throw new Error(`changedFiles 路径无效: ${path}`);
   }
+  if (
+    path.startsWith(":(") ||
+    path.startsWith(":/") ||
+    path.includes("*") ||
+    path.includes("?") ||
+    path.includes("[")
+  ) {
+    throw new Error(`changedFiles 路径包含 Git pathspec magic: ${path}`);
+  }
 
   return path;
 }
@@ -187,9 +196,10 @@ function validateChangedFilePath(path: string): string {
 function runGit(
   cwd: string,
   args: string[],
-  options?: { input?: string; allowNonZero?: boolean },
+  options?: { input?: string; allowNonZero?: boolean; literalPathspecs?: boolean },
 ): { stdout: string; stderr: string; status: number | null } {
-  const result = spawnSync("git", args, {
+  const gitArgs = options?.literalPathspecs ? ["--literal-pathspecs", ...args] : args;
+  const result = spawnSync("git", gitArgs, {
     cwd,
     encoding: "utf8",
     input: options?.input,
@@ -197,7 +207,7 @@ function runGit(
 
   if (!options?.allowNonZero && result.status !== 0) {
     const reason = result.stderr.trim() || result.error?.message || "unknown";
-    throw new Error(`git ${args.join(" ")} 失败: ${reason}`);
+    throw new Error(`git ${gitArgs.join(" ")} 失败: ${reason}`);
   }
 
   return {
@@ -614,24 +624,25 @@ export function commitPublishedChanges(
 ): CommitPublishedChangesResult {
   ensureGitWorktree(input.cwd);
   const publishedFiles = input.changedFiles
-    .map((path) => validateChangedFilePath(path))
-    .filter((path) => !isHarnessRuntimePath(path));
+    .filter((path) => !isHarnessRuntimePath(path))
+    .map((path) => validateChangedFilePath(path));
 
   if (publishedFiles.length === 0) return { committed: false };
 
-  runGit(input.cwd, ["add", "--", ...publishedFiles]);
+  runGit(input.cwd, ["add", "--", ...publishedFiles], { literalPathspecs: true });
 
-  const staged = runGit(input.cwd, ["diff", "--cached", "--name-only", "--", ...publishedFiles])
+  const publishedPathSet = new Set(publishedFiles);
+  const staged = runGit(input.cwd, ["diff", "--cached", "--name-only"])
     .stdout
     .split("\n")
     .map((path) => path.trim())
-    .filter((path) => path.length > 0);
+    .filter((path) => path.length > 0 && publishedPathSet.has(path));
   if (staged.length === 0) return { committed: false };
 
   runGit(
     input.cwd,
     ["commit", "--only", "-F", "-", "--", ...publishedFiles],
-    { input: input.message },
+    { input: input.message, literalPathspecs: true },
   );
 
   return {
