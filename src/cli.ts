@@ -39,8 +39,13 @@ import {
   localRunEnvironment,
   runLoop,
   type GenerationBudget,
+  type RunOutcome,
   type RunEnvironment,
 } from "./harness/run.js";
+import {
+  loadTaskSeriesConfig,
+  runTaskSeries,
+} from "./harness/series.js";
 import {
   buildRunId,
   claudeObservabilityPaths,
@@ -301,6 +306,24 @@ function loadHarnessConfig(
   return JSON.parse(readFileSync(path, "utf8")) as unknown;
 }
 
+function loadRunnableContracts(dir: string): Contract[] {
+  const { contracts, issues } = loadContracts(dir);
+  if (issues.length) {
+    for (const issue of issues) console.error(`  - ${issue.message}`);
+    throw new Error("契约规格有问题,先修复");
+  }
+  const verificationFailures = contracts.map(verifyFrozen).filter((r) =>
+    !r.ok
+  );
+  if (verificationFailures.length) {
+    for (const failure of verificationFailures) {
+      console.error(`  - ${failure.message}`);
+    }
+    throw new Error("冻结契约校验失败");
+  }
+  return contracts;
+}
+
 function createClaudeRunRecorder(
   cwd: string,
   task: string,
@@ -324,7 +347,22 @@ function createClaudeRunRecorder(
   });
 }
 
-async function doRun(args: string[], task: string, initialFeedback?: string): Promise<void> {
+export interface SingleTaskRunOverrides {
+  selectedContracts?: Contract[];
+}
+
+export interface SingleTaskRunResult {
+  outcome: RunOutcome;
+  runRecordPath: string;
+  environmentName: string;
+}
+
+async function runSingleTask(
+  args: string[],
+  task: string,
+  initialFeedback?: string,
+  overrides?: SingleTaskRunOverrides,
+): Promise<SingleTaskRunResult> {
   const { values } = parse(args);
   const cwd = process.cwd();
   const dir = resolve(cwd, values.dir as string);
@@ -366,24 +404,11 @@ async function doRun(args: string[], task: string, initialFeedback?: string): Pr
   }
 
   try {
-    const { contracts, issues } = loadContracts(dir);
-    if (issues.length) {
-      for (const issue of issues) console.error(`  - ${issue.message}`);
-      throw new Error("契约规格有问题,先修复");
-    }
-    const verificationFailures = contracts.map(verifyFrozen).filter((r) =>
-      !r.ok
-    );
-    if (verificationFailures.length) {
-      for (const failure of verificationFailures) {
-        console.error(`  - ${failure.message}`);
-      }
-      throw new Error("冻结契约校验失败");
-    }
+    const contracts = loadRunnableContracts(dir);
 
-    const selected = values.stage
+    const selected = overrides?.selectedContracts ?? (values.stage
       ? selectByStage(contracts, values.stage as string)
-      : contracts;
+      : contracts);
     const gate = await buildGate(values.properties as string | undefined);
     const ctx: RunContext = { cwd, verdicts: loadVerdicts(cwd) };
     if (values["base-url"]) (ctx as { baseUrl?: string }).baseUrl =
@@ -459,18 +484,71 @@ async function doRun(args: string[], task: string, initialFeedback?: string): Pr
       }
     }
     console.log(`运行记录: ${recPath}`);
-    process.exitCode = outcome.outcome === "ready_for_mr" ? 0 : outcome.outcome === "blocked" ? 2 : 1;
+    return {
+      outcome,
+      runRecordPath: recPath,
+      environmentName: environment.name,
+    };
   } catch (error) {
     recorder?.fail(error);
     throw error;
   }
 }
 
+async function doRun(args: string[], task: string, initialFeedback?: string): Promise<void> {
+  const result = await runSingleTask(args, task, initialFeedback);
+  process.exitCode = result.outcome.outcome === "ready_for_mr"
+    ? 0
+    : result.outcome.outcome === "blocked"
+      ? 2
+      : 1;
+}
+
 async function cmdRun(args: string[]): Promise<void> {
-  const { positionals } = parse(args);
+  const { values, positionals } = parse(args);
   const task = positionals[0];
-  if (!task) fail('用法: harness run "<task 描述>" [--driver scaffold|command|claude] [--agent-cmd "..."] [--stage s]');
-  await doRun(args, task!);
+  if (task) {
+    await doRun(args, task);
+    return;
+  }
+
+  const cwd = process.cwd();
+  const config = loadHarnessConfig(cwd, values.config as string | undefined);
+  const seriesConfig = loadTaskSeriesConfig(config);
+  if (!seriesConfig) {
+    fail('用法: harness run "<task 描述>" [--driver scaffold|command|claude] [--agent-cmd "..."] [--stage s]\n或在 harness.config.json 配置 tasks');
+  }
+
+  const dir = resolve(cwd, values.dir as string);
+  const contracts = loadRunnableContracts(dir);
+
+  console.log(
+    `harness series · id=${seriesConfig.seriesId} · tasks=${seriesConfig.tasks.length}`,
+  );
+  const result = await runTaskSeries({
+    cwd,
+    config: seriesConfig,
+    contracts,
+    fallbackStage: values.stage as string | undefined,
+    executeTask: async (input) => {
+      console.log(`\n[${input.index}/${input.total}] ${input.task.id}`);
+      return runSingleTask(args, input.task.task, undefined, {
+        selectedContracts: input.contracts,
+      });
+    },
+  });
+
+  if (result.outcome === "completed") {
+    console.log("\n✓ series completed");
+    process.exitCode = 0;
+    return;
+  }
+
+  console.log(
+    `\n■ series stopped at ${result.taskId}: ${result.outcome}` +
+    `${result.reason ? ` ${result.reason}` : ""}`,
+  );
+  process.exitCode = result.outcome === "blocked" ? 2 : 1;
 }
 
 async function cmdFix(args: string[]): Promise<void> {
