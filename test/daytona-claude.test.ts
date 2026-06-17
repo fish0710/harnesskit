@@ -94,6 +94,20 @@ test("Claude environment is an exact model allowlist without ANTHROPIC_API_KEY",
   assert.equal("HARNESS_GATE_SIGNING_KEY" in environment, false);
 });
 
+test("Claude environment derives optional run models from default model variables", () => {
+  const {
+    ANTHROPIC_MODEL: _model,
+    ANTHROPIC_REASONING_MODEL: _reasoningModel,
+    ...environment
+  } = claudeEnvironment;
+
+  assert.deepEqual(getClaudeEnvironment(environment), {
+    ...environment,
+    ANTHROPIC_MODEL: "sonnet",
+    ANTHROPIC_REASONING_MODEL: "opus",
+  });
+});
+
 test("Claude environment reports every missing required allowlisted variable", () => {
   const {
     ANTHROPIC_AUTH_TOKEN: _token,
@@ -106,7 +120,7 @@ test("Claude environment reports every missing required allowlisted variable", (
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.match(error.message, /ANTHROPIC_AUTH_TOKEN/);
-      assert.match(error.message, /ANTHROPIC_MODEL/);
+      assert.doesNotMatch(error.message, /ANTHROPIC_MODEL/);
       return true;
     },
   );

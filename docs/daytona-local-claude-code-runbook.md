@@ -33,6 +33,8 @@ export ANTHROPIC_BASE_URL="<approved-model-endpoint>"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="<model>"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="<model>"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="<model>"
+# Optional overrides. If omitted, Harness uses SONNET for ANTHROPIC_MODEL
+# and OPUS for ANTHROPIC_REASONING_MODEL.
 export ANTHROPIC_MODEL="<model>"
 export ANTHROPIC_REASONING_MODEL="<model>"
 ```

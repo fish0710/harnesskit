@@ -150,6 +150,14 @@ export const CLAUDE_ENVIRONMENT_VARIABLES = [
   "ANTHROPIC_REASONING_MODEL",
 ] as const;
 
+const REQUIRED_CLAUDE_ENVIRONMENT_VARIABLES = [
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+] as const;
+
 type Environment = Record<string, string | undefined>;
 export type ClaudeEnvironment = Record<
   (typeof CLAUDE_ENVIRONMENT_VARIABLES)[number],
@@ -316,7 +324,7 @@ export function configureLocalDaytonaProxy(environment: Environment): void {
 export function getClaudeEnvironment(
   environment: Environment,
 ): ClaudeEnvironment {
-  const missing = CLAUDE_ENVIRONMENT_VARIABLES.filter(
+  const missing = REQUIRED_CLAUDE_ENVIRONMENT_VARIABLES.filter(
     (name) => !environment[name],
   );
   if (missing.length > 0) {
@@ -324,8 +332,15 @@ export function getClaudeEnvironment(
       `Missing required environment variables: ${missing.join(", ")}`,
     );
   }
+  const resolvedEnvironment: Environment = {
+    ...environment,
+    ANTHROPIC_MODEL:
+      environment.ANTHROPIC_MODEL ?? environment.ANTHROPIC_DEFAULT_SONNET_MODEL,
+    ANTHROPIC_REASONING_MODEL:
+      environment.ANTHROPIC_REASONING_MODEL ?? environment.ANTHROPIC_DEFAULT_OPUS_MODEL,
+  };
   return Object.fromEntries(
-    CLAUDE_ENVIRONMENT_VARIABLES.map((name) => [name, environment[name]!]),
+    CLAUDE_ENVIRONMENT_VARIABLES.map((name) => [name, resolvedEnvironment[name]!]),
   ) as ClaudeEnvironment;
 }
 
