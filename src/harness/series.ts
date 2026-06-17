@@ -772,22 +772,10 @@ function commitMessageForTask(input: {
   });
 }
 
-function hasMatchingReadyToCommitTask(ledger: SeriesLedger, config: TaskSeriesConfig): boolean {
-  return config.tasks.some((task) => {
-    const ledgerTask = ledger.tasks.find((existing) => existing.id === task.id);
-    return ledgerTask?.status === "ready_to_commit" &&
-      ledgerTask.taskHash === taskHash(task, config.autoCommit, config.taskDefaults);
-  });
-}
-
 export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskSeriesResult> {
   const { cwd, config } = input;
   const total = config.tasks.length;
   const ledger = readSeriesLedger(cwd, config.seriesId) ?? initialSeriesLedger(config);
-
-  if (config.autoCommit.enabled && !hasMatchingReadyToCommitTask(ledger, config)) {
-    ensureCleanGitWorktree(cwd);
-  }
 
   for (let taskIndex = 0; taskIndex < config.tasks.length; taskIndex++) {
     const task = config.tasks[taskIndex]!;
@@ -819,6 +807,7 @@ export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskS
           message: commitMessageForTask({ config, task, index, total }),
         })
         : { committed: false as const };
+      if (config.autoCommit.enabled) ensureCleanGitWorktree(cwd);
       const completedTask: SeriesLedgerTask = {
         ...readyTask,
         status: "completed",
@@ -827,9 +816,10 @@ export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskS
       };
       updateLedgerTask(ledger, completedTask);
       writeUpdatedLedger(cwd, ledger);
-      if (config.autoCommit.enabled) ensureCleanGitWorktree(cwd);
       continue;
     }
+
+    if (config.autoCommit.enabled) ensureCleanGitWorktree(cwd);
 
     const selectedContracts = selectTaskContracts({
       contracts: input.contracts,
@@ -914,6 +904,7 @@ export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskS
         message: commitMessageForTask({ config, task, index, total }),
       })
       : { committed: false as const };
+    if (config.autoCommit.enabled) ensureCleanGitWorktree(cwd);
     const completedTask: SeriesLedgerTask = {
       ...readyTask,
       status: "completed",
@@ -922,7 +913,6 @@ export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskS
     };
     updateLedgerTask(ledger, completedTask);
     writeUpdatedLedger(cwd, ledger);
-    if (config.autoCommit.enabled) ensureCleanGitWorktree(cwd);
   }
 
   ledger.status = "completed";

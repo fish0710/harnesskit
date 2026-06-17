@@ -1434,3 +1434,139 @@ test("runTaskSeries records executeTask errors and stops", async () => {
   assert.equal(ledger.tasks[0]?.errorReason, "driver exploded");
   assert.equal(ledger.tasks[1], undefined);
 });
+
+test("runTaskSeries keeps ready_to_commit on resume when unrelated dirty source remains", async () => {
+  const cwd = gitRepo();
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "src", "task.ts"), "export const value = 1;\n", "utf8");
+  writeFileSync(join(cwd, "src", "unrelated.ts"), "export const unrelated = 1;\n", "utf8");
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    autoCommit: { enabled: true, messageTemplate: "resume {index}/{total}: {id}" },
+    tasks: [{ id: "one", task: "Commit ready publication." }],
+  })!;
+  const now = "2026-06-17T00:00:00.000Z";
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "running",
+    configHash: configHash(config),
+    createdAt: now,
+    updatedAt: now,
+    tasks: [
+      {
+        id: "one",
+        taskHash: taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults),
+        status: "ready_to_commit",
+        changedFiles: ["src/task.ts"],
+        runRecord: ".harness/runs/one.json",
+      },
+    ],
+  });
+
+  await assert.rejects(
+    () => runTaskSeries({
+      cwd,
+      config,
+      contracts,
+      executeTask: async () => {
+        throw new Error("should not execute");
+      },
+    }),
+    /工作区存在未提交变更: src\/unrelated\.ts/,
+  );
+
+  const ledger = readSeriesLedger(cwd, "order-refactor")!;
+  assert.equal(ledger.status, "running");
+  assert.equal(ledger.tasks[0]?.status, "ready_to_commit");
+  assert.equal(ledger.tasks[0]?.commit, undefined);
+  assert.equal(runGit(["show", "--pretty=format:", "--name-only", "HEAD"], cwd), "src/task.ts");
+});
+
+test("runTaskSeries keeps ready_to_commit when post-commit clean check finds new dirty source", async () => {
+  const cwd = gitRepo();
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    autoCommit: { enabled: true, messageTemplate: "task {index}/{total}: {id}" },
+    tasks: [{ id: "publish-source", task: "Publish source." }],
+  })!;
+
+  await assert.rejects(
+    () => runTaskSeries({
+      cwd,
+      config,
+      contracts,
+      executeTask: async () => {
+        writeFileSync(join(cwd, "src", "task.ts"), "export const value = 1;\n", "utf8");
+        writeFileSync(
+          join(cwd, "src", "unrelated.ts"),
+          "export const unrelated = 1;\n",
+          "utf8",
+        );
+        return {
+          outcome: readyOutcome(["src/task.ts"]),
+          runRecordPath: ".harness/runs/publish-source.json",
+        };
+      },
+    }),
+    /工作区存在未提交变更: src\/unrelated\.ts/,
+  );
+
+  const ledger = readSeriesLedger(cwd, "order-refactor")!;
+  assert.equal(ledger.status, "running");
+  assert.equal(ledger.tasks[0]?.status, "ready_to_commit");
+  assert.equal(ledger.tasks[0]?.commit, undefined);
+  assert.equal(runGit(["show", "--pretty=format:", "--name-only", "HEAD"], cwd), "src/task.ts");
+});
+
+test("runTaskSeries does not let later ready_to_commit skip clean preflight before earlier run", async () => {
+  const cwd = gitRepo();
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "src", "dirty.ts"), "export const dirty = 1;\n", "utf8");
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    autoCommit: { enabled: true, messageTemplate: "task {index}/{total}: {id}" },
+    tasks: [
+      { id: "first", task: "Must start from clean worktree." },
+      { id: "second", task: "Already ready." },
+    ],
+  })!;
+  const now = "2026-06-17T00:00:00.000Z";
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "running",
+    configHash: configHash(config),
+    createdAt: now,
+    updatedAt: now,
+    tasks: [
+      {
+        id: "second",
+        taskHash: taskHash(config.tasks[1]!, config.autoCommit, config.taskDefaults),
+        status: "ready_to_commit",
+        changedFiles: ["src/second.ts"],
+        runRecord: ".harness/runs/second.json",
+      },
+    ],
+  });
+  let executeCalls = 0;
+
+  await assert.rejects(
+    () => runTaskSeries({
+      cwd,
+      config,
+      contracts,
+      executeTask: async () => {
+        executeCalls++;
+        return { outcome: readyOutcome([]), runRecordPath: ".harness/runs/first.json" };
+      },
+    }),
+    /工作区存在未提交变更: src\/dirty\.ts/,
+  );
+
+  assert.equal(executeCalls, 0);
+  const ledger = readSeriesLedger(cwd, "order-refactor")!;
+  assert.equal(ledger.tasks.some((task) => task.id === "first"), false);
+  assert.equal(ledger.tasks.find((task) => task.id === "second")?.status, "ready_to_commit");
+});
