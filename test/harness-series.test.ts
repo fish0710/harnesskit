@@ -62,6 +62,20 @@ function runGit(args: string[], cwd: string) {
   return result.stdout.trim();
 }
 
+function runGitRaw(args: string[], cwd: string) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(
+      [
+        `git ${args.join(" ")} failed with exit ${result.status ?? "null"}`,
+        result.stdout,
+        result.stderr,
+      ].filter(Boolean).join("\n"),
+    );
+  }
+  return result.stdout;
+}
+
 function gitRepo(): string {
   const cwd = mkdtempSync(join(tmpdir(), "harness-series-git-"));
   runGit(["init"], cwd);
@@ -895,6 +909,14 @@ test("commitPublishedChanges rejects git pathspec magic", () => {
     }),
     /Git pathspec/,
   );
+  assert.throws(
+    () => commitPublishedChanges({
+      cwd,
+      changedFiles: [":/src/a.ts"],
+      message: "feat: publish task",
+    }),
+    /Git pathspec/,
+  );
   assert.equal(runGit(["rev-parse", "HEAD"], cwd), before);
   assert.equal(runGit(["diff", "--cached", "--name-only"], cwd), "");
 });
@@ -950,6 +972,63 @@ test("commitPublishedChanges handles filenames with spaces as literal paths", ()
       .split("\n")
       .filter(Boolean),
     ["src/space name.ts"],
+  );
+});
+
+test("commitPublishedChanges preserves filenames with leading and trailing spaces", () => {
+  const cwd = gitRepo();
+  const spacedPath = "src/ leading and trailing .ts ";
+
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, spacedPath), "export const value = 1;\n", "utf8");
+  runGit(["add", spacedPath], cwd);
+  runGit(["commit", "-m", "chore: add padded path"], cwd);
+
+  writeFileSync(join(cwd, spacedPath), "export const value = 2;\n", "utf8");
+
+  const result = commitPublishedChanges({
+    cwd,
+    changedFiles: [spacedPath],
+    message: "feat: publish task",
+  });
+
+  assert.deepEqual(result.committed, true);
+  assert.deepEqual(
+    runGitRaw(["show", "--pretty=format:", "--name-only", "-z", "HEAD"], cwd)
+      .split("\0")
+      .filter((path) => path.length > 0),
+    [spacedPath],
+  );
+});
+
+test("commitPublishedChanges allows literal metacharacters in filenames", () => {
+  const cwd = gitRepo();
+  const literalPaths = ["src/star*.ts", "src/question?.ts", "src/array[0].ts"];
+
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  for (const path of literalPaths) {
+    writeFileSync(join(cwd, path), "export const value = 1;\n", "utf8");
+  }
+  runGit(["add", ...literalPaths], cwd);
+  runGit(["commit", "-m", "chore: add literal metachar files"], cwd);
+
+  for (const path of literalPaths) {
+    writeFileSync(join(cwd, path), "export const value = 2;\n", "utf8");
+  }
+
+  const result = commitPublishedChanges({
+    cwd,
+    changedFiles: literalPaths,
+    message: "feat: publish task",
+  });
+
+  assert.deepEqual(result.committed, true);
+  assert.deepEqual(
+    runGitRaw(["show", "--pretty=format:", "--name-only", "-z", "HEAD"], cwd)
+      .split("\0")
+      .filter((path) => path.length > 0)
+      .sort(),
+    [...literalPaths].sort(),
   );
 });
 

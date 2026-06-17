@@ -180,13 +180,7 @@ function validateChangedFilePath(path: string): string {
   if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
     throw new Error(`changedFiles 路径无效: ${path}`);
   }
-  if (
-    path.startsWith(":(") ||
-    path.startsWith(":/") ||
-    path.includes("*") ||
-    path.includes("?") ||
-    path.includes("[")
-  ) {
+  if (path.startsWith(":(") || path.startsWith(":/")) {
     throw new Error(`changedFiles 路径包含 Git pathspec magic: ${path}`);
   }
 
@@ -632,10 +626,9 @@ export function commitPublishedChanges(
   runGit(input.cwd, ["add", "--", ...publishedFiles], { literalPathspecs: true });
 
   const publishedPathSet = new Set(publishedFiles);
-  const staged = runGit(input.cwd, ["diff", "--cached", "--name-only"])
+  const staged = runGit(input.cwd, ["diff", "--cached", "--name-only", "-z"])
     .stdout
-    .split("\n")
-    .map((path) => path.trim())
+    .split("\0")
     .filter((path) => path.length > 0 && publishedPathSet.has(path));
   if (staged.length === 0) return { committed: false };
 
