@@ -88,6 +88,16 @@ export {
 export { createProject, type CreateResult } from "./harness/scaffold.js";
 export { writePlan } from "./harness/plan.js";
 export { gatherStatus } from "./harness/status.js";
+export {
+  loadTaskSeriesConfig,
+  selectTaskContracts,
+  taskHash,
+  type AutoCommitConfig,
+  type TaskDefaults,
+  type TaskGateSelector,
+  type TaskSeriesConfig,
+  type TaskSeriesTask,
+} from "./harness/series.js";
 
 // 内置示例插件（也是“如何写插件”的范例）
 export { commandPlugin } from "./plugins/command.js";
