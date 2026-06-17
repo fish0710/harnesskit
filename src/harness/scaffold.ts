@@ -1,4 +1,5 @@
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 interface FileSpec {
@@ -132,11 +133,16 @@ jobs:
 export interface CreateResult {
   created: string[];
   skipped: string[];
+  git: "initialized" | "existing";
 }
 
 export function createProject(targetDir: string, force = false): CreateResult {
   const created: string[] = [];
   const skipped: string[] = [];
+  mkdirSync(targetDir, { recursive: true });
+  const insideWorkTree = isInsideWorkTree(targetDir);
+  const git = insideWorkTree ? "existing" : initGit(targetDir);
+
   for (const f of projectFiles()) {
     const full = join(targetDir, f.path);
     if (existsSync(full) && !force) {
@@ -147,5 +153,25 @@ export function createProject(targetDir: string, force = false): CreateResult {
     writeFileSync(full, f.content, "utf8");
     created.push(f.path);
   }
-  return { created, skipped };
+  return { created, skipped, git };
+}
+
+function isInsideWorkTree(targetDir: string): boolean {
+  const result = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd: targetDir,
+    encoding: "utf8",
+  });
+  return result.status === 0 && result.stdout.trim() === "true";
+}
+
+function initGit(targetDir: string): "initialized" {
+  const result = spawnSync("git", ["init", targetDir], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    const reason = result.stderr?.trim() || result.error?.message || "unknown";
+    throw new Error(`git init failed: ${reason}`);
+  }
+
+  return "initialized";
 }

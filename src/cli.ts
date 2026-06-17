@@ -533,8 +533,9 @@ function cmdStatus(args: string[]): void {
 function cmdCreate(args: string[]): void {
   const { values, positionals } = parse(args);
   const target = resolve(process.cwd(), positionals[0] ?? ".");
-  const { created, skipped } = createProject(target, values.force as boolean);
+  const { created, skipped, git } = createProject(target, values.force as boolean);
   console.log(`✓ 初始化 harness 项目于 ${target}`);
+  console.log(`  git: ${git === "initialized" ? "initialized" : "existing repository"}`);
   if (created.length) console.log("  新建: " + created.join(", "));
   if (skipped.length) console.log("  跳过(已存在,--force 覆盖): " + skipped.join(", "));
   console.log("\n下一步: 编辑 contracts/ 写真实契约 → harness check → 配 CODEOWNERS/分支保护 → harness run \"<task>\"");
