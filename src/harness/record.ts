@@ -76,6 +76,8 @@ export interface RunRecordEvent {
 
 export interface RunRecordAttempt {
   attempt: number;
+  claudeSessionId?: string;
+  resumedFromSessionId?: string;
   claudeConfigDir?: string;
   agentSandboxId?: string;
   startedAt?: string;
@@ -259,7 +261,28 @@ export class RunRecorder {
     if (!Number.isSafeInteger(attemptNumber) || Number(attemptNumber) <= 0) {
       return;
     }
+    if (
+      event !== "agent.command.start" &&
+      event !== "agent.command.end" &&
+      event !== "gate.create.end" &&
+      event !== "gate.run.end"
+    ) {
+      return;
+    }
     const attempt = this.attempt(Number(attemptNumber));
+    if (
+      event === "agent.command.start" &&
+      value.resume === true &&
+      typeof value.claudeSessionId === "string"
+    ) {
+      attempt.resumedFromSessionId = value.claudeSessionId;
+    }
+    if (
+      event === "agent.command.end" &&
+      typeof value.claudeSessionId === "string"
+    ) {
+      attempt.claudeSessionId = value.claudeSessionId;
+    }
     if (event === "agent.command.start") {
       attempt.startedAt = this.now();
       if (typeof value.id === "string") attempt.agentSandboxId = value.id;

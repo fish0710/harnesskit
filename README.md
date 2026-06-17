@@ -26,8 +26,15 @@ By default, the agent sandbox also mounts Daytona volume
 `runs/<runId>`. Claude Code receives:
 
 ```text
-CLAUDE_CONFIG_DIR=/harness-observability/attempt-<n>/.claude
+CLAUDE_CONFIG_DIR=/harness-observability/.claude
 ```
+
+The sandbox path is stable so gate-fail retries can resume the same Claude
+conversation. The first Claude attempt captures the stream-json session id;
+later retries run `claude --resume <sessionId>` in the same agent sandbox.
+Missing or inconsistent resume state fails closed instead of starting a fresh
+conversation. Cross-run isolation still comes from the Daytona mount subpath:
+each run maps `/harness-observability` to `runs/<runId>`.
 
 Use the run record to correlate host-side events, sandbox ids, gate attempts,
 and the persisted `.claude` artifacts after the sandbox is deleted.

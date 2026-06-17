@@ -201,12 +201,24 @@ The default durable artifact location is:
 Daytona volume: harness-claude-observability
 Durable run root: /harness-observability/runs/<runId>
 Mounted in sandbox as: /harness-observability
-Claude config for attempt N: /harness-observability/attempt-N/.claude
+Claude config in sandbox: /harness-observability/.claude
 ```
 
 Because the volume mount is scoped to `runs/<runId>`, the sandbox sees the run
 root as `/harness-observability`, while the host-side manifest records the
 durable path `/harness-observability/runs/<runId>`.
+
+Claude retries use strong resume. The first attempt captures the stream-json
+session id; later gate-fail attempts run `claude --resume <sessionId>` in the
+same agent sandbox and reuse `/harness-observability/.claude`. Missing or
+inconsistent resume state fails closed instead of starting a fresh conversation.
+
+TODO: Improve HTTP gate diagnostics for connection failures. A minimal resume
+fixture showed that `fetch failed` is enough to trigger a retry, but not always
+enough for the resumed agent to infer the actionable fix. HTTP diagnostics
+should include the request method, full target URL, raw error, and a concise
+hint that the candidate may be listening on a different host or port than the
+contract target.
 
 To inspect a run after sandbox cleanup:
 
@@ -216,12 +228,14 @@ node -e 'const r=require(process.argv[1]); console.log({runId:r.runId,status:r.s
 ```
 
 Use Daytona's volume inspection or a temporary sandbox mounted with the same
-volume/subpath to browse the corresponding `.claude` directory. For attempt 1,
-look under:
+volume/subpath to browse the corresponding `.claude` directory:
 
 ```text
-/harness-observability/attempt-1/.claude
+/harness-observability/.claude
 ```
+
+Use the host manifest `.harness/runs/<runId>.json` to correlate that artifact
+with attempt numbers, sandbox ids, gate outcomes, and failures.
 
 Run unit tests without external services:
 

@@ -31,6 +31,45 @@ export const DEFAULT_DAYTONA_API_URL = "http://localhost:3000/api";
 export const CLAUDE_COMMAND =
   'exec "/usr/local/bin/claude" --dangerously-skip-permissions ' +
   '-p "$HARNESS_PROMPT" --output-format stream-json --verbose';
+const CLAUDE_RESUME_COMMAND =
+  'exec "/usr/local/bin/claude" --dangerously-skip-permissions ' +
+  '--resume "$HARNESS_CLAUDE_SESSION_ID" ' +
+  '-p "$HARNESS_PROMPT" --output-format stream-json --verbose';
+
+function isSafeClaudeSessionId(sessionId: unknown): sessionId is string {
+  return (
+    typeof sessionId === "string" &&
+    sessionId.length > 0 &&
+    sessionId.trim() === sessionId &&
+    !/[\u0000-\u001f\u007f]/.test(sessionId)
+  );
+}
+
+export function buildClaudeCommand(sessionId?: string): string {
+  if (sessionId === undefined) return CLAUDE_COMMAND;
+  if (!isSafeClaudeSessionId(sessionId)) {
+    throw new Error("Unsafe Claude session id");
+  }
+  return CLAUDE_RESUME_COMMAND;
+}
+
+export function parseClaudeSessionId(stdout: string): string | undefined {
+  for (const line of stdout.split(/\r?\n/)) {
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== "object") continue;
+
+    const record = event as Record<string, unknown>;
+    for (const candidate of [record.session_id, record.sessionId]) {
+      if (isSafeClaudeSessionId(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
 
 const LOCAL_DAYTONA_NO_PROXY_HOSTS = [
   "localhost",

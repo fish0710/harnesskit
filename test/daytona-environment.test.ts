@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { GateCore } from "../src/gate.js";
 import { commandPlugin } from "../src/plugins/command.js";
 import {
+  buildClaudeCommand,
   CLAUDE_COMMAND,
 } from "../src/harness/sandbox/daytona.js";
 import {
@@ -95,6 +96,7 @@ interface ScriptedProvider extends SandboxProvider {
   requests: SandboxCreateRequest[];
   handles: RecordingHandle[];
   agentPrompts: string[];
+  readonly claudeRuns: number;
   agentFiles(): Map<string, WorkspaceFile>;
 }
 
@@ -118,8 +120,10 @@ class RecordingHandle implements SandboxHandle {
     private readonly provider: {
       candidateVersions: string[];
       gateExitCodes: number[];
+      claudeStdouts: string[];
       agentPrompts: string[];
       agentRuns: number;
+      claudeRuns: number;
       gateRuns: number;
       agentStdout: string;
       candidateMutations: Array<
@@ -234,6 +238,27 @@ class RecordingHandle implements SandboxHandle {
         stderr: "",
       };
     }
+    if (this.role === "agent" && command.includes("/usr/local/bin/claude")) {
+      if (
+        env.HARNESS_CLAUDE_SESSION_ID &&
+        command.includes(env.HARNESS_CLAUDE_SESSION_ID)
+      ) {
+        throw new Error("Raw Claude session id must not be interpolated into command text");
+      }
+      this.provider.agentPrompts.push(env.HARNESS_PROMPT ?? "");
+      const run = this.provider.claudeRuns++;
+      const content = this.provider.candidateVersions[run] ?? "fixed\n";
+      this.files.set(
+        "src/a.ts",
+        workspaceFile("src/a.ts", Buffer.from(content), false),
+      );
+      this.provider.candidateMutations[run]?.(this.files);
+      return {
+        exitCode: 0,
+        stdout: this.provider.claudeStdouts[run] ?? this.provider.claudeStdouts.at(-1) ?? "",
+        stderr: "",
+      };
+    }
     if (this.role === "gate" && command.includes("/usr/bin/env")) {
       const exitCode = this.provider.gateExitCodes[
         this.provider.gateRuns++
@@ -281,6 +306,7 @@ class RecordingHandle implements SandboxHandle {
 function scriptedProvider(options: {
   candidateVersions: string[];
   gateExitCodes: number[];
+  claudeStdouts?: string[];
   agentStdout?: string;
   candidateMutations?: Array<
     ((files: Map<string, WorkspaceFile>) => void) | undefined
@@ -292,6 +318,9 @@ function scriptedProvider(options: {
 }): ScriptedProvider {
   const state = {
     ...options,
+    claudeStdouts: options.claudeStdouts ?? [
+      JSON.stringify({ type: "result", session_id: "session-1" }),
+    ],
     agentStdout: options.agentStdout ?? "agent done",
     candidateMutations: options.candidateMutations ?? [],
     gateDeleteFails: options.gateDeleteFails ?? false,
@@ -300,6 +329,7 @@ function scriptedProvider(options: {
     throwCommands: options.throwCommands ?? {},
     agentPrompts: [] as string[],
     agentRuns: 0,
+    claudeRuns: 0,
     gateRuns: 0,
   };
   const requests: SandboxCreateRequest[] = [];
@@ -308,6 +338,9 @@ function scriptedProvider(options: {
     requests,
     handles,
     agentPrompts: state.agentPrompts,
+    get claudeRuns() {
+      return state.claudeRuns;
+    },
     async create(request) {
       requests.push(request);
       const handle = new RecordingHandle(
@@ -495,7 +528,7 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
   );
   assert.equal(
     mkdirCall?.env.CLAUDE_CONFIG_DIR,
-    "/harness-observability/attempt-1/.claude",
+    "/harness-observability/.claude",
   );
   assert.equal(mkdirCall?.timeoutMs, 30_000);
 
@@ -504,7 +537,7 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
   );
   assert.equal(
     claudeCall?.env.CLAUDE_CONFIG_DIR,
-    "/harness-observability/attempt-1/.claude",
+    "/harness-observability/.claude",
   );
   assert.equal(claudeCall?.env.HARNESS_RUN_ID, "run-obs");
   assert.equal(claudeCall?.env.HARNESS_ATTEMPT, "1");
@@ -529,7 +562,7 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
   );
   assert.equal(
     (observabilityStart?.[1] as { claudeConfigDir?: string }).claudeConfigDir,
-    "/harness-observability/attempt-1/.claude",
+    "/harness-observability/.claude",
   );
   const observabilityEnd = observations.find(([event]) =>
     event === "agent.observability.end"
@@ -545,7 +578,7 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
   assert.equal((commandStart?.[1] as { attempt?: number }).attempt, 1);
   assert.equal(
     (commandStart?.[1] as { claudeConfigDir?: string }).claudeConfigDir,
-    "/harness-observability/attempt-1/.claude",
+    "/harness-observability/.claude",
   );
   for (const eventName of [
     "gate.create.start",
@@ -562,6 +595,189 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
       `${eventName} attempt`,
     );
   }
+});
+
+test("Claude Daytona retries strongly resume the captured session in one agent sandbox", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["broken\n", "fixed\n"],
+    gateExitCodes: [1, 0],
+    claudeStdouts: [
+      JSON.stringify({ type: "result", session_id: "session-abc" }),
+      JSON.stringify({ type: "result", session_id: "session-abc" }),
+    ],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    observability: {
+      runId: "run-resume",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.equal(
+    provider.requests.filter((request) => request.role === "agent").length,
+    1,
+  );
+  assert.equal(
+    provider.requests.filter((request) => request.role === "gate").length,
+    2,
+  );
+  assert.equal(provider.claudeRuns, 2);
+
+  const agent = provider.handles.find((handle) => handle.role === "agent")!;
+  const claudeCalls = agent.executeCalls.filter((call) =>
+    call.command.includes("/usr/local/bin/claude") &&
+    "HARNESS_PROMPT" in call.env
+  );
+  assert.equal(claudeCalls.length, 2);
+  assert.equal(claudeCalls[0]?.command, buildClaudeCommand());
+  assert.equal("HARNESS_CLAUDE_SESSION_ID" in claudeCalls[0]!.env, false);
+  assert.equal(claudeCalls[1]?.command, buildClaudeCommand("resume"));
+  assert.equal(claudeCalls[1]?.command.includes("session-abc"), false);
+  assert.equal(
+    claudeCalls[1]?.env.HARNESS_CLAUDE_SESSION_ID,
+    "session-abc",
+  );
+  assert.deepEqual(
+    claudeCalls.map((call) => call.env.CLAUDE_CONFIG_DIR),
+    ["/harness-observability/.claude", "/harness-observability/.claude"],
+  );
+
+  const commandStarts = observations.filter(([event]) =>
+    event === "agent.command.start"
+  );
+  assert.equal(commandStarts.length, 2);
+  assert.deepEqual(commandStarts.map(([, data]) => ({
+    attempt: (data as { attempt?: number }).attempt,
+    resume: (data as { resume?: boolean }).resume,
+    claudeSessionId: (data as { claudeSessionId?: string }).claudeSessionId,
+  })), [
+    { attempt: 1, resume: false, claudeSessionId: undefined },
+    { attempt: 2, resume: true, claudeSessionId: "session-abc" },
+  ]);
+});
+
+test("Claude Daytona fails closed when the first attempt does not report a session id", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    claudeStdouts: [JSON.stringify({ type: "result" })],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await assert.rejects(
+    () => environment.runTask({ task: "fix it" }),
+    /Claude session id/i,
+  );
+  assert.equal(
+    provider.requests.filter((request) => request.role === "gate").length,
+    0,
+  );
+  const commandEnd = observations.find(([event]) =>
+    event === "agent.command.end"
+  );
+  assert.equal(
+    (commandEnd?.[1] as { outcome?: string }).outcome,
+    "error",
+  );
+});
+
+test("Claude Daytona rejects changed session id during resume", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["broken\n", "fixed\n"],
+    gateExitCodes: [1],
+    claudeStdouts: [
+      JSON.stringify({ type: "result", session_id: "session-a" }),
+      JSON.stringify({ type: "result", session_id: "session-b" }),
+    ],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await environment.runTask({ task: "fix it" });
+  const report = await environment.runGate({
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+  });
+  assert.equal(report.outcome, "fail");
+
+  await assert.rejects(
+    () =>
+      environment.runTask({
+        task: "fix it",
+        feedback: "trusted test failed",
+      }),
+    /changed|session/i,
+  );
+
+  const commandEnds = observations.filter(([event]) =>
+    event === "agent.command.end"
+  );
+  const attempt2End = commandEnds.find(([, data]) =>
+    (data as { attempt?: number }).attempt === 2
+  );
+  assert.equal(
+    (attempt2End?.[1] as { outcome?: string }).outcome,
+    "error",
+  );
+  assert.match(
+    (attempt2End?.[1] as { errorReason?: string }).errorReason ?? "",
+    /changed|session/i,
+  );
+  assert.equal(
+    provider.requests.filter((request) => request.role === "gate").length,
+    1,
+  );
+  assert.equal(
+    observations.some(([event, data]) =>
+      event === "gate.run.end" &&
+      (data as { outcome?: string }).outcome === "pass"
+    ),
+    false,
+  );
+  const publication = await environment.publish();
+  assert.equal(publication.ok, false);
 });
 
 test("Claude Daytona observability rejects unsafe run ids before sandbox creation", () => {

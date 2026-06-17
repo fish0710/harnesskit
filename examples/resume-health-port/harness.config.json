@@ -1,0 +1,26 @@
+{
+  "baseline": ["health.port"],
+  "rules": [],
+  "sandbox": {
+    "candidateRoots": [
+      "examples/resume-health-port/TASK.md",
+      "examples/resume-health-port/src",
+      "examples/resume-health-port/package.json"
+    ],
+    "protectedPaths": [
+      "examples/resume-health-port/contracts",
+      "examples/resume-health-port/harness.config.json"
+    ],
+    "agentSetup": [],
+    "gateSetup": [
+      "node examples/resume-health-port/src/server.js > /tmp/resume-health-port.log 2>&1 & echo $! > /tmp/resume-health-port.pid",
+      "sleep 0.5"
+    ],
+    "limits": {
+      "maxFiles": 1000,
+      "maxFileBytes": 10485760,
+      "maxTotalBytes": 209715200
+    },
+    "retainOnFailure": false
+  }
+}

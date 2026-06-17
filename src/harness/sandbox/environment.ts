@@ -14,9 +14,10 @@ import {
   type DaytonaObservabilityConfig,
 } from "../observability.js";
 import {
-  CLAUDE_COMMAND,
+  buildClaudeCommand,
   createDaytonaExecutionTarget,
   getClaudeEnvironment,
+  parseClaudeSessionId,
 } from "./daytona.js";
 import { publishCandidate } from "./publish.js";
 import type {
@@ -224,6 +225,7 @@ export function createDaytonaRunEnvironment(
   let published = false;
   let closed = false;
   let agentAttempt = 0;
+  let claudeSessionId: string | undefined;
 
   const observe = (event: string, data: unknown) => {
     options.onObservation?.(event, data);
@@ -303,6 +305,12 @@ export function createDaytonaRunEnvironment(
       let commandStarted = false;
       try {
         if (options.agent.kind === "claude") {
+          const resume = attempt > 1;
+          if (resume && !claudeSessionId) {
+            throw new Error(
+              "Claude session id is required to resume a Daytona Claude attempt",
+            );
+          }
           const claudeObservationEnv = observability
             ? await prepareClaudeObservability(
               handle,
@@ -317,18 +325,45 @@ export function createDaytonaRunEnvironment(
           observe("agent.command.start", {
             id: handle.id,
             attempt,
+            resume,
+            ...(claudeSessionId ? { claudeSessionId } : {}),
             ...(claudeConfigDir ? { claudeConfigDir } : {}),
           });
           commandStarted = true;
           const prompt = input.feedback
             ? `${input.task}\n\n[门禁反馈,请据此修复]\n${input.feedback}`
             : input.task;
+          const command = buildClaudeCommand(
+            resume ? "resume" : undefined,
+          );
           result = await handle.execute(
-            CLAUDE_COMMAND,
+            command,
             REMOTE_ROOT,
-            { ...modelEnvironment, ...claudeObservationEnv, HARNESS_PROMPT: prompt },
+            {
+              ...modelEnvironment,
+              ...claudeObservationEnv,
+              HARNESS_PROMPT: prompt,
+              ...(resume && claudeSessionId
+                ? { HARNESS_CLAUDE_SESSION_ID: claudeSessionId }
+                : {}),
+            },
             AGENT_COMMAND_TIMEOUT_MS,
           );
+          const parsedClaudeSessionId = parseClaudeSessionId(result.stdout);
+          if (!parsedClaudeSessionId) {
+            throw new Error(
+              "Claude session id was not reported by the Daytona Claude command",
+            );
+          }
+          if (
+            claudeSessionId &&
+            parsedClaudeSessionId !== claudeSessionId
+          ) {
+            throw new Error(
+              `Claude session id changed from ${claudeSessionId} to ${parsedClaudeSessionId}`,
+            );
+          }
+          claudeSessionId = parsedClaudeSessionId;
         } else {
           commandStartedAt = Date.now();
           observe("agent.command.start", { id: handle.id, attempt });
@@ -358,6 +393,9 @@ export function createDaytonaRunEnvironment(
         id: handle.id,
         attempt,
         exitCode: result.exitCode,
+        ...(options.agent.kind === "claude" && claudeSessionId
+          ? { claudeSessionId }
+          : {}),
         durationMs: durationSince(commandStartedAt),
       });
       return {

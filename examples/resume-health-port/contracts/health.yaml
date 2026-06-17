@@ -1,0 +1,11 @@
+id: health.port
+type: http
+scenario: Health endpoint must be served on the protected contract port.
+trigger:
+  method: GET
+  baseUrl: "http://127.0.0.1:3320"
+  path: "/health"
+expect:
+  status: 200
+  body_contains:
+    ready: true
