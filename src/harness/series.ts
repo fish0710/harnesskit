@@ -214,6 +214,18 @@ function canonicalizeGate(gate: TaskGateSelector | undefined): {
   return canonical;
 }
 
+function effectiveGateForHash(
+  defaults: TaskDefaults,
+  task: TaskSeriesTask,
+): { contracts?: string[]; stage?: string } | null {
+  const selector = mergeGateSelectors(defaults, task);
+  if (!selector.hasExplicitSelector) return null;
+  return canonicalizeGate({
+    ...(selector.contracts.length > 0 ? { contracts: selector.contracts } : {}),
+    ...(selector.stage !== undefined ? { stage: selector.stage } : {}),
+  });
+}
+
 export function loadTaskSeriesConfig(config: unknown): TaskSeriesConfig | undefined {
   if (!isRecord(config)) throw new TypeError("Harness 配置必须是普通对象");
   if (!hasOwn(config, "tasks")) return undefined;
@@ -267,11 +279,12 @@ export function selectTaskContracts(input: {
 export function taskHash(
   task: TaskSeriesTask,
   autoCommit: AutoCommitConfig,
+  defaults: TaskDefaults = {},
 ): string {
   const payload = {
     id: task.id,
     task: task.task,
-    gate: canonicalizeGate(task.gate),
+    gate: effectiveGateForHash(defaults, task),
     commitMessage: task.commitMessage ?? null,
     autoCommit: {
       enabled: autoCommit.enabled,

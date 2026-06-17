@@ -36,6 +36,18 @@ test("series config parses defaults, tasks, and auto commit settings", () => {
   assert.equal(config?.tasks[0]?.id, "extract-domain-model");
 });
 
+test("series config allows legacy root fields alongside tasks", () => {
+  const config = loadTaskSeriesConfig({
+    baseline: ["smoke.boot"],
+    rules: [{ when: ["src/**"], select: ["domain.model-boundary"] }],
+    sandbox: { mode: "workspace-write" },
+    tasks: [{ id: "compat", task: "Keep legacy root fields working." }],
+  });
+
+  assert.equal(config?.seriesId, "default");
+  assert.equal(config?.tasks[0]?.id, "compat");
+});
+
 test("series config returns undefined when tasks are absent", () => {
   assert.equal(loadTaskSeriesConfig({ baseline: ["smoke.boot"] }), undefined);
 });
@@ -74,6 +86,39 @@ test("series config rejects invalid ids and commit templates", () => {
       tasks: [{ id: "one", task: "one" }],
     }),
     /未知 commit message placeholder: branch/,
+  );
+});
+
+test("series config rejects unknown nested fields in owned objects", () => {
+  assert.throws(
+    () => loadTaskSeriesConfig({
+      series: { id: "ok", extra: true },
+      tasks: [{ id: "one", task: "one" }],
+    }),
+    /未知 series 字段: extra/,
+  );
+
+  assert.throws(
+    () => loadTaskSeriesConfig({
+      taskDefaults: { gate: { contracts: ["smoke.boot"], extra: true } },
+      tasks: [{ id: "one", task: "one" }],
+    }),
+    /未知 taskDefaults\.gate 字段: extra/,
+  );
+
+  assert.throws(
+    () => loadTaskSeriesConfig({
+      autoCommit: { enabled: true, extra: true },
+      tasks: [{ id: "one", task: "one" }],
+    }),
+    /未知 autoCommit 字段: extra/,
+  );
+
+  assert.throws(
+    () => loadTaskSeriesConfig({
+      tasks: [{ id: "one", task: "one", gate: { stage: "domain", extra: true } }],
+    }),
+    /未知 tasks\.one\.gate 字段: extra/,
   );
 });
 
@@ -179,4 +224,20 @@ test("taskHash changes when prompt, gate, or commit settings change", () => {
   assert.notEqual(baseHash, taskHash(changedPrompt.tasks[0]!, changedPrompt.autoCommit));
   assert.notEqual(baseHash, taskHash(changedGate.tasks[0]!, changedGate.autoCommit));
   assert.notEqual(baseHash, taskHash(changedCommit.tasks[0]!, changedCommit.autoCommit));
+});
+
+test("taskHash changes when taskDefaults gate changes", () => {
+  const base = loadTaskSeriesConfig({
+    taskDefaults: { gate: { contracts: ["smoke.boot"] } },
+    tasks: [{ id: "one", task: "one" }],
+  })!;
+  const changed = loadTaskSeriesConfig({
+    taskDefaults: { gate: { contracts: ["domain.model-boundary"] } },
+    tasks: [{ id: "one", task: "one" }],
+  })!;
+
+  assert.notEqual(
+    taskHash(base.tasks[0]!, base.autoCommit, base.taskDefaults),
+    taskHash(changed.tasks[0]!, changed.autoCommit, changed.taskDefaults),
+  );
 });
