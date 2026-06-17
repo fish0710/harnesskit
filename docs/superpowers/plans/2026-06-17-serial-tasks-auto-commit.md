@@ -557,8 +557,8 @@ test("taskHash changes when prompt, gate, or commit settings change", () => {
   })!;
 
   assert.notEqual(
-    taskHash(base.tasks[0]!, base.autoCommit),
-    taskHash(changed.tasks[0]!, changed.autoCommit),
+    taskHash(base.tasks[0]!, base.autoCommit, base.taskDefaults),
+    taskHash(changed.tasks[0]!, changed.autoCommit, changed.taskDefaults),
   );
 });
 ```
@@ -828,12 +828,13 @@ export function selectTaskContracts(input: {
 export function taskHash(
   task: TaskSeriesTask,
   autoCommit: AutoCommitConfig,
+  defaults: TaskDefaults,
 ): string {
   return createHash("sha256")
     .update(JSON.stringify({
       id: task.id,
       task: task.task,
-      gate: task.gate ?? null,
+      gate: mergeGate(defaults, task) ?? null,
       commitMessage: task.commitMessage ?? null,
       autoCommit,
     }))
@@ -1573,7 +1574,11 @@ test("runTaskSeries skips completed matching tasks on resume", async () => {
     tasks: [
       {
         id: "one",
-        taskHash: taskHash(config.tasks[0]!, config.autoCommit),
+        taskHash: taskHash(
+          config.tasks[0]!,
+          config.autoCommit,
+          config.taskDefaults,
+        ),
         status: "completed",
         completedAt: "2026-06-17T00:00:01.000Z",
       },
@@ -1730,7 +1735,11 @@ export async function runTaskSeries(
   const total = input.config.tasks.length;
 
   for (const [index, task] of input.config.tasks.entries()) {
-    const currentHash = taskHash(task, input.config.autoCommit);
+    const currentHash = taskHash(
+      task,
+      input.config.autoCommit,
+      input.config.taskDefaults,
+    );
     const decision = decideTaskResume({
       taskId: task.id,
       taskHash: currentHash,
