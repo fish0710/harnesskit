@@ -13,13 +13,17 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import type { Contract } from "../src/types.js";
+import type { GateReport } from "../src/types.js";
+import type { RunOutcome } from "../src/harness/run.js";
 import {
   commitPublishedChanges,
+  configHash,
   decideTaskResume,
   ensureCleanGitWorktree,
   loadTaskSeriesConfig,
   readSeriesLedger,
   renderCommitMessage,
+  runTaskSeries,
   seriesLedgerPath,
   selectTaskContracts,
   taskHash,
@@ -28,6 +32,7 @@ import {
 import type {
   AutoCommitConfig,
   SeriesLedger,
+  SeriesTaskExecutionInput,
   TaskDefaults,
   TaskSeriesTask,
 } from "../src/harness/series.js";
@@ -86,6 +91,26 @@ function gitRepo(): string {
   runGit(["add", "README.md"], cwd);
   runGit(["commit", "-m", "chore: init"], cwd);
   return cwd;
+}
+
+function passReport(): GateReport {
+  return {
+    outcome: "pass",
+    results: [],
+    summary: { pass: 0, fail: 0, error: 0, needsReview: 0, total: 0 },
+    pendingDecisions: [],
+    exitCode: 0,
+  };
+}
+
+function readyOutcome(changedFiles: string[]): RunOutcome {
+  return {
+    outcome: "ready_for_mr",
+    attempts: 1,
+    report: passReport(),
+    publication: { ok: true, changedFiles },
+    logs: [],
+  };
 }
 
 test("series config parses defaults, tasks, and auto commit settings", () => {
@@ -1123,4 +1148,289 @@ test("commitPublishedChanges ignores tracked .harness changes when mixed with st
     ["src/task.ts"],
   );
   assert.match(runGit(["status", "--short"], cwd), /^M \.harness\/tracked\.json$/m);
+});
+
+test("runTaskSeries runs tasks in order, passes selected contracts, and records completed ledger entries", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-run-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    taskDefaults: { gate: { contracts: ["smoke.boot"] } },
+    autoCommit: { enabled: false, messageTemplate: "task {index}/{total}: {id}" },
+    tasks: [
+      { id: "domain", task: "Extract domain.", gate: { stage: "domain" } },
+      { id: "service", task: "Split service.", gate: { contracts: ["service.split"] } },
+    ],
+  })!;
+  const calls: SeriesTaskExecutionInput[] = [];
+
+  const result = await runTaskSeries({
+    cwd,
+    config,
+    contracts,
+    executeTask: async (input) => {
+      calls.push(input);
+      return {
+        outcome: readyOutcome([]),
+        runRecordPath: `.harness/runs/${input.task.id}.json`,
+      };
+    },
+  });
+
+  assert.deepEqual(result, { outcome: "completed" });
+  assert.deepEqual(calls.map((call) => [call.task.id, call.index, call.total]), [
+    ["domain", 1, 2],
+    ["service", 2, 2],
+  ]);
+  assert.deepEqual(
+    calls.map((call) => call.contracts.map((contract) => contract.id)),
+    [
+      ["smoke.boot", "domain.model-boundary"],
+      ["smoke.boot", "service.split"],
+    ],
+  );
+  const ledger = readSeriesLedger(cwd, "order-refactor")!;
+  assert.equal(ledger.status, "completed");
+  assert.deepEqual(
+    ledger.tasks.map((task) => ({
+      id: task.id,
+      status: task.status,
+      changedFiles: task.changedFiles,
+      runRecord: task.runRecord,
+      hasCompletedAt: task.completedAt !== undefined,
+    })),
+    [
+      {
+        id: "domain",
+        status: "completed",
+        changedFiles: [],
+        runRecord: ".harness/runs/domain.json",
+        hasCompletedAt: true,
+      },
+      {
+        id: "service",
+        status: "completed",
+        changedFiles: [],
+        runRecord: ".harness/runs/service.json",
+        hasCompletedAt: true,
+      },
+    ],
+  );
+});
+
+test("runTaskSeries skips completed matching tasks on resume", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-resume-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    autoCommit: { enabled: false, messageTemplate: "harness: {id}" },
+    tasks: [
+      { id: "one", task: "Already done." },
+      { id: "two", task: "Still pending." },
+    ],
+  })!;
+  const now = "2026-06-17T00:00:00.000Z";
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "running",
+    configHash: "a".repeat(64),
+    createdAt: now,
+    updatedAt: now,
+    tasks: [
+      {
+        id: "one",
+        taskHash: taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults),
+        status: "completed",
+        changedFiles: [],
+        runRecord: ".harness/runs/one.json",
+        completedAt: now,
+      },
+    ],
+  });
+  const executed: string[] = [];
+
+  const result = await runTaskSeries({
+    cwd,
+    config,
+    contracts,
+    executeTask: async (input) => {
+      executed.push(input.task.id);
+      return { outcome: readyOutcome([]), runRecordPath: ".harness/runs/two.json" };
+    },
+  });
+
+  assert.deepEqual(result, { outcome: "completed" });
+  assert.deepEqual(executed, ["two"]);
+  assert.deepEqual(readSeriesLedger(cwd, "order-refactor")!.tasks.map((task) => task.id), [
+    "one",
+    "two",
+  ]);
+});
+
+test("runTaskSeries stops on blocked outcome without running later tasks", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-blocked-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    autoCommit: { enabled: false, messageTemplate: "harness: {id}" },
+    tasks: [
+      { id: "blocked", task: "Needs decision." },
+      { id: "later", task: "Must not run." },
+    ],
+  })!;
+  const executed: string[] = [];
+
+  const result = await runTaskSeries({
+    cwd,
+    config,
+    contracts,
+    executeTask: async (input) => {
+      executed.push(input.task.id);
+      return {
+        outcome: {
+          outcome: "blocked",
+          attempts: 1,
+          report: { ...passReport(), outcome: "blocked", exitCode: 2 },
+          action: { kind: "stop_for_human", reason: "needs product decision" },
+          logs: [],
+        },
+        runRecordPath: ".harness/runs/blocked.json",
+      };
+    },
+  });
+
+  assert.deepEqual(result, {
+    outcome: "blocked",
+    taskId: "blocked",
+    reason: "needs product decision",
+  });
+  assert.deepEqual(executed, ["blocked"]);
+  const ledger = readSeriesLedger(cwd, "order-refactor")!;
+  assert.equal(ledger.status, "running");
+  assert.equal(ledger.tasks[0]?.status, "blocked");
+  assert.equal(ledger.tasks[0]?.runRecord, ".harness/runs/blocked.json");
+  assert.equal(ledger.tasks[0]?.errorReason, "needs product decision");
+  assert.equal(ledger.tasks[1], undefined);
+});
+
+test("runTaskSeries autoCommit commits published source file and leaves ledger runtime state uncommitted", async () => {
+  const cwd = gitRepo();
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    autoCommit: { enabled: true, messageTemplate: "task {index}/{total}: {id}" },
+    tasks: [{ id: "publish-source", task: "Publish source." }],
+  })!;
+
+  const result = await runTaskSeries({
+    cwd,
+    config,
+    contracts,
+    executeTask: async () => {
+      writeFileSync(join(cwd, "src", "task.ts"), "export const value = 1;\n", "utf8");
+      mkdirSync(join(cwd, ".harness", "runs"), { recursive: true });
+      writeFileSync(join(cwd, ".harness", "runs", "publish-source.json"), "{}\n", "utf8");
+      return {
+        outcome: readyOutcome(["src/task.ts", ".harness/runs/publish-source.json"]),
+        runRecordPath: ".harness/runs/publish-source.json",
+      };
+    },
+  });
+
+  assert.deepEqual(result, { outcome: "completed" });
+  const ledger = readSeriesLedger(cwd, "order-refactor")!;
+  const task = ledger.tasks[0]!;
+  assert.equal(task.status, "completed");
+  assert.match(task.commit ?? "", /^[a-f0-9]{40}$/);
+  assert.equal(runGit(["rev-parse", "HEAD"], cwd), task.commit);
+  const commitMessage = runGitRaw(["show", "--format=%B", "--no-patch", "HEAD"], cwd);
+  assert.match(commitMessage, /^task 1\/1: publish-source/m);
+  assert.match(commitMessage, /^Harness-Task-Id: publish-source$/m);
+  assert.match(commitMessage, /^Harness-Series-Id: order-refactor$/m);
+  assert.deepEqual(
+    runGit(["show", "--pretty=format:", "--name-only", "HEAD"], cwd)
+      .split("\n")
+      .filter(Boolean),
+    ["src/task.ts"],
+  );
+  const status = runGit(["status", "--short"], cwd);
+  assert.doesNotMatch(status, /src\/task\.ts/);
+  assert.match(status, /\?\? \.harness\//);
+});
+
+test("runTaskSeries resumes ready_to_commit by committing without re-executing task", async () => {
+  const cwd = gitRepo();
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "src", "task.ts"), "export const value = 1;\n", "utf8");
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    autoCommit: { enabled: true, messageTemplate: "resume {index}/{total}: {id}" },
+    tasks: [{ id: "one", task: "Commit ready publication." }],
+  })!;
+  const now = "2026-06-17T00:00:00.000Z";
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "running",
+    configHash: configHash(config),
+    createdAt: now,
+    updatedAt: now,
+    tasks: [
+      {
+        id: "one",
+        taskHash: taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults),
+        status: "ready_to_commit",
+        changedFiles: ["src/task.ts"],
+        runRecord: ".harness/runs/one.json",
+      },
+    ],
+  });
+  let executeCalls = 0;
+
+  const result = await runTaskSeries({
+    cwd,
+    config,
+    contracts,
+    executeTask: async () => {
+      executeCalls++;
+      return { outcome: readyOutcome([]), runRecordPath: ".harness/runs/one.json" };
+    },
+  });
+
+  assert.deepEqual(result, { outcome: "completed" });
+  assert.equal(executeCalls, 0);
+  const ledger = readSeriesLedger(cwd, "order-refactor")!;
+  assert.equal(ledger.tasks[0]?.status, "completed");
+  assert.match(ledger.tasks[0]?.commit ?? "", /^[a-f0-9]{40}$/);
+  assert.equal(runGit(["show", "--pretty=format:", "--name-only", "HEAD"], cwd), "src/task.ts");
+});
+
+test("runTaskSeries records executeTask errors and stops", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-error-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    autoCommit: { enabled: false, messageTemplate: "harness: {id}" },
+    tasks: [
+      { id: "boom", task: "Throw." },
+      { id: "later", task: "Must not run." },
+    ],
+  })!;
+
+  const result = await runTaskSeries({
+    cwd,
+    config,
+    contracts,
+    executeTask: async () => {
+      throw new Error("driver exploded");
+    },
+  });
+
+  assert.deepEqual(result, {
+    outcome: "error",
+    taskId: "boom",
+    reason: "driver exploded",
+  });
+  const ledger = readSeriesLedger(cwd, "order-refactor")!;
+  assert.equal(ledger.status, "error");
+  assert.equal(ledger.tasks[0]?.status, "error");
+  assert.equal(ledger.tasks[0]?.errorReason, "driver exploded");
+  assert.equal(ledger.tasks[1], undefined);
 });

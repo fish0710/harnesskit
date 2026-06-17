@@ -11,6 +11,7 @@ import { join } from "node:path";
 
 import { selectByStage } from "../selector.js";
 import type { Contract } from "../types.js";
+import type { RunOutcome } from "./run.js";
 
 const SERIES_FIELDS = new Set(["id"]);
 const TASK_DEFAULTS_FIELDS = new Set(["gate"]);
@@ -104,6 +105,30 @@ export type TaskResumeDecision =
   | { action: "commit" }
   | { action: "run" }
   | { action: "stop"; reason: string };
+
+export interface SeriesTaskExecutionInput {
+  task: TaskSeriesTask;
+  contracts: Contract[];
+  index: number;
+  total: number;
+}
+
+export interface SeriesTaskExecutionResult {
+  outcome: RunOutcome;
+  runRecordPath: string;
+}
+
+export interface RunTaskSeriesInput {
+  cwd: string;
+  config: TaskSeriesConfig;
+  contracts: Contract[];
+  fallbackStage?: string;
+  executeTask(input: SeriesTaskExecutionInput): Promise<SeriesTaskExecutionResult>;
+}
+
+export type RunTaskSeriesResult =
+  | { outcome: "completed" }
+  | { outcome: "blocked" | "escalated" | "error"; taskId: string; reason?: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null) return false;
@@ -695,4 +720,212 @@ export function decideTaskResume(input: {
   }
 
   return { action: "run" };
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function initialSeriesLedger(config: TaskSeriesConfig): SeriesLedger {
+  const timestamp = nowIso();
+  return {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "running",
+    configHash: configHash(config),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    tasks: [],
+  };
+}
+
+function updateLedgerTask(ledger: SeriesLedger, task: SeriesLedgerTask): void {
+  const index = ledger.tasks.findIndex((existing) => existing.id === task.id);
+  if (index === -1) {
+    ledger.tasks.push(task);
+  } else {
+    ledger.tasks[index] = task;
+  }
+}
+
+function writeUpdatedLedger(cwd: string, ledger: SeriesLedger): void {
+  ledger.updatedAt = nowIso();
+  writeSeriesLedger(cwd, ledger);
+}
+
+function runOutcomeReason(outcome: RunOutcome): string | undefined {
+  return outcome.action && "reason" in outcome.action ? outcome.action.reason : undefined;
+}
+
+function commitMessageForTask(input: {
+  config: TaskSeriesConfig;
+  task: TaskSeriesTask;
+  index: number;
+  total: number;
+}): string {
+  return renderCommitMessage({
+    template: input.task.commitMessage ?? input.config.autoCommit.messageTemplate,
+    taskId: input.task.id,
+    seriesId: input.config.seriesId,
+    taskIndex: input.index,
+    taskCount: input.total,
+  });
+}
+
+function hasMatchingReadyToCommitTask(ledger: SeriesLedger, config: TaskSeriesConfig): boolean {
+  return config.tasks.some((task) => {
+    const ledgerTask = ledger.tasks.find((existing) => existing.id === task.id);
+    return ledgerTask?.status === "ready_to_commit" &&
+      ledgerTask.taskHash === taskHash(task, config.autoCommit, config.taskDefaults);
+  });
+}
+
+export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskSeriesResult> {
+  const { cwd, config } = input;
+  const total = config.tasks.length;
+  const ledger = readSeriesLedger(cwd, config.seriesId) ?? initialSeriesLedger(config);
+
+  if (config.autoCommit.enabled && !hasMatchingReadyToCommitTask(ledger, config)) {
+    ensureCleanGitWorktree(cwd);
+  }
+
+  for (let taskIndex = 0; taskIndex < config.tasks.length; taskIndex++) {
+    const task = config.tasks[taskIndex]!;
+    const index = taskIndex + 1;
+    const currentTaskHash = taskHash(task, config.autoCommit, config.taskDefaults);
+    const existingTask = ledger.tasks.find((entry) => entry.id === task.id);
+    const decision = decideTaskResume({
+      taskId: task.id,
+      taskHash: currentTaskHash,
+      ledgerTask: existingTask,
+    });
+
+    if (decision.action === "skip") {
+      continue;
+    }
+
+    if (decision.action === "stop") {
+      ledger.status = "error";
+      writeUpdatedLedger(cwd, ledger);
+      return { outcome: "error", taskId: task.id, reason: decision.reason };
+    }
+
+    if (decision.action === "commit") {
+      const readyTask = existingTask!;
+      const commitResult = config.autoCommit.enabled
+        ? commitPublishedChanges({
+          cwd,
+          changedFiles: readyTask.changedFiles ?? [],
+          message: commitMessageForTask({ config, task, index, total }),
+        })
+        : { committed: false as const };
+      const completedTask: SeriesLedgerTask = {
+        ...readyTask,
+        status: "completed",
+        completedAt: nowIso(),
+        ...(commitResult.committed ? { commit: commitResult.commit } : {}),
+      };
+      updateLedgerTask(ledger, completedTask);
+      writeUpdatedLedger(cwd, ledger);
+      if (config.autoCommit.enabled) ensureCleanGitWorktree(cwd);
+      continue;
+    }
+
+    const selectedContracts = selectTaskContracts({
+      contracts: input.contracts,
+      task,
+      defaults: config.taskDefaults,
+      fallbackStage: input.fallbackStage,
+    });
+    updateLedgerTask(ledger, {
+      id: task.id,
+      taskHash: currentTaskHash,
+      status: "running",
+      startedAt: nowIso(),
+    });
+    writeUpdatedLedger(cwd, ledger);
+
+    let execution: SeriesTaskExecutionResult;
+    try {
+      execution = await input.executeTask({
+        task,
+        contracts: selectedContracts,
+        index,
+        total,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      updateLedgerTask(ledger, {
+        id: task.id,
+        taskHash: currentTaskHash,
+        status: "error",
+        startedAt: ledger.tasks.find((entry) => entry.id === task.id)?.startedAt,
+        errorReason: reason,
+      });
+      ledger.status = "error";
+      writeUpdatedLedger(cwd, ledger);
+      return { outcome: "error", taskId: task.id, reason };
+    }
+
+    const reason = runOutcomeReason(execution.outcome);
+    if (execution.outcome.outcome === "blocked") {
+      updateLedgerTask(ledger, {
+        id: task.id,
+        taskHash: currentTaskHash,
+        status: "blocked",
+        startedAt: ledger.tasks.find((entry) => entry.id === task.id)?.startedAt,
+        runRecord: execution.runRecordPath,
+        ...(reason !== undefined ? { errorReason: reason } : {}),
+      });
+      writeUpdatedLedger(cwd, ledger);
+      return { outcome: "blocked", taskId: task.id, reason };
+    }
+
+    if (execution.outcome.outcome === "escalated") {
+      updateLedgerTask(ledger, {
+        id: task.id,
+        taskHash: currentTaskHash,
+        status: "escalated",
+        startedAt: ledger.tasks.find((entry) => entry.id === task.id)?.startedAt,
+        runRecord: execution.runRecordPath,
+        ...(reason !== undefined ? { errorReason: reason } : {}),
+      });
+      ledger.status = "error";
+      writeUpdatedLedger(cwd, ledger);
+      return { outcome: "escalated", taskId: task.id, reason };
+    }
+
+    const changedFiles = execution.outcome.publication?.changedFiles ?? [];
+    const readyTask: SeriesLedgerTask = {
+      id: task.id,
+      taskHash: currentTaskHash,
+      status: "ready_to_commit",
+      startedAt: ledger.tasks.find((entry) => entry.id === task.id)?.startedAt,
+      changedFiles,
+      runRecord: execution.runRecordPath,
+    };
+    updateLedgerTask(ledger, readyTask);
+    writeUpdatedLedger(cwd, ledger);
+
+    const commitResult = config.autoCommit.enabled
+      ? commitPublishedChanges({
+        cwd,
+        changedFiles,
+        message: commitMessageForTask({ config, task, index, total }),
+      })
+      : { committed: false as const };
+    const completedTask: SeriesLedgerTask = {
+      ...readyTask,
+      status: "completed",
+      completedAt: nowIso(),
+      ...(commitResult.committed ? { commit: commitResult.commit } : {}),
+    };
+    updateLedgerTask(ledger, completedTask);
+    writeUpdatedLedger(cwd, ledger);
+    if (config.autoCommit.enabled) ensureCleanGitWorktree(cwd);
+  }
+
+  ledger.status = "completed";
+  writeUpdatedLedger(cwd, ledger);
+  return { outcome: "completed" };
 }
