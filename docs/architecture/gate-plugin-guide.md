@@ -209,7 +209,8 @@ runner 启动时只接收插件显式注入的环境变量：
   路径、`..` 和 symlink escape。
 - 插件使用 realpath 后的项目目录与 runner 文件执行，`project.config.json` 也必须
   位于工作区内。
-- runner 和 managed DevTools CLI 都不继承宿主 ambient environment。
+- runner 不继承宿主 ambient environment。managed DevTools CLI 只接收 `HOME`，
+  用于读取微信开发者工具本机配置目录，不透传其它 ambient 变量。
 - Daytona `harness run` 中，小程序契约不进入远端 gate 沙箱。宿主会把本轮
   `CandidateSnapshot` materialize 到临时目录，在该目录运行 miniprogram 契约，
   然后删除临时目录。

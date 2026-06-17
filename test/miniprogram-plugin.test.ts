@@ -421,7 +421,7 @@ test("miniprogram plugin starts managed DevTools before runner", async () => {
     "19420",
     "--trust-project",
   ]);
-  assert.deepEqual(calls[0]!.env, {});
+  assert.deepEqual(calls[0]!.env, process.env.HOME ? { HOME: process.env.HOME } : {});
   assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_WS_ENDPOINT, "ws://127.0.0.1:19420");
   assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "19420");
 });
@@ -617,6 +617,7 @@ test("miniprogram plugin does not forward ambient env to local managed DevTools 
     );
 
     assert.equal(result.status, "pass");
+    assert.doesNotMatch(result.errorReason ?? "", /ambient env leaked/);
   } finally {
     if (originalSecret === undefined) {
       delete process.env.HARNESS_LEAK_TEST_SECRET;

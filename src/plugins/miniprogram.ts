@@ -151,6 +151,12 @@ function parseDevtools(value: unknown): DevtoolsParseResult {
   return { ok: true, config };
 }
 
+function managedDevtoolsEnv(): Record<string, string> {
+  return typeof process.env.HOME === "string" && process.env.HOME !== ""
+    ? { HOME: process.env.HOME }
+    : {};
+}
+
 async function startManagedDevtools(
   contract: Contract,
   ctx: RunContext,
@@ -176,7 +182,7 @@ async function startManagedDevtools(
     cwd: ctx.cwd,
     timeoutMs,
     signal: ctx.signal,
-    env: {},
+    env: managedDevtoolsEnv(),
   });
   const evidenceError = commandEvidenceError(id, evidence);
   if (evidenceError) {
