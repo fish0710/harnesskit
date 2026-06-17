@@ -218,23 +218,27 @@ function ensureGitWorktree(cwd: string): void {
   }
 }
 
-function parsePorcelainPath(raw: string): string {
-  return raw.startsWith("\"") && raw.endsWith("\"") ? raw.slice(1, -1) : raw;
+function isRenameOrCopyPorcelainRecord(record: string): boolean {
+  return record[0] === "R" || record[1] === "R" || record[0] === "C" || record[1] === "C";
 }
 
-function parsePorcelainLine(line: string): string[] {
-  const payload = line.slice(3);
-  if (
-    (line[0] === "R" || line[1] === "R" || line[0] === "C" || line[1] === "C") &&
-    payload.includes(" -> ")
-  ) {
-    const separator = payload.indexOf(" -> ");
-    return [
-      parsePorcelainPath(payload.slice(0, separator)),
-      parsePorcelainPath(payload.slice(separator + 4)),
-    ];
+function parsePorcelainZChanges(status: string): string[][] {
+  const records = status.split("\0");
+  const changes: string[][] = [];
+
+  for (let index = 0; index < records.length;) {
+    const record = records[index++]!;
+    if (record.length === 0) continue;
+
+    const paths = [record.slice(3)];
+    if (isRenameOrCopyPorcelainRecord(record) && index < records.length) {
+      const source = records[index++]!;
+      if (source.length > 0) paths.push(source);
+    }
+    changes.push(paths);
   }
-  return [parsePorcelainPath(payload)];
+
+  return changes;
 }
 
 function optionalGate(value: unknown, field: string): TaskGateSelector | undefined {
@@ -596,12 +600,14 @@ export function renderCommitMessage(input: CommitMessageInput): string {
 
 export function ensureCleanGitWorktree(cwd: string): void {
   ensureGitWorktree(cwd);
-  const status = runGit(cwd, ["status", "--porcelain", "--untracked-files=all"]).stdout;
+  const status = runGit(
+    cwd,
+    ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+  ).stdout;
   const dirtyPaths = new Set<string>();
 
-  for (const line of status.split("\n")) {
-    if (line.length < 4) continue;
-    for (const path of parsePorcelainLine(line)) {
+  for (const paths of parsePorcelainZChanges(status)) {
+    for (const path of paths) {
       if (!isHarnessRuntimePath(path)) {
         dirtyPaths.add(path);
       }
@@ -618,8 +624,8 @@ export function commitPublishedChanges(
 ): CommitPublishedChangesResult {
   ensureGitWorktree(input.cwd);
   const publishedFiles = input.changedFiles
-    .filter((path) => !isHarnessRuntimePath(path))
-    .map((path) => validateChangedFilePath(path));
+    .map((path) => validateChangedFilePath(path))
+    .filter((path) => !isHarnessRuntimePath(path));
 
   if (publishedFiles.length === 0) return { committed: false };
 

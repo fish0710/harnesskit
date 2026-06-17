@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -811,6 +812,21 @@ test("ensureCleanGitWorktree reports source renames and ignores .harness-only re
   );
 });
 
+test("ensureCleanGitWorktree ignores .harness renames with literal arrows in names", () => {
+  const cwd = gitRepo();
+
+  mkdirSync(join(cwd, ".harness"), { recursive: true });
+  writeFileSync(join(cwd, ".harness", "old -> state.json"), "{\"version\":1}\n", "utf8");
+  writeFileSync(join(cwd, ".harness", "plain.json"), "{\"version\":1}\n", "utf8");
+  runGit(["add", ".harness/old -> state.json", ".harness/plain.json"], cwd);
+  runGit(["commit", "-m", "chore: add harness rename fixtures"], cwd);
+
+  runGit(["mv", ".harness/old -> state.json", ".harness/new-state.json"], cwd);
+  runGit(["mv", ".harness/plain.json", ".harness/new -> state.json"], cwd);
+
+  assert.doesNotThrow(() => ensureCleanGitWorktree(cwd));
+});
+
 test("commitPublishedChanges stages only published files and excludes .harness", () => {
   const cwd = gitRepo();
 
@@ -885,6 +901,14 @@ test("commitPublishedChanges rejects unsafe changedFiles paths", () => {
       message: "feat: publish task",
     }),
     /changedFiles 路径无效: \.\.\/escape\.ts/,
+  );
+  assert.throws(
+    () => commitPublishedChanges({
+      cwd,
+      changedFiles: [".harness/../src/task.ts"],
+      message: "feat: publish task",
+    }),
+    /changedFiles 路径无效: \.harness\/\.\.\/src\/task\.ts/,
   );
 });
 
@@ -1029,6 +1053,31 @@ test("commitPublishedChanges allows literal metacharacters in filenames", () => 
       .filter((path) => path.length > 0)
       .sort(),
     [...literalPaths].sort(),
+  );
+});
+
+test("commitPublishedChanges commits published deletions", () => {
+  const cwd = gitRepo();
+
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "src", "task.ts"), "export const value = 1;\n", "utf8");
+  runGit(["add", "src/task.ts"], cwd);
+  runGit(["commit", "-m", "chore: add deleted fixture"], cwd);
+
+  unlinkSync(join(cwd, "src", "task.ts"));
+
+  const result = commitPublishedChanges({
+    cwd,
+    changedFiles: ["src/task.ts"],
+    message: "feat: publish delete",
+  });
+
+  assert.deepEqual(result.committed, true);
+  assert.deepEqual(
+    runGit(["show", "--pretty=format:", "--name-status", "HEAD"], cwd)
+      .split("\n")
+      .filter(Boolean),
+    ["D\tsrc/task.ts"],
   );
 });
 
