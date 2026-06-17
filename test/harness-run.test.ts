@@ -155,6 +155,38 @@ test("runLoop: 门禁通过但发布冲突时升级且仍关闭环境", async ()
   assert.equal(closes, 1);
 });
 
+test("runLoop: returns the successful publication result", async () => {
+  const published = {
+    ok: true,
+    changedFiles: ["src/order.ts", "test/generated/order.test.ts"],
+  };
+  const environment: RunEnvironment = {
+    name: "publication-success",
+    async runTask() {
+      return { summary: "done", changedFiles: [] };
+    },
+    async runGate({ contracts, gate, ctx }) {
+      return gate.run(contracts, ctx);
+    },
+    async publish() {
+      return published;
+    },
+    async close() {},
+  };
+
+  const out = await runLoop({
+    task: "t",
+    contracts: [{ id: "c1", type: "flaky" }],
+    gate: new GateCore().use(flakyPlugin({ fixed: true })),
+    ctx,
+    environment,
+    budget: budget(),
+  });
+
+  assert.equal(out.outcome, "ready_for_mr");
+  assert.deepEqual(out.publication, published);
+});
+
 // ---------- 裁决存储 ----------
 test("verdicts: 记录后可读回", () => {
   const cwd = mkdtempSync(join(tmpdir(), "hv-"));
