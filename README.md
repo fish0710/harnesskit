@@ -47,6 +47,44 @@ Candidate roots, protected paths, setup commands, and byte limits are read
 from `harness.config.json`. A passing gate publishes only the exact candidate
 bytes evaluated by the fresh gate sandbox.
 
+Large work can be split into a configured task series:
+
+```json
+{
+  "series": { "id": "order-refactor" },
+  "taskDefaults": {
+    "gate": { "contracts": ["smoke.boot"] }
+  },
+  "autoCommit": {
+    "enabled": true,
+    "messageTemplate": "harness: task {index}/{total} {id}"
+  },
+  "tasks": [
+    {
+      "id": "extract-domain-model",
+      "task": "Extract the order domain model.",
+      "gate": { "contracts": ["domain.model-boundary"] }
+    },
+    {
+      "id": "split-order-service",
+      "task": "Split order service responsibilities.",
+      "gate": { "stage": "service-refactor" }
+    }
+  ]
+}
+```
+
+Run the configured series without a positional task:
+
+```bash
+node dist/src/cli.js run --driver claude --max-attempts 3
+```
+
+Each configured task starts a fresh Agent sandbox and records progress in
+`.harness/series/<series-id>.json`. By default, Harness creates one git commit
+per gate-approved publication and leaves `.harness` run records and ledgers out
+of those commits.
+
 Unit tests do not require Daytona:
 
 ```bash

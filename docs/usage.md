@@ -334,6 +334,86 @@ mount: /harness-observability
 
 `gate` 沙箱不会拿到模型凭证，也不会复用 agent 沙箱。
 
+## 9A. 串行执行大型任务
+
+不传位置参数时，`harness run` 会从 `harness.config.json` 读取 `tasks`
+并按顺序执行。显式传任务仍是单任务模式：
+
+```bash
+harness run "实现一个健康检查接口" --driver claude --max-attempts 3
+```
+
+串行任务配置示例：
+
+```json
+{
+  "series": { "id": "order-refactor" },
+  "taskDefaults": {
+    "gate": {
+      "contracts": ["smoke.boot"],
+      "stage": "premerge"
+    }
+  },
+  "autoCommit": {
+    "enabled": true,
+    "messageTemplate": "harness: task {index}/{total} {id}"
+  },
+  "tasks": [
+    {
+      "id": "extract-domain-model",
+      "task": "Extract the order domain model without changing API behavior.",
+      "gate": {
+        "contracts": ["domain.model-boundary"]
+      }
+    },
+    {
+      "id": "split-order-service",
+      "task": "Split order service responsibilities and keep smoke behavior green.",
+      "gate": {
+        "stage": "service-refactor",
+        "contracts": ["service.smoke"]
+      }
+    }
+  ]
+}
+```
+
+运行整个序列：
+
+```bash
+harness run --driver claude --max-attempts 3
+```
+
+每个配置任务都会单独调用一次 `runSingleTask`，也就是单独跑一次 agent
+任务。对 Daytona/Claude 来说，每个配置任务都会得到新的 Agent sandbox
+和新的 Claude task；同一个任务内部仍保留正常 `runLoop` 的门禁反馈、
+retry 和 resume 行为。
+
+门禁选择从 `taskDefaults.gate` 开始，再合并每个任务自己的 `gate`。
+任务级 `gate` 可以指定 `contracts`、`stage`，也可以同时指定两者：
+`contracts` 会追加到默认契约列表，`stage` 会覆盖默认 stage。
+
+串行模式下 `autoCommit.enabled` 默认是 `true`。任务门禁通过并发布文件后，
+Harness 只会 stage/commit 本次发布的非 `.harness` 文件；`.harness/runs`
+运行记录和 `.harness/series` 进度 ledger 不会被提交。进度 ledger 写在：
+
+```text
+.harness/series/<series-id>.json
+```
+
+恢复规则：
+
+- `completed` 且 task hash 匹配：跳过。
+- `ready_to_commit` 且 task hash 匹配：完成或确认 commit，然后标记
+  `completed`。
+- `pending` / `running`：重新运行该任务。
+- `blocked` / `escalated` / `error`：停止，等待人工处理；不会自动重跑这些
+  终态非成功任务。
+- 已完成任务的配置或 hash 漂移：停止，要求恢复配置或使用新的 task id。
+- 开始新的 agent 工作前发现含义不清的 dirty worktree：停止。
+- 如果 commit 已成功，但后续 clean 检查失败，`ready_to_commit` ledger
+  可能已经带有 commit SHA；清理工作区后再次运行可以完成标记。
+
 ## 10. 维护 Daytona Runtime Snapshot
 
 正常使用不需要每天跑。只有镜像、Claude Code 版本或 runtime 依赖变化时才维护：
