@@ -54,6 +54,7 @@ npm run test:daytona
 
 ## Architecture And Archive
 
+- [Usage manual](docs/usage.md)
 - [Current Daytona sandbox gate architecture](docs/architecture/daytona-sandbox-gate.md)
 - [Local Daytona runbook](docs/daytona-local-claude-code-runbook.md)
 - [2026-06-17 observability persistence archive](docs/archive/2026-06-17-daytona-claude-observability-persistence/README.md)
