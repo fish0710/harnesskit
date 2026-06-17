@@ -18,6 +18,14 @@ export interface ClaudeObservabilityPaths {
   runRoot: string;
   attemptRoot: string;
   claudeConfigDir: string;
+  manifestPath: string;
+}
+
+export interface MountedClaudeObservabilityPaths {
+  runRoot: string;
+  attemptRoot: string;
+  claudeConfigDir: string;
+  manifestPath: string;
 }
 
 type Environment = Record<string, string | undefined>;
@@ -38,7 +46,7 @@ function normalizeMountPath(value: string): string {
       "HARNESS_DAYTONA_OBSERVABILITY_MOUNT must be an absolute POSIX path",
     );
   }
-  const normalized = posix.normalize(trimmed);
+  const normalized = posix.join(posix.normalize(trimmed), ".");
   if (normalized === "/") {
     throw new Error(
       "HARNESS_DAYTONA_OBSERVABILITY_MOUNT must not be the filesystem root",
@@ -47,9 +55,30 @@ function normalizeMountPath(value: string): string {
   return normalized;
 }
 
+function assertSafeRunId(runId: string): void {
+  if (
+    runId === "" ||
+    runId.includes("\0") ||
+    runId.includes("/") ||
+    runId.includes("\\") ||
+    runId === "." ||
+    runId === ".."
+  ) {
+    throw new Error("runId must be a non-empty safe path segment");
+  }
+}
+
 export function loadDaytonaObservabilityConfig(
   environment: Environment,
 ): DaytonaObservabilityConfig {
+  if (isDisabled(environment.HARNESS_DAYTONA_OBSERVABILITY)) {
+    return {
+      enabled: false,
+      backend: "disabled",
+      volumeName: DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
+      mountPath: DEFAULT_DAYTONA_OBSERVABILITY_MOUNT,
+    };
+  }
   const volumeName = (
     environment.HARNESS_DAYTONA_OBSERVABILITY_VOLUME ??
       DEFAULT_DAYTONA_OBSERVABILITY_VOLUME
@@ -63,14 +92,6 @@ export function loadDaytonaObservabilityConfig(
     environment.HARNESS_DAYTONA_OBSERVABILITY_MOUNT ??
       DEFAULT_DAYTONA_OBSERVABILITY_MOUNT,
   );
-  if (isDisabled(environment.HARNESS_DAYTONA_OBSERVABILITY)) {
-    return {
-      enabled: false,
-      backend: "disabled",
-      volumeName,
-      mountPath,
-    };
-  }
   return {
     enabled: true,
     backend: "daytona-volume",
@@ -81,10 +102,15 @@ export function loadDaytonaObservabilityConfig(
 
 export function buildRunId(
   now = new Date(),
-  randomId = randomUUID,
+  randomId: () => string = randomUUID,
 ): string {
   const stamp = now.toISOString().replace(/[:.]/g, "-");
-  return `${stamp}-${randomId().replaceAll("-", "").slice(0, 8)}`;
+  const suffix = randomId().replaceAll("-", "").replace(/[^A-Za-z0-9]/g, "")
+    .slice(0, 8);
+  if (suffix.length < 8) {
+    throw new Error("random id must contain at least 8 safe characters");
+  }
+  return `${stamp}-${suffix}`;
 }
 
 export function claudeObservabilityPaths(
@@ -95,6 +121,7 @@ export function claudeObservabilityPaths(
   if (!config.enabled) {
     throw new Error("Claude observability paths are disabled");
   }
+  assertSafeRunId(runId);
   if (!Number.isSafeInteger(attempt) || attempt <= 0) {
     throw new Error("attempt must be a positive safe integer");
   }
@@ -104,5 +131,31 @@ export function claudeObservabilityPaths(
     runRoot,
     attemptRoot,
     claudeConfigDir: posix.join(attemptRoot, ".claude"),
+    manifestPath: posix.join(attemptRoot, "manifest.json"),
+  };
+}
+
+export function claudeObservabilityVolumeSubpath(runId: string): string {
+  assertSafeRunId(runId);
+  return posix.join("runs", runId);
+}
+
+export function mountedClaudeObservabilityPaths(
+  config: DaytonaObservabilityConfig,
+  attempt: number,
+): MountedClaudeObservabilityPaths {
+  if (!config.enabled) {
+    throw new Error("Mounted Claude observability paths are disabled");
+  }
+  if (!Number.isSafeInteger(attempt) || attempt <= 0) {
+    throw new Error("attempt must be a positive safe integer");
+  }
+  const runRoot = config.mountPath;
+  const attemptRoot = posix.join(runRoot, `attempt-${attempt}`);
+  return {
+    runRoot,
+    attemptRoot,
+    claudeConfigDir: posix.join(attemptRoot, ".claude"),
+    manifestPath: posix.join(attemptRoot, "manifest.json"),
   };
 }

@@ -13,11 +13,10 @@ files. It then creates a fresh gate sandbox with no agent and no model
 credentials. `GateCore` and all pass/fail/retry/escalation decisions stay on
 the host.
 
-The gate sandbox is assembled from the host baseline. Host-configured
-`gateSetup` runs before candidate bytes are applied. The candidate is then
-applied, protected files are restored from the host snapshot, outbound network
-access is blocked, and gate commands collect raw evidence. Only the host
-plugins classify that evidence.
+The gate sandbox is assembled from the host baseline. The candidate is then
+applied, protected files are restored from the host snapshot, host-configured
+`gateSetup` runs, outbound network access is blocked when safe, and gate
+commands collect raw evidence. Only the host plugins classify that evidence.
 
 An accepted candidate is published from the retained host snapshot. Harness
 does not recollect the live agent workspace after a pass.
@@ -47,6 +46,20 @@ environment variables and are never passed to gate sandboxes. Use scoped,
 short-lived model credentials: the model token is necessarily visible to the
 agent process and this design does not claim to prevent source disclosure to
 the approved model endpoint.
+
+Daytona Claude artifact persistence is enabled by default. Harness records the
+host-side run manifest before the remote agent starts and mounts a Daytona
+volume into the agent sandbox:
+
+```bash
+export HARNESS_DAYTONA_OBSERVABILITY=1 # optional; default-on
+export HARNESS_DAYTONA_OBSERVABILITY_VOLUME="harness-claude-observability"
+export HARNESS_DAYTONA_OBSERVABILITY_MOUNT="/harness-observability"
+```
+
+Set `HARNESS_DAYTONA_OBSERVABILITY=0` only when the volume path itself is
+broken and you need to run without `.claude` persistence. The run manifest will
+still record that observability was disabled.
 
 Agent and Gate Snapshots are selected by the host control plane before sandbox
 creation. If the environment variables are absent, Harness defaults to
@@ -170,6 +183,45 @@ node dist/src/cli.js run "implement the task" \
 
 There is no fallback from Daytona to a host agent. Missing Daytona
 configuration stops the run before an agent command executes.
+
+Each `--driver claude` run writes a manifest before provider creation:
+
+```text
+.harness/runs/<runId>.json
+```
+
+The manifest includes the task, driver, status, Daytona volume name, mount
+path, durable run root, raw observation events, agent sandbox id, gate sandbox
+ids, attempts, gate outcome, and error reason when a failure occurs. Harness
+does not redact this file; treat `.harness/runs` as sensitive operational data.
+
+The default durable artifact location is:
+
+```text
+Daytona volume: harness-claude-observability
+Durable run root: /harness-observability/runs/<runId>
+Mounted in sandbox as: /harness-observability
+Claude config for attempt N: /harness-observability/attempt-N/.claude
+```
+
+Because the volume mount is scoped to `runs/<runId>`, the sandbox sees the run
+root as `/harness-observability`, while the host-side manifest records the
+durable path `/harness-observability/runs/<runId>`.
+
+To inspect a run after sandbox cleanup:
+
+```bash
+RUN_FILE="$(ls -t .harness/runs/*.json | head -1)"
+node -e 'const r=require(process.argv[1]); console.log({runId:r.runId,status:r.status,runRoot:r.observability.runRoot,attempts:r.attempts})' "$RUN_FILE"
+```
+
+Use Daytona's volume inspection or a temporary sandbox mounted with the same
+volume/subpath to browse the corresponding `.claude` directory. For attempt 1,
+look under:
+
+```text
+/harness-observability/attempt-1/.claude
+```
 
 Run unit tests without external services:
 

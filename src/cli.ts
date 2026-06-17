@@ -41,11 +41,24 @@ import {
   type GenerationBudget,
   type RunEnvironment,
 } from "./harness/run.js";
+import {
+  buildRunId,
+  claudeObservabilityPaths,
+  DEFAULT_DAYTONA_OBSERVABILITY_MOUNT,
+  DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
+  loadDaytonaObservabilityConfig,
+  type DaytonaObservabilityConfig,
+} from "./harness/observability.js";
 import { createDaytonaSdkProvider } from "./harness/sandbox/daytona.js";
 import { createDaytonaRunEnvironment } from "./harness/sandbox/environment.js";
 import { loadSandboxPolicy } from "./harness/sandbox/policy.js";
 import { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
-import { writeRunRecord, type RunRecord } from "./harness/record.js";
+import {
+  createRunRecorder,
+  writeRunRecord,
+  type RunRecord,
+  type RunRecorder,
+} from "./harness/record.js";
 import { createProject } from "./harness/scaffold.js";
 import { writePlan } from "./harness/plan.js";
 import { gatherStatus } from "./harness/status.js";
@@ -288,23 +301,33 @@ function loadHarnessConfig(
   return JSON.parse(readFileSync(path, "utf8")) as unknown;
 }
 
+function createClaudeRunRecorder(
+  cwd: string,
+  task: string,
+  runId: string,
+  config: DaytonaObservabilityConfig,
+): RunRecorder {
+  const runRoot = config.enabled
+    ? claudeObservabilityPaths(config, runId, 1).runRoot
+    : undefined;
+  return createRunRecorder(cwd, {
+    runId,
+    task,
+    driver: "daytona(claude)",
+    observability: {
+      enabled: config.enabled,
+      backend: config.backend,
+      volumeName: config.volumeName,
+      mountPath: config.mountPath,
+      ...(runRoot ? { runRoot } : {}),
+    },
+  });
+}
+
 async function doRun(args: string[], task: string, initialFeedback?: string): Promise<void> {
   const { values } = parse(args);
   const cwd = process.cwd();
   const dir = resolve(cwd, values.dir as string);
-
-  const { contracts, issues } = loadContracts(dir);
-  if (issues.length) { for (const i of issues) console.error(`  - ${i.message}`); fail("契约规格有问题,先修复"); }
-  const verificationFailures = contracts.map(verifyFrozen).filter((r) => !r.ok);
-  if (verificationFailures.length) {
-    for (const failure of verificationFailures) console.error(`  - ${failure.message}`);
-    fail("冻结契约校验失败");
-  }
-
-  const selected = values.stage ? selectByStage(contracts, values.stage as string) : contracts;
-  const gate = await buildGate(values.properties as string | undefined);
-  const ctx: RunContext = { cwd, verdicts: loadVerdicts(cwd) };
-  if (values["base-url"]) (ctx as { baseUrl?: string }).baseUrl = values["base-url"] as string;
 
   let agent: AgentSpec;
   try {
@@ -312,65 +335,135 @@ async function doRun(args: string[], task: string, initialFeedback?: string): Pr
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
-  const config = loadHarnessConfig(
-    cwd,
-    values.config as string | undefined,
-  );
-  const policy = loadSandboxPolicy(config);
-  let environment: RunEnvironment;
-  if (agent.kind === "scaffold") {
-    environment = localRunEnvironment(scaffoldDriver, cwd);
-  } else {
-    environment = createDaytonaRunEnvironment({
-      provider: createDaytonaSdkProvider(process.env),
-      root: cwd,
-      policy,
-      agent,
-      environment: process.env,
-      onObservation(event, data) {
-        console.log(
-          `    · ${event}: ${JSON.stringify(redactObservationData(data))}`,
-        );
-      },
-    });
-  }
-  const budget = buildBudget(values, agent);
-
-  console.log(
-    `harness run · task="${task}" · environment=${environment.name}` +
-    ` · 契约 ${selected.length} 条`,
-  );
-  console.log(
-    `sandbox roots=[${policy.candidateRoots.join(", ")}]` +
-    ` protected=[${policy.protectedPaths.join(", ")}]\n`,
-  );
-  const outcome = await runLoop({
-    task, contracts: selected, gate, ctx,
-    environment, budget,
-    ...(initialFeedback ? { initialFeedback } : {}),
-    onLog: (l) => console.log(l),
-  });
-
-  const rec: RunRecord = {
-    at: new Date().toISOString(), task, driver: environment.name,
-    outcome: outcome.outcome, attempts: outcome.attempts, summary: outcome.report.summary,
-    ...(outcome.action ? { action: outcome.action } : {}),
-  };
-  const recPath = writeRunRecord(cwd, rec);
-
-  console.log("");
-  if (outcome.outcome === "ready_for_mr") {
-    console.log("✓ 就绪:可开 MR(绿不算放行,合入裁决在 CI)。");
-  } else if (outcome.outcome === "blocked") {
-    console.log("◐ 有待人工决策:运行 `harness review` 查看决策重点并裁决,再重跑。");
-  } else {
-    console.log(`■ 已升级:${outcome.action?.kind} — ${outcome.action?.reason}`);
-    if (agent.kind === "scaffold") {
-      console.log("  (这是 scaffold 空跑 driver:未产出代码。换 --driver claude 或 --driver command 接真实 agent 即可据上面门禁反馈迭代修复。)");
+  let recorder: RunRecorder | undefined;
+  let observability:
+    | {
+      runId: string;
+      config: ReturnType<typeof loadDaytonaObservabilityConfig>;
+    }
+    | undefined;
+  if (agent.kind === "claude") {
+    const runId = buildRunId();
+    try {
+      const observabilityConfig = loadDaytonaObservabilityConfig(process.env);
+      observability = { runId, config: observabilityConfig };
+      recorder = createClaudeRunRecorder(
+        cwd,
+        task,
+        runId,
+        observabilityConfig,
+      );
+    } catch (error) {
+      recorder = createClaudeRunRecorder(cwd, task, runId, {
+        enabled: false,
+        backend: "disabled",
+        volumeName: DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
+        mountPath: DEFAULT_DAYTONA_OBSERVABILITY_MOUNT,
+      });
+      recorder.fail(error);
+      throw error;
     }
   }
-  console.log(`运行记录: ${recPath}`);
-  process.exitCode = outcome.outcome === "ready_for_mr" ? 0 : outcome.outcome === "blocked" ? 2 : 1;
+
+  try {
+    const { contracts, issues } = loadContracts(dir);
+    if (issues.length) {
+      for (const issue of issues) console.error(`  - ${issue.message}`);
+      throw new Error("契约规格有问题,先修复");
+    }
+    const verificationFailures = contracts.map(verifyFrozen).filter((r) =>
+      !r.ok
+    );
+    if (verificationFailures.length) {
+      for (const failure of verificationFailures) {
+        console.error(`  - ${failure.message}`);
+      }
+      throw new Error("冻结契约校验失败");
+    }
+
+    const selected = values.stage
+      ? selectByStage(contracts, values.stage as string)
+      : contracts;
+    const gate = await buildGate(values.properties as string | undefined);
+    const ctx: RunContext = { cwd, verdicts: loadVerdicts(cwd) };
+    if (values["base-url"]) (ctx as { baseUrl?: string }).baseUrl =
+      values["base-url"] as string;
+    const config = loadHarnessConfig(
+      cwd,
+      values.config as string | undefined,
+    );
+    const policy = loadSandboxPolicy(config);
+    let environment: RunEnvironment;
+    if (agent.kind === "scaffold") {
+      environment = localRunEnvironment(scaffoldDriver, cwd);
+    } else {
+      environment = createDaytonaRunEnvironment({
+        provider: createDaytonaSdkProvider(process.env),
+        root: cwd,
+        policy,
+        agent,
+        environment: process.env,
+        observability,
+        onObservation(event, data) {
+          recorder?.recordEvent(event, data);
+          console.log(
+            `    · ${event}: ${JSON.stringify(redactObservationData(data))}`,
+          );
+        },
+      });
+    }
+    const budget = buildBudget(values, agent);
+
+    console.log(
+      `harness run · task="${task}" · environment=${environment.name}` +
+      ` · 契约 ${selected.length} 条`,
+    );
+    console.log(
+      `sandbox roots=[${policy.candidateRoots.join(", ")}]` +
+      ` protected=[${policy.protectedPaths.join(", ")}]\n`,
+    );
+    const outcome = await runLoop({
+      task, contracts: selected, gate, ctx,
+      environment, budget,
+      ...(initialFeedback ? { initialFeedback } : {}),
+      onLog: (l) => console.log(l),
+    });
+
+    let recPath: string;
+    if (recorder) {
+      recorder.complete({
+        outcome: outcome.outcome,
+        attempts: outcome.attempts,
+        summary: outcome.report.summary,
+        ...(outcome.action ? { action: outcome.action } : {}),
+      });
+      recPath = recorder.path;
+    } else {
+      const rec: RunRecord = {
+        at: new Date().toISOString(), task, driver: environment.name,
+        outcome: outcome.outcome, attempts: outcome.attempts, summary: outcome.report.summary,
+        ...(outcome.action ? { action: outcome.action } : {}),
+      };
+      recPath = writeRunRecord(cwd, rec);
+    }
+
+    console.log("");
+    if (outcome.outcome === "ready_for_mr") {
+      console.log("✓ 就绪:可开 MR(绿不算放行,合入裁决在 CI)。");
+    } else if (outcome.outcome === "blocked") {
+      console.log("◐ 有待人工决策:运行 `harness review` 查看决策重点并裁决,再重跑。");
+    } else {
+      console.log(`■ 已升级:${outcome.action?.kind} — ${outcome.action?.reason}`);
+      if (agent.kind === "scaffold") {
+        console.log("  (这是 scaffold 空跑 driver:未产出代码。换 --driver claude 或 --driver command 接真实 agent 即可据上面门禁反馈迭代修复。)");
+      }
+    }
+    console.log(`运行记录: ${recPath}`);
+    process.exitCode = outcome.outcome === "ready_for_mr" ? 0 : outcome.outcome === "blocked" ? 2 : 1;
+  } catch (error) {
+    recorder?.fail(error);
+    throw error;
+  }
 }
 
 async function cmdRun(args: string[]): Promise<void> {

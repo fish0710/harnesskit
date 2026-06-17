@@ -36,9 +36,13 @@ export {
   DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
   buildRunId,
   claudeObservabilityPaths,
+  claudeObservabilityVolumeSubpath,
   loadDaytonaObservabilityConfig,
+  mountedClaudeObservabilityPaths,
   type ClaudeObservabilityPaths,
+  type DaytonaObservabilityBackend,
   type DaytonaObservabilityConfig,
+  type MountedClaudeObservabilityPaths,
 } from "./harness/observability.js";
 export {
   localExecutionTarget,
@@ -53,6 +57,7 @@ export {
 export {
   createDaytonaRunEnvironment,
   type DaytonaRunEnvironmentOptions,
+  type DaytonaRunObservabilityOptions,
   type SandboxAgentSpec,
 } from "./harness/sandbox/environment.js";
 export {
@@ -66,7 +71,20 @@ export {
   type HostLocalGateOptions,
 } from "./harness/host-gate.js";
 export { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
-export { writeRunRecord, lastRunRecord, type RunRecord } from "./harness/record.js";
+export {
+  RunRecorder,
+  createRunRecorder,
+  lastRunRecord,
+  writeRunRecord,
+  type CompleteRunRecordInput,
+  type CreateRunRecorderInput,
+  type RunRecord,
+  type RunRecordAttempt,
+  type RunRecordEvent,
+  type RunRecordObservability,
+  type RunRecordStatus,
+  type RunRecordV2,
+} from "./harness/record.js";
 export { createProject, type CreateResult } from "./harness/scaffold.js";
 export { writePlan } from "./harness/plan.js";
 export { gatherStatus } from "./harness/status.js";

@@ -9,6 +9,11 @@ import {
   runHostLocalGate,
 } from "../host-gate.js";
 import {
+  claudeObservabilityVolumeSubpath,
+  mountedClaudeObservabilityPaths,
+  type DaytonaObservabilityConfig,
+} from "../observability.js";
+import {
   CLAUDE_COMMAND,
   createDaytonaExecutionTarget,
   getClaudeEnvironment,
@@ -41,12 +46,18 @@ export type SandboxAgentSpec =
   | { kind: "claude" }
   | { kind: "command"; command: string };
 
+export interface DaytonaRunObservabilityOptions {
+  runId: string;
+  config: DaytonaObservabilityConfig;
+}
+
 export interface DaytonaRunEnvironmentOptions {
   provider: SandboxProvider;
   root: string;
   policy: SandboxPolicy;
   agent: SandboxAgentSpec;
   environment?: Record<string, string | undefined>;
+  observability?: DaytonaRunObservabilityOptions;
   onObservation?: (event: string, data: unknown) => void;
 }
 
@@ -128,6 +139,63 @@ async function runSetup(
   }
 }
 
+async function prepareClaudeObservability(
+  handle: SandboxHandle,
+  runId: string,
+  attempt: number,
+  config: DaytonaObservabilityConfig,
+  observe: (event: string, data: unknown) => void,
+): Promise<Record<string, string>> {
+  if (!config.enabled) return {};
+  const paths = mountedClaudeObservabilityPaths(config, attempt);
+  observe("agent.observability.start", {
+    id: handle.id,
+    attempt,
+    claudeConfigDir: paths.claudeConfigDir,
+  });
+  const startedAt = Date.now();
+  let result;
+  try {
+    result = await handle.execute(
+      'mkdir -p "$CLAUDE_CONFIG_DIR"',
+      REMOTE_ROOT,
+      { CLAUDE_CONFIG_DIR: paths.claudeConfigDir },
+      30_000,
+    );
+  } catch (error) {
+    observe("agent.observability.end", {
+      id: handle.id,
+      attempt,
+      outcome: "error",
+      durationMs: durationSince(startedAt),
+    });
+    throw error;
+  }
+  if (result.exitCode !== 0) {
+    observe("agent.observability.end", {
+      id: handle.id,
+      attempt,
+      outcome: "error",
+      exitCode: result.exitCode,
+      durationMs: durationSince(startedAt),
+    });
+    throw commandFailure("Claude observability setup", result);
+  }
+  observe("agent.observability.end", {
+    id: handle.id,
+    attempt,
+    outcome: "ready",
+    durationMs: durationSince(startedAt),
+  });
+  return {
+    CLAUDE_CONFIG_DIR: paths.claudeConfigDir,
+    HARNESS_RUN_ID: runId,
+    HARNESS_ATTEMPT: String(attempt),
+    HARNESS_OBSERVABILITY_RUN_ROOT: paths.runRoot,
+    HARNESS_OBSERVABILITY_ATTEMPT_ROOT: paths.attemptRoot,
+  };
+}
+
 export function createDaytonaRunEnvironment(
   options: DaytonaRunEnvironmentOptions,
 ): RunEnvironment {
@@ -140,11 +208,22 @@ export function createDaytonaRunEnvironment(
     ? requireAgentSnapshot(environment)
     : undefined;
   const gateSnapshot = getGateSnapshot(environment);
+  const observability = options.agent.kind === "claude"
+    ? options.observability
+    : undefined;
+  const observabilityVolumes = observability?.config.enabled
+    ? [{
+      volumeName: observability.config.volumeName,
+      mountPath: observability.config.mountPath,
+      subpath: claudeObservabilityVolumeSubpath(observability.runId),
+    }]
+    : undefined;
   let agentHandle: SandboxHandle | undefined;
   let pendingCandidate: CandidateSnapshot | undefined;
   let approvedCandidate: CandidateSnapshot | undefined;
   let published = false;
   let closed = false;
+  let agentAttempt = 0;
 
   const observe = (event: string, data: unknown) => {
     options.onObservation?.(event, data);
@@ -160,6 +239,7 @@ export function createDaytonaRunEnvironment(
       ...(agentSnapshot ? { snapshot: agentSnapshot } : {}),
       envVars: {},
       ephemeral: false,
+      ...(observabilityVolumes ? { volumes: observabilityVolumes } : {}),
     });
     observe("agent.create.end", {
       id: handle.id,
@@ -216,31 +296,67 @@ export function createDaytonaRunEnvironment(
 
     async runTask(input: EnvironmentTaskInput) {
       const handle = await ensureAgent();
-      observe("agent.command.start", { id: handle.id });
-      const commandStartedAt = Date.now();
+      agentAttempt++;
+      const attempt = agentAttempt;
+      let commandStartedAt = Date.now();
       let result;
-      if (options.agent.kind === "claude") {
-        const prompt = input.feedback
-          ? `${input.task}\n\n[门禁反馈,请据此修复]\n${input.feedback}`
-          : input.task;
-        result = await handle.execute(
-          CLAUDE_COMMAND,
-          REMOTE_ROOT,
-          { ...modelEnvironment, HARNESS_PROMPT: prompt },
-          AGENT_COMMAND_TIMEOUT_MS,
-        );
-      } else {
-        result = await handle.runPty(
-          options.agent.command,
-          REMOTE_ROOT,
-          {
-            HARNESS_TASK: input.task,
-            HARNESS_FEEDBACK: input.feedback ?? "",
-          },
-        );
+      let commandStarted = false;
+      try {
+        if (options.agent.kind === "claude") {
+          const claudeObservationEnv = observability
+            ? await prepareClaudeObservability(
+              handle,
+              observability.runId,
+              attempt,
+              observability.config,
+              observe,
+            )
+            : {};
+          const claudeConfigDir = claudeObservationEnv.CLAUDE_CONFIG_DIR;
+          commandStartedAt = Date.now();
+          observe("agent.command.start", {
+            id: handle.id,
+            attempt,
+            ...(claudeConfigDir ? { claudeConfigDir } : {}),
+          });
+          commandStarted = true;
+          const prompt = input.feedback
+            ? `${input.task}\n\n[门禁反馈,请据此修复]\n${input.feedback}`
+            : input.task;
+          result = await handle.execute(
+            CLAUDE_COMMAND,
+            REMOTE_ROOT,
+            { ...modelEnvironment, ...claudeObservationEnv, HARNESS_PROMPT: prompt },
+            AGENT_COMMAND_TIMEOUT_MS,
+          );
+        } else {
+          commandStartedAt = Date.now();
+          observe("agent.command.start", { id: handle.id, attempt });
+          commandStarted = true;
+          result = await handle.runPty(
+            options.agent.command,
+            REMOTE_ROOT,
+            {
+              HARNESS_TASK: input.task,
+              HARNESS_FEEDBACK: input.feedback ?? "",
+            },
+          );
+        }
+      } catch (error) {
+        if (commandStarted) {
+          observe("agent.command.end", {
+            id: handle.id,
+            attempt,
+            outcome: "error",
+            errorReason: error instanceof Error ? error.message : String(error),
+            durationMs: durationSince(commandStartedAt),
+          });
+        }
+        throw error;
       }
       observe("agent.command.end", {
         id: handle.id,
+        attempt,
         exitCode: result.exitCode,
         durationMs: durationSince(commandStartedAt),
       });
@@ -254,6 +370,7 @@ export function createDaytonaRunEnvironment(
     },
 
     async runGate({ contracts, gate, ctx }) {
+      const attempt = Math.max(agentAttempt, 1);
       approvedCandidate = undefined;
       const handle = await ensureAgent();
       try {
@@ -297,7 +414,7 @@ export function createDaytonaRunEnvironment(
       let cleanupError: unknown;
       if (remoteContracts.length > 0) {
         try {
-          observe("gate.create.start", {});
+          observe("gate.create.start", { attempt });
           const gateCreateStartedAt = Date.now();
           gateHandle = await options.provider.create({
             role: "gate",
@@ -308,6 +425,7 @@ export function createDaytonaRunEnvironment(
           observe("gate.create.end", {
             id: gateHandle.id,
             role: "gate",
+            attempt,
             durationMs: durationSince(gateCreateStartedAt),
           });
           observe("gate.upload.start", { id: gateHandle.id });
@@ -366,7 +484,7 @@ export function createDaytonaRunEnvironment(
             ...(!blockGateNetwork ? { reason: "loopback-http" } : {}),
             durationMs: durationSince(networkStartedAt),
           });
-          observe("gate.run.start", { id: gateHandle.id });
+          observe("gate.run.start", { id: gateHandle.id, attempt });
           const gateRunStartedAt = Date.now();
           report = await gate.run(remoteContracts, {
             ...ctx,
@@ -375,6 +493,7 @@ export function createDaytonaRunEnvironment(
           });
           observe("gate.run.end", {
             id: gateHandle.id,
+            attempt,
             outcome: report.outcome,
             results: report.results.length,
             durationMs: durationSince(gateRunStartedAt),
@@ -390,12 +509,13 @@ export function createDaytonaRunEnvironment(
           );
         } finally {
           if (gateHandle) {
-            observe("gate.cleanup.start", { id: gateHandle.id });
+            observe("gate.cleanup.start", { id: gateHandle.id, attempt });
             const cleanupStartedAt = Date.now();
             try {
               await gateHandle.delete();
               observe("gate.cleanup.end", {
                 id: gateHandle.id,
+                attempt,
                 outcome: "deleted",
                 durationMs: durationSince(cleanupStartedAt),
               });
@@ -403,6 +523,7 @@ export function createDaytonaRunEnvironment(
               cleanupError = error;
               observe("gate.cleanup.end", {
                 id: gateHandle.id,
+                attempt,
                 outcome: "error",
                 durationMs: durationSince(cleanupStartedAt),
               });

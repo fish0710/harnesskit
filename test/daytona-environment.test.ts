@@ -18,6 +18,7 @@ import {
 import {
   createDaytonaRunEnvironment,
 } from "../src/harness/sandbox/environment.js";
+import { loadDaytonaObservabilityConfig } from "../src/harness/observability.js";
 import { loadSandboxPolicy } from "../src/harness/sandbox/policy.js";
 import {
   CLAUDE_TOOLCHAIN_PREFLIGHT,
@@ -127,6 +128,7 @@ class RecordingHandle implements SandboxHandle {
       gateDeleteFails: boolean;
       mutateProtectedOnGate: boolean;
       commandExitCodes: Record<string, number>;
+      throwCommands: Record<string, Error>;
     },
   ) {}
 
@@ -185,6 +187,8 @@ class RecordingHandle implements SandboxHandle {
   ) {
     this.commands.push(command);
     this.executeCalls.push({ command, cwd, env, timeoutMs });
+    const configuredError = this.provider.throwCommands[command];
+    if (configuredError) throw configuredError;
     if (command === CLAUDE_TOOLCHAIN_PREFLIGHT) {
       return {
         exitCode: 0,
@@ -284,6 +288,7 @@ function scriptedProvider(options: {
   gateDeleteFails?: boolean;
   mutateProtectedOnGate?: boolean;
   commandExitCodes?: Record<string, number>;
+  throwCommands?: Record<string, Error>;
 }): ScriptedProvider {
   const state = {
     ...options,
@@ -292,6 +297,7 @@ function scriptedProvider(options: {
     gateDeleteFails: options.gateDeleteFails ?? false,
     mutateProtectedOnGate: options.mutateProtectedOnGate ?? false,
     commandExitCodes: options.commandExitCodes ?? {},
+    throwCommands: options.throwCommands ?? {},
     agentPrompts: [] as string[],
     agentRuns: 0,
     gateRuns: 0,
@@ -439,6 +445,240 @@ test("gate sandboxes use Gate runtime snapshots without model credentials or Cla
   assert.equal(
     agentCommands.some((command) => command.includes("npm install -g")),
     false,
+  );
+});
+
+test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE_CONFIG_DIR", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    observability: {
+      runId: "run-obs",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await environment.runTask({ task: "fix it" });
+  await environment.runGate({
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+  });
+  await environment.close();
+
+  const agentRequest = provider.requests.find(
+    (request) => request.role === "agent",
+  );
+  const gateRequest = provider.requests.find(
+    (request) => request.role === "gate",
+  );
+  assert.deepEqual(agentRequest?.volumes, [{
+    volumeName: "harness-claude-observability",
+    mountPath: "/harness-observability",
+    subpath: "runs/run-obs",
+  }]);
+  assert.equal(gateRequest?.volumes, undefined);
+
+  const agent = provider.handles.find((handle) => handle.role === "agent")!;
+  const mkdirCall = agent.executeCalls.find((call) =>
+    call.command === 'mkdir -p "$CLAUDE_CONFIG_DIR"'
+  );
+  assert.equal(
+    mkdirCall?.env.CLAUDE_CONFIG_DIR,
+    "/harness-observability/attempt-1/.claude",
+  );
+  assert.equal(mkdirCall?.timeoutMs, 30_000);
+
+  const claudeCall = agent.executeCalls.find((call) =>
+    call.command === CLAUDE_COMMAND
+  );
+  assert.equal(
+    claudeCall?.env.CLAUDE_CONFIG_DIR,
+    "/harness-observability/attempt-1/.claude",
+  );
+  assert.equal(claudeCall?.env.HARNESS_RUN_ID, "run-obs");
+  assert.equal(claudeCall?.env.HARNESS_ATTEMPT, "1");
+  assert.equal(
+    claudeCall?.env.HARNESS_OBSERVABILITY_RUN_ROOT,
+    "/harness-observability",
+  );
+  assert.equal(
+    claudeCall?.env.HARNESS_OBSERVABILITY_ATTEMPT_ROOT,
+    "/harness-observability/attempt-1",
+  );
+
+  const commandStart = observations.find(([event]) =>
+    event === "agent.command.start"
+  );
+  const observabilityStart = observations.find(([event]) =>
+    event === "agent.observability.start"
+  );
+  assert.equal(
+    (observabilityStart?.[1] as { attempt?: number }).attempt,
+    1,
+  );
+  assert.equal(
+    (observabilityStart?.[1] as { claudeConfigDir?: string }).claudeConfigDir,
+    "/harness-observability/attempt-1/.claude",
+  );
+  const observabilityEnd = observations.find(([event]) =>
+    event === "agent.observability.end"
+  );
+  assert.equal(
+    (observabilityEnd?.[1] as { outcome?: string }).outcome,
+    "ready",
+  );
+  assert.equal(
+    (observabilityEnd?.[1] as { attempt?: number }).attempt,
+    1,
+  );
+  assert.equal((commandStart?.[1] as { attempt?: number }).attempt, 1);
+  assert.equal(
+    (commandStart?.[1] as { claudeConfigDir?: string }).claudeConfigDir,
+    "/harness-observability/attempt-1/.claude",
+  );
+  for (const eventName of [
+    "gate.create.start",
+    "gate.create.end",
+    "gate.run.start",
+    "gate.run.end",
+    "gate.cleanup.start",
+    "gate.cleanup.end",
+  ]) {
+    const event = observations.find(([name]) => name === eventName);
+    assert.equal(
+      (event?.[1] as { attempt?: number }).attempt,
+      1,
+      `${eventName} attempt`,
+    );
+  }
+});
+
+test("Claude Daytona observability rejects unsafe run ids before sandbox creation", () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+
+  for (const runId of ["", "../escape", "nested/run", "run\\id", "run\0id"]) {
+    const provider = scriptedProvider({
+      candidateVersions: ["fixed\n"],
+      gateExitCodes: [0],
+    });
+
+    assert.throws(
+      () =>
+        createDaytonaRunEnvironment({
+          provider,
+          root,
+          policy: policy(),
+          agent: { kind: "claude" },
+          environment: configuredClaudeEnvironment,
+          observability: {
+            runId,
+            config: loadDaytonaObservabilityConfig({}),
+          },
+        }),
+      /runId/,
+    );
+    assert.equal(provider.requests.length, 0);
+  }
+});
+
+test("Claude Daytona observability emits an error end event when setup throws", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    throwCommands: {
+      'mkdir -p "$CLAUDE_CONFIG_DIR"': new Error("toolbox unavailable"),
+    },
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    observability: {
+      runId: "run-obs",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await assert.rejects(
+    () => environment.runTask({ task: "fix it" }),
+    /toolbox unavailable/,
+  );
+
+  const observabilityEnd = observations.find(([event]) =>
+    event === "agent.observability.end"
+  );
+  assert.equal(
+    (observabilityEnd?.[1] as { outcome?: string }).outcome,
+    "error",
+  );
+  assert.equal(
+    (observabilityEnd?.[1] as { attempt?: number }).attempt,
+    1,
+  );
+  assert.equal(
+    observations.some(([event]) => event === "agent.command.start"),
+    false,
+  );
+});
+
+test("Claude Daytona command rejection emits a command error end event", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    throwCommands: {
+      [CLAUDE_COMMAND]: new Error("toolbox timeout"),
+    },
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    observability: {
+      runId: "run-obs",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await assert.rejects(
+    () => environment.runTask({ task: "fix it" }),
+    /toolbox timeout/,
+  );
+
+  const commandEnd = observations.find(([event]) =>
+    event === "agent.command.end"
+  );
+  assert.equal(
+    (commandEnd?.[1] as { outcome?: string }).outcome,
+    "error",
+  );
+  assert.equal(
+    (commandEnd?.[1] as { errorReason?: string }).errorReason,
+    "toolbox timeout",
+  );
+  assert.equal(
+    (commandEnd?.[1] as { attempt?: number }).attempt,
+    1,
   );
 });
 
