@@ -409,7 +409,8 @@ Harness 只会 stage/commit 本次发布的非 `.harness` 文件；`.harness/run
 - `pending` / `running`：重新运行该任务。
 - `blocked` / `escalated` / `error`：停止，等待人工处理；不会自动重跑这些
   终态非成功任务。
-- 已完成任务的配置或 hash 漂移：停止，要求恢复配置或使用新的 task id。
+- `completed` 或 `ready_to_commit` 任务的配置或 hash 漂移：停止，要求恢复配置或使用
+  新的 task id。
 - 开始新的 agent 工作前发现含义不清的 dirty worktree：停止。
 - 如果 commit 已成功，但后续 clean 检查失败，`ready_to_commit` ledger
   可能已经带有 commit SHA；清理工作区后再次运行可以完成标记。
