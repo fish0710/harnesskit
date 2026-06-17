@@ -1,14 +1,24 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import type { Contract } from "../src/types.js";
 import {
+  commitPublishedChanges,
   decideTaskResume,
+  ensureCleanGitWorktree,
   loadTaskSeriesConfig,
   readSeriesLedger,
+  renderCommitMessage,
   seriesLedgerPath,
   selectTaskContracts,
   taskHash,
@@ -37,6 +47,31 @@ const safeTaskHash: (
   defaults: TaskDefaults,
 ) => string = taskHash;
 void safeTaskHash;
+
+function runGit(args: string[], cwd: string) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(
+      [
+        `git ${args.join(" ")} failed with exit ${result.status ?? "null"}`,
+        result.stdout,
+        result.stderr,
+      ].filter(Boolean).join("\n"),
+    );
+  }
+  return result.stdout.trim();
+}
+
+function gitRepo(): string {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-git-"));
+  runGit(["init"], cwd);
+  runGit(["config", "user.name", "Harness Tests"], cwd);
+  runGit(["config", "user.email", "harness-tests@example.com"], cwd);
+  writeFileSync(join(cwd, "README.md"), "# harness\n", "utf8");
+  runGit(["add", "README.md"], cwd);
+  runGit(["commit", "-m", "chore: init"], cwd);
+  return cwd;
+}
 
 test("series config parses defaults, tasks, and auto commit settings", () => {
   const config = loadTaskSeriesConfig({
@@ -700,4 +735,169 @@ test("decideTaskResume stops terminal non-success states for manual handling", (
       reason: "task one 已处于 error 状态，需人工处理后再继续",
     },
   );
+});
+
+test("renderCommitMessage expands supported placeholders and trailers", () => {
+  assert.equal(
+    renderCommitMessage({
+      template: "task {index}/{total}: {id}",
+      taskId: "extract-domain",
+      seriesId: "order-refactor",
+      taskIndex: 2,
+      taskCount: 5,
+    }),
+    [
+      "task 2/5: extract-domain",
+      "",
+      "Harness-Task-Id: extract-domain",
+      "Harness-Series-Id: order-refactor",
+    ].join("\n"),
+  );
+});
+
+test("ensureCleanGitWorktree ignores .harness runtime state but rejects source changes", () => {
+  const cwd = gitRepo();
+
+  mkdirSync(join(cwd, ".harness", "runs"), { recursive: true });
+  writeFileSync(join(cwd, ".harness", "runs", "task.json"), "{\"ok\":true}\n", "utf8");
+  assert.doesNotThrow(() => ensureCleanGitWorktree(cwd));
+
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "src", "task.ts"), "export const task = true;\n", "utf8");
+
+  assert.throws(
+    () => ensureCleanGitWorktree(cwd),
+    /工作区存在未提交变更: src\/task\.ts/,
+  );
+});
+
+test("ensureCleanGitWorktree reports source renames and ignores .harness-only renames", () => {
+  const cwd = gitRepo();
+
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  mkdirSync(join(cwd, ".harness"), { recursive: true });
+  writeFileSync(join(cwd, "src", "old.ts"), "export const value = 1;\n", "utf8");
+  writeFileSync(join(cwd, ".harness", "old.json"), "{\"version\":1}\n", "utf8");
+  runGit(["add", "src/old.ts", ".harness/old.json"], cwd);
+  runGit(["commit", "-m", "chore: add rename fixtures"], cwd);
+
+  runGit(["mv", "src/old.ts", "src/new.ts"], cwd);
+  runGit(["mv", ".harness/old.json", ".harness/new.json"], cwd);
+
+  assert.throws(
+    () => ensureCleanGitWorktree(cwd),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /src\/old\.ts/);
+      assert.match(error.message, /src\/new\.ts/);
+      assert.doesNotMatch(error.message, /\.harness\/old\.json/);
+      assert.doesNotMatch(error.message, /\.harness\/new\.json/);
+      return true;
+    },
+  );
+});
+
+test("commitPublishedChanges stages only published files and excludes .harness", () => {
+  const cwd = gitRepo();
+
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  mkdirSync(join(cwd, ".harness"), { recursive: true });
+  writeFileSync(join(cwd, "src", "task.ts"), "export const value = 1;\n", "utf8");
+  writeFileSync(join(cwd, ".harness", "tracked.json"), "{\"version\":1}\n", "utf8");
+  runGit(["add", "src/task.ts", ".harness/tracked.json"], cwd);
+  runGit(["commit", "-m", "chore: add tracked files"], cwd);
+
+  writeFileSync(join(cwd, "src", "task.ts"), "export const value = 2;\n", "utf8");
+  writeFileSync(join(cwd, ".harness", "tracked.json"), "{\"version\":2}\n", "utf8");
+  writeFileSync(join(cwd, ".harness", "runtime.log"), "runtime\n", "utf8");
+
+  const result = commitPublishedChanges({
+    cwd,
+    changedFiles: ["src/task.ts", ".harness/tracked.json", ".harness/runtime.log"],
+    message: "feat: publish task",
+  });
+
+  assert.deepEqual(result.committed, true);
+  assert.match(result.commit ?? "", /^[a-f0-9]{40}$/);
+  assert.deepEqual(
+    runGit(["show", "--pretty=format:", "--name-only", "HEAD"], cwd)
+      .split("\n")
+      .filter(Boolean),
+    ["src/task.ts"],
+  );
+  const status = runGit(["status", "--short"], cwd);
+  assert.match(status, /^M \.harness\/tracked\.json$/m);
+  assert.doesNotMatch(status, /src\/task\.ts/);
+});
+
+test("commitPublishedChanges reports no commit when no published files changed", () => {
+  const cwd = gitRepo();
+
+  mkdirSync(join(cwd, ".harness"), { recursive: true });
+  writeFileSync(join(cwd, ".harness", "tracked.json"), "{\"version\":1}\n", "utf8");
+  runGit(["add", ".harness/tracked.json"], cwd);
+  runGit(["commit", "-m", "chore: add harness file"], cwd);
+  const before = runGit(["rev-parse", "HEAD"], cwd);
+
+  writeFileSync(join(cwd, ".harness", "tracked.json"), "{\"version\":2}\n", "utf8");
+
+  assert.deepEqual(
+    commitPublishedChanges({
+      cwd,
+      changedFiles: [".harness/tracked.json"],
+      message: "feat: publish task",
+    }),
+    { committed: false },
+  );
+  assert.equal(runGit(["rev-parse", "HEAD"], cwd), before);
+  assert.match(runGit(["status", "--short"], cwd), /^M \.harness\/tracked\.json$/m);
+});
+
+test("commitPublishedChanges rejects unsafe changedFiles paths", () => {
+  const cwd = gitRepo();
+
+  assert.throws(
+    () => commitPublishedChanges({
+      cwd,
+      changedFiles: ["/tmp/absolute.ts"],
+      message: "feat: publish task",
+    }),
+    /changedFiles 路径无效: \/tmp\/absolute\.ts/,
+  );
+  assert.throws(
+    () => commitPublishedChanges({
+      cwd,
+      changedFiles: ["../escape.ts"],
+      message: "feat: publish task",
+    }),
+    /changedFiles 路径无效: \.\.\/escape\.ts/,
+  );
+});
+
+test("commitPublishedChanges ignores tracked .harness changes when mixed with straightforward published paths", () => {
+  const cwd = gitRepo();
+
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  mkdirSync(join(cwd, ".harness"), { recursive: true });
+  writeFileSync(join(cwd, "src", "task.ts"), "export const value = 1;\n", "utf8");
+  writeFileSync(join(cwd, ".harness", "tracked.json"), "{\"version\":1}\n", "utf8");
+  runGit(["add", "src/task.ts", ".harness/tracked.json"], cwd);
+  runGit(["commit", "-m", "chore: add tracked files"], cwd);
+
+  writeFileSync(join(cwd, "src", "task.ts"), "export const value = 2;\n", "utf8");
+  writeFileSync(join(cwd, ".harness", "tracked.json"), "{\"version\":2}\n", "utf8");
+
+  commitPublishedChanges({
+    cwd,
+    changedFiles: [".harness/tracked.json", "src/task.ts"],
+    message: "feat: publish task",
+  });
+
+  assert.deepEqual(
+    runGit(["show", "--pretty=format:", "--name-only", "HEAD"], cwd)
+      .split("\n")
+      .filter(Boolean),
+    ["src/task.ts"],
+  );
+  assert.match(runGit(["status", "--short"], cwd), /^M \.harness\/tracked\.json$/m);
 });

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -45,6 +46,24 @@ export interface TaskSeriesConfig {
   autoCommit: AutoCommitConfig;
   tasks: TaskSeriesTask[];
 }
+
+export interface CommitMessageInput {
+  template: string;
+  taskId: string;
+  seriesId: string;
+  taskIndex: number;
+  taskCount: number;
+}
+
+export interface CommitPublishedChangesInput {
+  cwd: string;
+  changedFiles: string[];
+  message: string;
+}
+
+export type CommitPublishedChangesResult =
+  | { committed: false }
+  | { committed: true; commit: string };
 
 export type SeriesStatus = "running" | "completed" | "error";
 
@@ -139,6 +158,79 @@ function validateCommitTemplate(template: string, field: string): string {
     throw new TypeError(`${field} 必须是非空字符串`);
   }
   return template;
+}
+
+function isHarnessRuntimePath(path: string): boolean {
+  return path === ".harness" || path.startsWith(".harness/");
+}
+
+function validateChangedFilePath(path: string): string {
+  if (
+    typeof path !== "string" ||
+    path.length === 0 ||
+    path.includes("\0") ||
+    path.startsWith("/") ||
+    path.startsWith("\\") ||
+    path.includes("\\")
+  ) {
+    throw new Error(`changedFiles 路径无效: ${path}`);
+  }
+
+  const segments = path.split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    throw new Error(`changedFiles 路径无效: ${path}`);
+  }
+
+  return path;
+}
+
+function runGit(
+  cwd: string,
+  args: string[],
+  options?: { input?: string; allowNonZero?: boolean },
+): { stdout: string; stderr: string; status: number | null } {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    input: options?.input,
+  });
+
+  if (!options?.allowNonZero && result.status !== 0) {
+    const reason = result.stderr.trim() || result.error?.message || "unknown";
+    throw new Error(`git ${args.join(" ")} 失败: ${reason}`);
+  }
+
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    status: result.status,
+  };
+}
+
+function ensureGitWorktree(cwd: string): void {
+  const result = runGit(cwd, ["rev-parse", "--is-inside-work-tree"], { allowNonZero: true });
+  if (result.status !== 0 || result.stdout.trim() !== "true") {
+    throw new Error(`工作区不是 Git 工作树: ${cwd}`);
+  }
+}
+
+function parsePorcelainPath(raw: string): string {
+  return raw.startsWith("\"") && raw.endsWith("\"") ? raw.slice(1, -1) : raw;
+}
+
+function parsePorcelainLine(line: string): string[] {
+  const payload = line.slice(3);
+  if (
+    (line[0] === "R" || line[1] === "R" || line[0] === "C" || line[1] === "C") &&
+    payload.includes(" -> ")
+  ) {
+    const separator = payload.indexOf(" -> ");
+    return [
+      parsePorcelainPath(payload.slice(0, separator)),
+      parsePorcelainPath(payload.slice(separator + 4)),
+    ];
+  }
+  return [parsePorcelainPath(payload)];
 }
 
 function optionalGate(value: unknown, field: string): TaskGateSelector | undefined {
@@ -483,6 +575,69 @@ export function taskHash(
   return createHash("sha256")
     .update(JSON.stringify(payload))
     .digest("hex");
+}
+
+export function renderCommitMessage(input: CommitMessageInput): string {
+  const summary = input.template
+    .replaceAll("{id}", input.taskId)
+    .replaceAll("{index}", String(input.taskIndex))
+    .replaceAll("{total}", String(input.taskCount));
+  return [
+    summary,
+    "",
+    `Harness-Task-Id: ${input.taskId}`,
+    `Harness-Series-Id: ${input.seriesId}`,
+  ].join("\n");
+}
+
+export function ensureCleanGitWorktree(cwd: string): void {
+  ensureGitWorktree(cwd);
+  const status = runGit(cwd, ["status", "--porcelain", "--untracked-files=all"]).stdout;
+  const dirtyPaths = new Set<string>();
+
+  for (const line of status.split("\n")) {
+    if (line.length < 4) continue;
+    for (const path of parsePorcelainLine(line)) {
+      if (!isHarnessRuntimePath(path)) {
+        dirtyPaths.add(path);
+      }
+    }
+  }
+
+  if (dirtyPaths.size > 0) {
+    throw new Error(`工作区存在未提交变更: ${[...dirtyPaths].sort().join(", ")}`);
+  }
+}
+
+export function commitPublishedChanges(
+  input: CommitPublishedChangesInput,
+): CommitPublishedChangesResult {
+  ensureGitWorktree(input.cwd);
+  const publishedFiles = input.changedFiles
+    .map((path) => validateChangedFilePath(path))
+    .filter((path) => !isHarnessRuntimePath(path));
+
+  if (publishedFiles.length === 0) return { committed: false };
+
+  runGit(input.cwd, ["add", "--", ...publishedFiles]);
+
+  const staged = runGit(input.cwd, ["diff", "--cached", "--name-only", "--", ...publishedFiles])
+    .stdout
+    .split("\n")
+    .map((path) => path.trim())
+    .filter((path) => path.length > 0);
+  if (staged.length === 0) return { committed: false };
+
+  runGit(
+    input.cwd,
+    ["commit", "--only", "-F", "-", "--", ...publishedFiles],
+    { input: input.message },
+  );
+
+  return {
+    committed: true,
+    commit: runGit(input.cwd, ["rev-parse", "HEAD"]).stdout.trim(),
+  };
 }
 
 export function decideTaskResume(input: {

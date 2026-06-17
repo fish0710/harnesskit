@@ -89,15 +89,21 @@ export { createProject, type CreateResult } from "./harness/scaffold.js";
 export { writePlan } from "./harness/plan.js";
 export { gatherStatus } from "./harness/status.js";
 export {
+  commitPublishedChanges,
   configHash,
   decideTaskResume,
+  ensureCleanGitWorktree,
   loadTaskSeriesConfig,
   readSeriesLedger,
+  renderCommitMessage,
   seriesLedgerPath,
   selectTaskContracts,
   taskHash,
   writeSeriesLedger,
   type AutoCommitConfig,
+  type CommitMessageInput,
+  type CommitPublishedChangesInput,
+  type CommitPublishedChangesResult,
   type SeriesLedger,
   type SeriesLedgerTask,
   type SeriesStatus,
