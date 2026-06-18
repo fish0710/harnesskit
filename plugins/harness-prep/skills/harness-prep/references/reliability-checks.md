@@ -8,6 +8,7 @@ Use this before claiming the plugin can carry a user from natural-language reque
 |---|---|---|
 | Step-by-step create -> config -> check -> run -> review | `docs/usage.md` defines the create/check/run/review flow | `prep-workflow.md` and `run-supervision.md` |
 | Agent/Gate environment control | `harness.config.json` owns `candidateRoots`, `protectedPaths`, `agentSetup`, `gateSetup`, and limits | `agent-environment.md` |
+| Agent/Gate snapshot toolchain awareness | `src/harness/sandbox/toolchain.ts` pins default snapshots; snapshot scripts preflight latest sandboxes | `sandbox-snapshots.md` |
 | Natural-language gates become typed contracts | GateCore dispatches by `type`; plugins classify `pass/fail/error/needs_review` | `gate-translation.md` and `contracts-and-config.md` |
 | Human review stops automation | `review` contracts produce `needs_review`; aggregate outcome becomes `blocked` | `gate-translation.md`, `run-supervision.md`, `observability-and-review.md` |
 | Behavior is observable after run | RunStore v3 records store kind, selected contracts, attempts, sandbox ids, session ids, logs, report, publication, outcomes, and observability config | `runstore-observability.md`, `observability-and-review.md`, `blocker-analysis.md` |
@@ -23,7 +24,7 @@ Before starting `harness run`, verify:
 - [ ] `harness create .` has created or existing Harness files have been read and merged.
 - [ ] `docs/specs/<date>-<slug>.md` states goal, non-goals, must-preserve principles, decisions, gates, and risks.
 - [ ] `docs/plans/<date>-<slug>.md` has a task list or task series.
-- [ ] Environment inventory is complete: CLI, install/build/test, service ports, candidate roots, protected paths, secrets, Daytona/Claude env, local tools.
+- [ ] Environment inventory is complete: CLI, install/build/test, service ports, candidate roots, protected paths, secrets, Daytona/Claude env, local tools, and Agent/Gate snapshot tool availability.
 - [ ] Every user acceptance criterion maps to a contract or a documented non-goal.
 - [ ] Every subjective decision maps to `review`.
 - [ ] HTTP gates have matching `gateSetup` or a justified external target.

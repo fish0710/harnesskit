@@ -13,6 +13,8 @@ Prefer gates that produce actionable failures:
 
 Every contract should include a stable `id`, clear `scenario`, and `ref` pointing to the spec or decision doc when useful.
 
+Before picking commands, read `sandbox-snapshots.md`. Default Daytona Agent/Gate snapshots have Node/npm/npx and Python, but no `git`, `pnpm`, `yarn`, or `bun`; Gate has no `claude`.
+
 ## Command Contract
 
 ```yaml
@@ -155,6 +157,8 @@ Rules:
 - If using `tasks`, prefer explicit task gate contracts over changed-file selection.
 - Do not include `contracts`, `.harness`, or `harness.config.json` in mutable roots unless the user is explicitly doing Harness configuration work before the run.
 - If `agentSetup` or `gateSetup` requires credentials, stop and ask for a safer env-based setup.
+- If setup uses `nvm`, write `bash -lc 'source /usr/local/nvm/nvm.sh && nvm use <version> && ...'`. Plain `nvm use` is invalid in these sandboxes.
+- If a command/http contract needs tools absent from the Gate snapshot, install them in `gateSetup` before Gate network policy is applied.
 
 ## Validation
 

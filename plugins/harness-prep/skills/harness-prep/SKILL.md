@@ -17,6 +17,7 @@ During execution, keep the user oriented around the real Harness state: host man
 
 - For a new project or new task: read `references/prep-workflow.md`.
 - Before writing `harness.config.json` sandbox fields or run env guidance: read `references/agent-environment.md`.
+- Before choosing `agentSetup`, `gateSetup`, package-manager commands, shell wrappers, or Daytona snapshot overrides: read `references/sandbox-snapshots.md`.
 - When translating natural-language gates into contracts: read `references/gate-translation.md`.
 - When writing contracts or `harness.config.json`: read `references/contracts-and-config.md`.
 - Before starting or supervising `harness run`: read `references/run-supervision.md`.

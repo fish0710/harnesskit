@@ -78,6 +78,7 @@ Likely causes:
 - setup command failed.
 
 Action: fix contract/config/setup before retrying Agent.
+Use `sandbox-snapshots.md` to distinguish a real product failure from a missing sandbox tool. For example, `git`, `pnpm`, `yarn`, and `bun` are absent by default; `nvm` requires sourcing `/usr/local/nvm/nvm.sh`; Gate never has `claude`.
 
 ### Contract `fail`
 
@@ -122,6 +123,7 @@ Likely causes:
 - missing Anthropic env;
 - invalid snapshot override;
 - Daytona volume/mount failure;
+- setup assumes host tools that are missing from Agent/Gate snapshots;
 - proxy/no-proxy issue;
 - setup exception before first attempt.
 

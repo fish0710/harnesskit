@@ -9,7 +9,8 @@ Harness flow is host controlled: Agent attempt -> Gate attempt -> feedback/retry
 ## Start Sequence
 
 1. Confirm the spec, plan, contracts, config, and sandbox environment.
-2. Run preflight validation:
+2. Confirm `sandbox-snapshots.md` has been considered for setup commands and Gate tool availability.
+3. Run preflight validation:
 
 ```bash
 harness contract validate contracts
@@ -17,10 +18,10 @@ harness check --dir contracts --config harness.config.json --json
 harness status --dir contracts
 ```
 
-3. If preflight has `error`, fix config/setup. Do not start Agent.
-4. If preflight has expected `fail`, explain that the current implementation is red and the Agent will try to satisfy it.
-5. If preflight has `blocked`, resolve or intentionally keep the review gate for runtime.
-6. Start one of:
+4. If preflight has `error`, fix config/setup. Do not start Agent.
+5. If preflight has expected `fail`, explain that the current implementation is red and the Agent will try to satisfy it.
+6. If preflight has `blocked`, resolve or intentionally keep the review gate for runtime.
+7. Start one of:
 
 ```bash
 harness run --driver claude --max-attempts 3
@@ -106,6 +107,7 @@ Then use `blocker-analysis.md`.
 ### `error` Run Record
 
 Treat this as infrastructure/config failure until proven otherwise. Check missing env, Daytona API, snapshot, volume mount, setup commands, and malformed config.
+If the error says a command is missing, compare it with `sandbox-snapshots.md` before blaming the implementation agent. Common absent tools are `git`, `pnpm`, `yarn`, `bun`, and `claude` in Gate.
 
 ## Series Supervision
 
