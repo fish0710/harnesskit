@@ -32,6 +32,10 @@ export {
   type RunOptions, type RunOutcome, type GenerationBudget,
 } from "./harness/run.js";
 export {
+  DEFAULT_RUN_LOOP_MAX_MS,
+  buildGenerationBudget,
+} from "./harness/budget.js";
+export {
   DEFAULT_DAYTONA_OBSERVABILITY_MOUNT,
   DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
   buildRunId,

@@ -306,8 +306,10 @@ export NO_PROXY="localhost,127.0.0.1,proxy.localhost,.localhost"
 跑真实任务：
 
 ```bash
-harness run "实现一个健康检查接口" --driver claude --max-attempts 3
+harness run "实现一个健康检查接口" --driver claude --max-attempts 3 --max-ms 6000000
 ```
+
+`--max-ms` 控制 run loop 的总时间预算，默认是 `6000000` 毫秒（6000 秒）。
 
 限制只跑某个 stage：
 

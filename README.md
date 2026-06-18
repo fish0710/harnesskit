@@ -87,7 +87,7 @@ Large work can be split into a configured task series:
 Run the configured series without a positional task:
 
 ```bash
-node dist/src/cli.js run --driver claude --max-attempts 3
+node dist/src/cli.js run --driver claude --max-attempts 3 --max-ms 6000000
 ```
 
 Each configured task starts a fresh Agent sandbox and records progress in

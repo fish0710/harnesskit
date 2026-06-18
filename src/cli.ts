@@ -33,12 +33,11 @@ import type { Contract, RunContext } from "./types.js";
 import {
   scaffoldDriver,
   selectAgent,
-  type AgentSpec,
 } from "./harness/drivers.js";
+import { buildGenerationBudget } from "./harness/budget.js";
 import {
   localRunEnvironment,
   runLoop,
-  type GenerationBudget,
   type RunOutcome,
   type RunEnvironment,
 } from "./harness/run.js";
@@ -87,6 +86,7 @@ const OPTIONS = {
   driver: { type: "string" as const, default: "scaffold" },
   "agent-cmd": { type: "string" as const },
   "max-attempts": { type: "string" as const },
+  "max-ms": { type: "string" as const },
   force: { type: "boolean" as const, default: false },
   // review --resolve
   resolve: { type: "string" as const },
@@ -291,12 +291,6 @@ function cmdContract(args: string[]): void {
 }
 
 // ---------- 产出引擎命令 ----------
-
-function buildBudget(values: Record<string, unknown>, agent: AgentSpec): GenerationBudget {
-  const def = agent.kind === "scaffold" ? 1 : 5;
-  const maxAttempts = values["max-attempts"] ? Number(values["max-attempts"]) : def;
-  return { maxAttempts, maxTokens: 1e9, maxMs: 600_000, contextThreshold: 0.9, repeatWallThreshold: 3 };
-}
 
 function loadHarnessConfig(
   cwd: string,
@@ -511,7 +505,7 @@ async function runSingleTask(
         },
       });
     }
-    const budget = buildBudget(values, agent);
+    const budget = buildGenerationBudget(values, agent);
 
     console.log(
       `harness run · task="${task}" · environment=${environment.name}` +
@@ -825,7 +819,7 @@ function help(): void {
 产出引擎(可跑通;真实代码产出靠 --driver):
   harness create [dir] [--force]                # 初始化项目骨架(AGENTS.md/docs/contracts/CI/CODEOWNERS)
   harness plan "<task>"                          # 生成执行计划 Plan.md(模板)
-  harness run  "<task>" [--driver scaffold|command|claude] [--agent-cmd "..."] [--stage s] [--max-attempts n]
+  harness run  "<task>" [--driver scaffold|command|claude] [--agent-cmd "..."] [--stage s] [--max-attempts n] [--max-ms ms] # 默认 max-ms=6000000
   harness fix  [--driver ...] [--stage s]        # 先取门禁诊断,再驱动 driver 修复迭代
   harness review [--resolve <id> --option <o> --by <name> [--reason ...]]   # 汇总/记录人工决策
   harness status                                 # 项目状态(契约/冻结/裁决/最近 run)
