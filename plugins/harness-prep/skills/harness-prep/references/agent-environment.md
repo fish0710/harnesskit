@@ -1,6 +1,6 @@
 # Agent And Gate Environment
 
-Use this before writing `harness.config.json` or explaining how the implementation agent will work.
+Use this before writing `harness.config.json` or explaining how the implementation agent will work. Read `sandbox-snapshots.md` before choosing setup commands or assuming a tool exists in Agent/Gate sandboxes.
 
 ## Reliability Basis
 
@@ -39,6 +39,9 @@ Create or update the spec with this table. Do not start `harness run` while any 
 - If every candidate root is covered by protection, stop and revise the policy.
 - Put dependency installation in `agentSetup` when the agent needs tools to edit or test.
 - Put service startup or gate-only preparation in `gateSetup`.
+- The default Daytona snapshots already include Node.js 22.14.0, npm/npx 10.9.2, Python 3.11, curl, make, gcc, and bash. They do not include `git`, `pnpm`, `yarn`, or `bun`.
+- `nvm` is not a binary. If a setup command uses it, source `/usr/local/nvm/nvm.sh` first; otherwise prefer plain `npm ci`.
+- Gate snapshots intentionally do not include `claude`; never put `claude` in `gateSetup` or contracts.
 - Do not put long-lived secrets in either setup command. Setup commands are repo-visible configuration.
 - If an HTTP contract targets `127.0.0.1`, remember that in Daytona Gate mode it means the Gate sandbox. Start the service in `gateSetup`.
 

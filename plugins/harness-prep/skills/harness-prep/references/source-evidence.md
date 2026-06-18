@@ -42,6 +42,8 @@ Evidence anchors:
 - `docs/usage.md`: explains `candidateRoots`, `protectedPaths`, `agentSetup`, `gateSetup`, and limits.
 - `src/harness/sandbox/policy.ts`: defines defaults and validates candidate paths, protected paths, setup fields, and limits.
 - `src/harness/sandbox/environment.ts`: builds agent and gate sandbox execution.
+- `src/harness/sandbox/toolchain.ts`: pins Node.js, Claude Code, Agent/Gate image names, latest snapshot names, and Claude preflight checks.
+- `src/tools/daytona-agent-snapshot.ts` and `src/tools/daytona-gate-snapshot.ts`: verify or create latest Agent/Gate snapshots and run toolchain preflight in short-lived Daytona sandboxes.
 - `docs/architecture/daytona-sandbox-gate.md`: describes the host control plane, persistent Agent sandbox, fresh Gate sandbox, gate setup, retry, blocked review, publication, and observability flow.
 
 Claims supported:
@@ -50,6 +52,7 @@ Claims supported:
 - Agent setup and Gate setup are separate because the Agent edits while Gate validates in a fresh environment.
 - HTTP contracts against `127.0.0.1` in Daytona Gate mode need the service started inside the Gate sandbox.
 - Environment ambiguity should be resolved before `harness run`; otherwise failures are likely config/runtime `error`, not product failures.
+- Default latest snapshots provide Node/npm/npx and Python, but Gate intentionally lacks Claude/model credentials; setup commands must account for tools absent from the snapshots.
 
 ## Run Loop, Publication, And Git
 
