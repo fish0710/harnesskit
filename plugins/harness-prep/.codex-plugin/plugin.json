@@ -1,0 +1,22 @@
+{
+  "name": "harness-prep",
+  "version": "0.1.0",
+  "description": "Prepare Harness requirements, gates, config, and run workflows from natural-language tasks.",
+  "author": {
+    "name": "Harness"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Harness Prep",
+    "shortDescription": "Turn requests into Harness specs, contracts, config, and run guidance.",
+    "longDescription": "Harness Prep helps an AI agent initialize a Harness project, interview the user for missing requirements, write specs and task lists, draft gate contracts and harness.config.json, and guide later Harness run observation and review decisions.",
+    "developerName": "Harness",
+    "category": "Productivity",
+    "capabilities": ["Write", "Interactive"],
+    "defaultPrompt": [
+      "Use $harness-prep to prepare this repo for a Harness run.",
+      "Use $harness-prep to inspect my Harness run status.",
+      "Use $harness-prep to turn this requirement into gates."
+    ]
+  }
+}

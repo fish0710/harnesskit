@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Prep"
+  short_description: "Prepare Harness specs, gates, config, and run guidance"
+  default_prompt: "Use $harness-prep to turn my requirement into Harness docs, contracts, config, and a confirmed run."
