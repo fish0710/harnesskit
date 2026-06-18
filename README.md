@@ -15,10 +15,20 @@ npm run build
 node dist/src/cli.js run "implement the task" --driver claude
 ```
 
-Daytona Claude runs create a durable run record before the remote agent starts:
+Runs create a durable v3 run record before the agent/gate loop starts:
 
 ```text
 .harness/runs/<runId>.json
+```
+
+The same `RunStore` schema is used for `scaffold`, `command`, `claude`, and
+configured task-series children. The record includes repo identity, task
+metadata, selected contracts, attempts, logs, the full final Gate report, and
+publication metadata. Query persisted records with:
+
+```bash
+node dist/src/cli.js runs list --json
+node dist/src/cli.js runs show <runId> --json
 ```
 
 By default, the agent sandbox also mounts Daytona volume
@@ -83,7 +93,9 @@ node dist/src/cli.js run --driver claude --max-attempts 3
 Each configured task starts a fresh Agent sandbox and records progress in
 `.harness/series/<series-id>.json`. By default, Harness creates one git commit
 per gate-approved publication and leaves `.harness` run records and ledgers out
-of those commits.
+of those commits. A series run also creates a parent `kind=series` run record;
+each configured task creates a `kind=series-task` child record linked by
+`parentRunId`, `seriesId`, and `taskId`.
 
 Unit tests do not require Daytona:
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -192,7 +192,7 @@ test("mountedClaudeObservabilityPaths rejects disabled config and invalid attemp
   );
 });
 
-test("createRunRecorder writes an initial v2 manifest before agent execution", () => {
+test("createRunRecorder writes an initial v3 manifest before agent execution", () => {
   const cwd = mkdtempSync(join(tmpdir(), "harness-observability-record-"));
   const recorder = createRunRecorder(cwd, {
     runId: "run-1",
@@ -210,10 +210,11 @@ test("createRunRecorder writes an initial v2 manifest before agent execution", (
 
   const parsed = JSON.parse(readFileSync(recorder.path, "utf8"));
 
-  assert.equal(parsed.schemaVersion, 2);
+  assert.equal(parsed.schemaVersion, 3);
   assert.equal(parsed.runId, "run-1");
   assert.equal(parsed.status, "running");
-  assert.equal(parsed.task, "persist every Claude artifact");
+  assert.equal(parsed.kind, "single");
+  assert.equal(parsed.task.description, "persist every Claude artifact");
   assert.deepEqual(parsed.attempts, []);
   assert.equal(parsed.events[0].event, "run.record.created");
 });
@@ -286,23 +287,28 @@ test("lastRunRecord reads both legacy v1 and v2 records", () => {
   assert.equal(lastRunRecord(legacyCwd)?.outcome, "blocked");
 
   const v2Cwd = mkdtempSync(join(tmpdir(), "harness-record-v2-"));
-  const recorder = createRunRecorder(v2Cwd, {
-    runId: "2026-06-16T12-00-00-000Z-abcdef12",
+  const v2RunId = "2026-06-16T12-00-00-000Z-abcdef12";
+  mkdirSync(join(v2Cwd, ".harness", "runs"), { recursive: true });
+  writeFileSync(join(v2Cwd, ".harness", "runs", `${v2RunId}.json`), JSON.stringify({
+    schemaVersion: 2,
+    runId: v2RunId,
     createdAt: "2026-06-16T12:00:00.000Z",
+    updatedAt: "2026-06-16T12:00:00.000Z",
     task: "v2",
     driver: "daytona(claude)",
+    status: "completed",
     observability: {
       enabled: false,
       backend: "disabled",
       volumeName: "harness-claude-observability",
       mountPath: "/harness-observability",
     },
-  });
-  recorder.complete({
+    attempts: [{ attempt: 1, gateSandboxIds: [] }],
+    attemptCount: 2,
+    events: [],
     outcome: "escalated",
-    attempts: 2,
     summary: { total: 1, pass: 0, fail: 1, error: 0, needsReview: 0 },
-  });
+  }, null, 2), "utf8");
 
   const last = lastRunRecord(v2Cwd);
 

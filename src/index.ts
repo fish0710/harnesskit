@@ -72,18 +72,28 @@ export {
 } from "./harness/host-gate.js";
 export { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
 export {
+  RunStore,
   RunRecorder,
   createRunRecorder,
   lastRunRecord,
   writeRunRecord,
   type CompleteRunRecordInput,
   type CreateRunRecorderInput,
+  type ListRunsFilter,
   type RunRecord,
   type RunRecordAttempt,
+  type RunRecordChild,
   type RunRecordEvent,
+  type RunRecordKind,
   type RunRecordObservability,
+  type RunRecordOutcome,
+  type RunRecordRepo,
   type RunRecordStatus,
+  type RunRecordTask,
   type RunRecordV2,
+  type RunRecordV3,
+  type RunStoreOptions,
+  type RunStoreStartInput,
 } from "./harness/record.js";
 export { createProject, type CreateResult } from "./harness/scaffold.js";
 export { writePlan } from "./harness/plan.js";
@@ -109,6 +119,7 @@ export {
   type SeriesLedgerTask,
   type SeriesTaskExecutionInput,
   type SeriesTaskExecutionResult,
+  type SeriesTaskSetupErrorInput,
   type SeriesStatus,
   type SeriesTaskStatus,
   type RunTaskSeriesInput,

@@ -125,9 +125,9 @@ test("CLI claude run requires Daytona and never falls back to host execution", (
 
   const record = readOnlyRunRecord(cwd);
   const observability = record.observability as Record<string, unknown>;
-  assert.equal(record.schemaVersion, 2);
+  assert.equal(record.schemaVersion, 3);
   assert.equal(record.status, "error");
-  assert.equal(record.task, "test task");
+  assert.equal((record.task as { description?: unknown }).description, "test task");
   assert.equal(record.driver, "daytona(claude)");
   assert.equal(observability.enabled, true);
   assert.equal(observability.volumeName, "harness-claude-observability");
@@ -170,7 +170,7 @@ test("CLI claude run records disabled Daytona observability when configured off"
 
   const record = readOnlyRunRecord(cwd);
   const observability = record.observability as Record<string, unknown>;
-  assert.equal(record.schemaVersion, 2);
+  assert.equal(record.schemaVersion, 3);
   assert.equal(record.status, "error");
   assert.equal(observability.enabled, false);
   assert.equal(observability.backend, "disabled");
@@ -207,7 +207,7 @@ test("CLI claude run records invalid observability configuration failures", () =
 
   const record = readOnlyRunRecord(cwd);
   const observability = record.observability as Record<string, unknown>;
-  assert.equal(record.schemaVersion, 2);
+  assert.equal(record.schemaVersion, 3);
   assert.equal(record.status, "error");
   assert.equal(observability.enabled, false);
   assert.match(
@@ -241,7 +241,7 @@ test("CLI claude run records invalid harness config failures", () => {
   assert.notEqual(result.status, 0);
 
   const record = readOnlyRunRecord(cwd);
-  assert.equal(record.schemaVersion, 2);
+  assert.equal(record.schemaVersion, 3);
   assert.equal(record.status, "error");
   assert.match(record.errorReason as string, /JSON/);
 });

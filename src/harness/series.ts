@@ -118,12 +118,20 @@ export interface SeriesTaskExecutionResult {
   runRecordPath: string;
 }
 
+export interface SeriesTaskSetupErrorInput {
+  task: TaskSeriesTask;
+  index: number;
+  total: number;
+  error: unknown;
+}
+
 export interface RunTaskSeriesInput {
   cwd: string;
   config: TaskSeriesConfig;
   contracts: Contract[];
   fallbackStage?: string;
   executeTask(input: SeriesTaskExecutionInput): Promise<SeriesTaskExecutionResult>;
+  recordTaskSetupError?(input: SeriesTaskSetupErrorInput): Promise<string | undefined> | string | undefined;
 }
 
 export type RunTaskSeriesResult =
@@ -827,12 +835,34 @@ export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskS
 
     if (config.autoCommit.enabled) ensureCleanGitWorktree(cwd);
 
-    const selectedContracts = selectTaskContracts({
-      contracts: input.contracts,
-      task,
-      defaults: config.taskDefaults,
-      fallbackStage: input.fallbackStage,
-    });
+    let selectedContracts: Contract[];
+    try {
+      selectedContracts = selectTaskContracts({
+        contracts: input.contracts,
+        task,
+        defaults: config.taskDefaults,
+        fallbackStage: input.fallbackStage,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const runRecordPath = await input.recordTaskSetupError?.({
+        task,
+        index,
+        total,
+        error,
+      });
+      updateLedgerTask(ledger, {
+        id: task.id,
+        taskHash: currentTaskHash,
+        status: "error",
+        startedAt: nowIso(),
+        errorReason: reason,
+        ...(runRecordPath ? { runRecord: runRecordPath } : {}),
+      });
+      ledger.status = "error";
+      writeUpdatedLedger(cwd, ledger);
+      return { outcome: "error", taskId: task.id, reason };
+    }
     updateLedgerTask(ledger, {
       id: task.id,
       taskHash: currentTaskHash,
