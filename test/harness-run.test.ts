@@ -151,6 +151,11 @@ test("runLoop: 门禁通过但发布冲突时升级且仍关闭环境", async ()
   assert.equal(out.outcome, "escalated");
   assert.equal(out.action?.kind, "stop_for_human");
   assert.match(out.action?.reason ?? "", /host changed/);
+  assert.deepEqual(out.publication, {
+    ok: false,
+    changedFiles: [],
+    conflict: "host changed concurrently",
+  });
   assert.equal(publishes, 1);
   assert.equal(closes, 1);
 });

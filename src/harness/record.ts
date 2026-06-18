@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunOutcome } from "./run.js";
+import type { GateReport } from "../types.js";
+import type { PublicationResult } from "./sandbox/publish.js";
 
 const runsDir = (cwd: string) => join(cwd, ".harness", "runs");
 
@@ -59,6 +63,32 @@ export interface RunRecord {
 }
 
 export type RunRecordStatus = "running" | "completed" | "error";
+export type RunRecordKind = "single" | "series" | "series-task";
+export type RunRecordOutcome = RunOutcome["outcome"] | "completed" | "error";
+
+export interface RunRecordRepo {
+  root: string;
+  gitRoot?: string;
+  branch?: string;
+  head?: string;
+  dirty?: boolean;
+}
+
+export interface RunRecordTask {
+  description: string;
+  taskId?: string;
+  seriesId?: string;
+  index?: number;
+  total?: number;
+}
+
+export interface RunRecordChild {
+  runId: string;
+  taskId: string;
+  index: number;
+  status: RunRecordStatus;
+  outcome?: RunRecordOutcome;
+}
 
 export interface RunRecordObservability {
   enabled: boolean;
@@ -105,25 +135,133 @@ export interface RunRecordV2 {
   errorReason?: string;
 }
 
+export interface RunRecordV3 {
+  schemaVersion: 3;
+  runId: string;
+  kind: RunRecordKind;
+  parentRunId?: string;
+  createdAt: string;
+  updatedAt: string;
+  repo: RunRecordRepo;
+  task: RunRecordTask;
+  driver: string;
+  status: RunRecordStatus;
+  observability: RunRecordObservability;
+  selectedContracts: string[];
+  attempts: RunRecordAttempt[];
+  attemptCount?: number;
+  events: RunRecordEvent[];
+  children?: RunRecordChild[];
+  logs?: string[];
+  report?: GateReport;
+  publication?: PublicationResult;
+  outcome?: RunRecordOutcome;
+  summary?: RunOutcome["report"]["summary"];
+  action?: RunOutcome["action"];
+  errorReason?: string;
+}
+
 export interface CreateRunRecorderInput {
   runId: string;
   createdAt?: string;
+  kind?: RunRecordKind;
+  parentRunId?: string;
   task: string;
+  taskId?: string;
+  seriesId?: string;
+  taskIndex?: number;
+  taskTotal?: number;
   driver: string;
   observability: RunRecordObservability;
+  selectedContracts?: string[];
+  repo?: RunRecordRepo;
 }
 
 export interface CompleteRunRecordInput {
-  outcome: RunOutcome["outcome"];
+  outcome: RunRecordOutcome;
   attempts: number;
-  summary: RunOutcome["report"]["summary"];
+  summary?: RunOutcome["report"]["summary"];
   action?: RunOutcome["action"];
+  report?: GateReport;
+  logs?: string[];
+  publication?: PublicationResult;
+}
+
+export interface FailRunRecordInput {
+  outcome?: RunRecordOutcome;
+  attempts?: number;
+  summary?: RunOutcome["report"]["summary"];
+  action?: RunOutcome["action"];
+  report?: GateReport;
+  logs?: string[];
+  publication?: PublicationResult;
+}
+
+export interface RunStoreStartInput {
+  runId?: string;
+  kind: RunRecordKind;
+  parentRunId?: string;
+  task: RunRecordTask;
+  driver: string;
+  observability: RunRecordObservability;
+  selectedContracts?: string[];
+}
+
+export interface RunStoreOptions {
+  now?: () => string;
+  makeRunId?: () => string;
+  repoInfo?: () => RunRecordRepo;
+}
+
+export interface ListRunsFilter {
+  kind?: RunRecordKind;
+  taskId?: string;
+  seriesId?: string;
+  parentRunId?: string;
+}
+
+function defaultRunId(now = new Date(), randomId = randomUUID): string {
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  const suffix = randomId().replaceAll("-", "").replace(/[^A-Za-z0-9]/g, "")
+    .slice(0, 8);
+  if (suffix.length < 8) {
+    throw new Error("random id must contain at least 8 safe characters");
+  }
+  return `${stamp}-${suffix}`;
+}
+
+function runGit(cwd: string, args: string[]): string | undefined {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) return undefined;
+  return result.stdout.trim();
+}
+
+function defaultRepoInfo(cwd: string): RunRecordRepo {
+  const gitRoot = runGit(cwd, ["rev-parse", "--show-toplevel"]);
+  if (!gitRoot) return { root: cwd };
+  const branch = runGit(cwd, ["branch", "--show-current"]);
+  const head = runGit(cwd, ["rev-parse", "HEAD"]);
+  const status = runGit(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  return {
+    root: cwd,
+    gitRoot,
+    ...(branch ? { branch } : {}),
+    ...(head ? { head } : {}),
+    ...(status !== undefined ? { dirty: status.length > 0 } : {}),
+  };
 }
 
 function isRunOutcome(value: unknown): value is RunOutcome["outcome"] {
   return value === "ready_for_mr" ||
     value === "blocked" ||
     value === "escalated";
+}
+
+function isRunRecordOutcome(value: unknown): value is RunRecordOutcome {
+  return isRunOutcome(value) || value === "completed" || value === "error";
 }
 
 function isSummary(value: unknown): value is RunOutcome["report"]["summary"] {
@@ -147,6 +285,128 @@ function isValidTimestamp(value: unknown): value is string {
 
 function isValidAttemptCount(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isRunRecordRepo(value: unknown): value is RunRecordRepo {
+  if (!isPlainObject(value)) return false;
+  return (
+    typeof value.root === "string" &&
+    isOptionalString(value.gitRoot) &&
+    isOptionalString(value.branch) &&
+    isOptionalString(value.head) &&
+    (value.dirty === undefined || typeof value.dirty === "boolean")
+  );
+}
+
+function isRunRecordTask(value: unknown): value is RunRecordTask {
+  if (!isPlainObject(value)) return false;
+  return (
+    typeof value.description === "string" &&
+    isOptionalString(value.taskId) &&
+    isOptionalString(value.seriesId) &&
+    (value.index === undefined || isPositiveSafeInteger(value.index)) &&
+    (value.total === undefined || isPositiveSafeInteger(value.total))
+  );
+}
+
+function isRunRecordChild(value: unknown): value is RunRecordChild {
+  if (!isPlainObject(value)) return false;
+  return (
+    isSafeRunId(value.runId) &&
+    typeof value.taskId === "string" &&
+    isPositiveSafeInteger(value.index) &&
+    (value.status === "running" || value.status === "completed" || value.status === "error") &&
+    (value.outcome === undefined || isRunRecordOutcome(value.outcome))
+  );
+}
+
+function kindMetadataError(record: Pick<RunRecordV3, "kind" | "parentRunId" | "task">): string | undefined {
+  if (record.kind === "single") {
+    return record.parentRunId === undefined
+      ? undefined
+      : "single run record must not have parentRunId";
+  }
+  if (record.kind === "series") {
+    if (record.parentRunId !== undefined) return "series run record must not have parentRunId";
+    if (typeof record.task.seriesId !== "string") return "series run record requires seriesId";
+    if (!isPositiveSafeInteger(record.task.total)) return "series run record requires total";
+    return undefined;
+  }
+  if (!isSafeRunId(record.parentRunId)) return "series-task run record requires parentRunId";
+  if (typeof record.task.taskId !== "string") return "series-task run record requires taskId";
+  if (typeof record.task.seriesId !== "string") return "series-task run record requires seriesId";
+  if (!isPositiveSafeInteger(record.task.index)) return "series-task run record requires index";
+  if (!isPositiveSafeInteger(record.task.total)) return "series-task run record requires total";
+  return undefined;
+}
+
+function isRunRecordEvent(value: unknown): value is RunRecordEvent {
+  if (!isPlainObject(value)) return false;
+  return isValidTimestamp(value.at) && typeof value.event === "string";
+}
+
+function isRunRecordAttempt(value: unknown): value is RunRecordAttempt {
+  if (!isPlainObject(value)) return false;
+  return (
+    Number.isSafeInteger(value.attempt) &&
+    Number(value.attempt) > 0 &&
+    isOptionalString(value.claudeSessionId) &&
+    isOptionalString(value.resumedFromSessionId) &&
+    isOptionalString(value.claudeConfigDir) &&
+    isOptionalString(value.agentSandboxId) &&
+    (
+      value.startedAt === undefined ||
+      (typeof value.startedAt === "string" && isValidTimestamp(value.startedAt))
+    ) &&
+    (
+      value.endedAt === undefined ||
+      (typeof value.endedAt === "string" && isValidTimestamp(value.endedAt))
+    ) &&
+    (
+      value.exitCode === undefined ||
+      Number.isSafeInteger(value.exitCode)
+    ) &&
+    isStringArray(value.gateSandboxIds) &&
+    isOptionalString(value.gateOutcome)
+  );
+}
+
+function isGateReport(value: unknown): value is GateReport {
+  if (!isPlainObject(value)) return false;
+  return (
+    (value.outcome === "pass" || value.outcome === "fail" || value.outcome === "blocked") &&
+    Array.isArray(value.results) &&
+    isSummary(value.summary) &&
+    Array.isArray(value.pendingDecisions) &&
+    Number.isSafeInteger(value.exitCode)
+  );
+}
+
+function isPublicationResult(value: unknown): value is PublicationResult {
+  if (!isPlainObject(value)) return false;
+  return (
+    typeof value.ok === "boolean" &&
+    isStringArray(value.changedFiles) &&
+    isOptionalString(value.conflict)
+  );
 }
 
 function isRunRecordObservability(
@@ -189,7 +449,7 @@ export function writeRunRecord(cwd: string, rec: RunRecord): string {
 
 export class RunRecorder {
   readonly path: string;
-  private readonly record: RunRecordV2;
+  private readonly record: RunRecordV3;
   private readonly now: () => string;
 
   constructor(
@@ -203,17 +463,29 @@ export class RunRecorder {
     this.path = join(runsDir(cwd), `${input.runId}.json`);
     this.now = now;
     this.record = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: input.runId,
+      kind: input.kind ?? "single",
+      ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
       createdAt,
       updatedAt: createdAt,
-      task: input.task,
+      repo: input.repo ?? defaultRepoInfo(cwd),
+      task: {
+        description: input.task,
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+        ...(input.seriesId ? { seriesId: input.seriesId } : {}),
+        ...(input.taskIndex !== undefined ? { index: input.taskIndex } : {}),
+        ...(input.taskTotal !== undefined ? { total: input.taskTotal } : {}),
+      },
       driver: input.driver,
       status: "running",
       observability: input.observability,
+      selectedContracts: input.selectedContracts ?? [],
       attempts: [],
       events: [],
     };
+    const metadataError = kindMetadataError(this.record);
+    if (metadataError) throw new Error(metadataError);
     this.recordEvent("run.record.created", { runId: input.runId });
   }
 
@@ -224,25 +496,60 @@ export class RunRecorder {
     this.write();
   }
 
+  setObservability(observability: RunRecordObservability): void {
+    this.record.observability = snapshotJsonValue(
+      observability,
+    ) as RunRecordObservability;
+    this.write();
+  }
+
+  setSelectedContracts(ids: string[]): void {
+    this.record.selectedContracts = [...ids];
+    this.write();
+  }
+
+  setChildren(children: RunRecordChild[]): void {
+    this.record.children = children.map((child) => ({ ...child }));
+    this.write();
+  }
+
   complete(input: CompleteRunRecordInput): void {
     this.record.status = "completed";
     this.record.outcome = input.outcome;
     this.record.attemptCount = input.attempts;
-    this.record.summary = snapshotJsonValue(
-      input.summary,
-    ) as RunOutcome["report"]["summary"];
+    this.applyCompletionDetails(input);
+    this.write();
+  }
+
+  fail(error: unknown, input: FailRunRecordInput = {}): void {
+    this.record.status = "error";
+    this.record.errorReason = error instanceof Error ? error.message : String(error);
+    this.record.outcome = input.outcome ?? "error";
+    if (input.attempts !== undefined) this.record.attemptCount = input.attempts;
+    this.applyCompletionDetails(input);
+    this.write();
+  }
+
+  private applyCompletionDetails(input: FailRunRecordInput): void {
+    if (input.summary) {
+      this.record.summary = snapshotJsonValue(
+        input.summary,
+      ) as RunOutcome["report"]["summary"];
+    }
     if (input.action) {
       this.record.action = snapshotJsonValue(
         input.action,
       ) as RunOutcome["action"];
     }
-    this.write();
-  }
-
-  fail(error: unknown): void {
-    this.record.status = "error";
-    this.record.errorReason = error instanceof Error ? error.message : String(error);
-    this.write();
+    if (input.report) {
+      this.record.report = snapshotJsonValue(input.report) as GateReport;
+    }
+    if (input.logs) {
+      this.record.logs = snapshotJsonValue(input.logs) as string[];
+    }
+    if (input.publication) {
+      this.record.publication = snapshotJsonValue(input.publication) as PublicationResult;
+    }
   }
 
   private attempt(number: number): RunRecordAttempt {
@@ -317,8 +624,143 @@ export function createRunRecorder(
   return new RunRecorder(cwd, input);
 }
 
+function toRunRecordV3(value: unknown): RunRecordV3 | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Partial<RunRecordV3>;
+  if (
+    record.schemaVersion !== 3 ||
+    !isSafeRunId(record.runId) ||
+    (record.kind !== "single" && record.kind !== "series" && record.kind !== "series-task") ||
+    (record.parentRunId !== undefined && !isSafeRunId(record.parentRunId)) ||
+    !isValidTimestamp(record.createdAt) ||
+    !isValidTimestamp(record.updatedAt) ||
+    !isRunRecordRepo(record.repo) ||
+    !isRunRecordTask(record.task) ||
+    typeof record.driver !== "string" ||
+    (record.status !== "running" && record.status !== "completed" && record.status !== "error") ||
+    !isRunRecordObservability(record.observability) ||
+    !Array.isArray(record.selectedContracts) ||
+    !record.selectedContracts.every((item) => typeof item === "string") ||
+    !Array.isArray(record.attempts) ||
+    !record.attempts.every(isRunRecordAttempt) ||
+    !Array.isArray(record.events) ||
+    !record.events.every(isRunRecordEvent) ||
+    (record.children !== undefined && (
+      !Array.isArray(record.children) ||
+      !record.children.every(isRunRecordChild)
+    )) ||
+    (record.logs !== undefined && !isStringArray(record.logs)) ||
+    (record.report !== undefined && !isGateReport(record.report)) ||
+    (record.publication !== undefined && !isPublicationResult(record.publication)) ||
+    (record.outcome !== undefined && !isRunRecordOutcome(record.outcome)) ||
+    (record.summary !== undefined && !isSummary(record.summary)) ||
+    (record.action !== undefined && !isPlainObject(record.action)) ||
+    (record.errorReason !== undefined && typeof record.errorReason !== "string") ||
+    (record.attemptCount !== undefined && !isValidAttemptCount(record.attemptCount))
+  ) {
+    return undefined;
+  }
+  if (kindMetadataError(record as RunRecordV3)) return undefined;
+  return record as RunRecordV3;
+}
+
+export class RunStore {
+  private readonly cwd: string;
+  private readonly now: () => string;
+  private readonly makeRunId: () => string;
+  private readonly repoInfo: () => RunRecordRepo;
+
+  constructor(cwd: string, options: RunStoreOptions = {}) {
+    this.cwd = cwd;
+    this.now = options.now ?? (() => new Date().toISOString());
+    this.makeRunId = options.makeRunId ?? (() => defaultRunId());
+    this.repoInfo = options.repoInfo ?? (() => defaultRepoInfo(cwd));
+  }
+
+  startRun(input: RunStoreStartInput): RunRecorder {
+    const runId = input.runId ?? this.makeRunId();
+    return new RunRecorder(
+      this.cwd,
+      {
+        runId,
+        kind: input.kind,
+        ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
+        task: input.task.description,
+        ...(input.task.taskId ? { taskId: input.task.taskId } : {}),
+        ...(input.task.seriesId ? { seriesId: input.task.seriesId } : {}),
+        ...(input.task.index !== undefined ? { taskIndex: input.task.index } : {}),
+        ...(input.task.total !== undefined ? { taskTotal: input.task.total } : {}),
+        driver: input.driver,
+        observability: input.observability,
+        selectedContracts: input.selectedContracts ?? [],
+        repo: this.repoInfo(),
+      },
+      this.now,
+    );
+  }
+
+  readRun(runId: string): RunRecordV3 | undefined {
+    assertSafeRunId(runId);
+    const path = join(runsDir(this.cwd), `${runId}.json`);
+    if (!existsSync(path)) return undefined;
+    try {
+      return toRunRecordV3(JSON.parse(readFileSync(path, "utf8")));
+    } catch {
+      return undefined;
+    }
+  }
+
+  listRuns(filter: ListRunsFilter = {}): RunRecordV3[] {
+    const d = runsDir(this.cwd);
+    if (!existsSync(d)) return [];
+    const runs: RunRecordV3[] = [];
+    for (const file of readdirSync(d).filter((item) => item.endsWith(".json"))) {
+      try {
+        const run = toRunRecordV3(
+          JSON.parse(readFileSync(join(d, file), "utf8")),
+        );
+        if (!run) continue;
+        if (filter.kind && run.kind !== filter.kind) continue;
+        if (filter.taskId && run.task.taskId !== filter.taskId) continue;
+        if (filter.seriesId && run.task.seriesId !== filter.seriesId) continue;
+        if (filter.parentRunId && run.parentRunId !== filter.parentRunId) continue;
+        runs.push(run);
+      } catch {
+        continue;
+      }
+    }
+    return runs.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  }
+}
+
 function toLastRunRecord(value: unknown): RunRecord | undefined {
   if (typeof value !== "object" || value === null) return undefined;
+  const v3 = toRunRecordV3(value);
+  if (v3) {
+    if (
+      v3.status !== "completed" ||
+      !isRunOutcome(v3.outcome) ||
+      !isSummary(v3.summary)
+    ) {
+      return undefined;
+    }
+    if (
+      v3.attemptCount !== undefined &&
+      !isValidAttemptCount(v3.attemptCount)
+    ) {
+      return undefined;
+    }
+    return {
+      at: v3.createdAt,
+      task: v3.task.description,
+      driver: v3.driver,
+      outcome: v3.outcome,
+      attempts: v3.attemptCount ?? v3.attempts.length,
+      summary: v3.summary,
+      ...(v3.action ? { action: v3.action } : {}),
+    };
+  }
+
   const record = value as Partial<RunRecordV2 & RunRecord>;
   if (record.schemaVersion === 2) {
     if (

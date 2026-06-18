@@ -44,7 +44,9 @@ import {
 } from "./harness/run.js";
 import {
   loadTaskSeriesConfig,
+  readSeriesLedger,
   runTaskSeries,
+  type TaskSeriesConfig,
 } from "./harness/series.js";
 import {
   buildRunId,
@@ -59,10 +61,9 @@ import { createDaytonaRunEnvironment } from "./harness/sandbox/environment.js";
 import { loadSandboxPolicy } from "./harness/sandbox/policy.js";
 import { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
 import {
-  createRunRecorder,
-  writeRunRecord,
-  type RunRecord,
-  type RunRecorder,
+  RunStore,
+  type RunRecordChild,
+  type RunRecordObservability,
 } from "./harness/record.js";
 import { createProject } from "./harness/scaffold.js";
 import { writePlan } from "./harness/plan.js";
@@ -80,6 +81,8 @@ const OPTIONS = {
   config: { type: "string" as const },
   "base-url": { type: "string" as const },
   properties: { type: "string" as const },
+  "task-id": { type: "string" as const },
+  "series-id": { type: "string" as const },
   // 产出引擎
   driver: { type: "string" as const, default: "scaffold" },
   "agent-cmd": { type: "string" as const },
@@ -324,31 +327,110 @@ function loadRunnableContracts(dir: string): Contract[] {
   return contracts;
 }
 
-function createClaudeRunRecorder(
-  cwd: string,
-  task: string,
+function claudeRunObservability(
   runId: string,
   config: DaytonaObservabilityConfig,
-): RunRecorder {
+): RunRecordObservability {
   const runRoot = config.enabled
     ? claudeObservabilityPaths(config, runId, 1).runRoot
     : undefined;
-  return createRunRecorder(cwd, {
-    runId,
-    task,
-    driver: "daytona(claude)",
-    observability: {
-      enabled: config.enabled,
-      backend: config.backend,
-      volumeName: config.volumeName,
-      mountPath: config.mountPath,
-      ...(runRoot ? { runRoot } : {}),
-    },
-  });
+  return {
+    enabled: config.enabled,
+    backend: config.backend,
+    volumeName: config.volumeName,
+    mountPath: config.mountPath,
+    ...(runRoot ? { runRoot } : {}),
+  };
+}
+
+function disabledRunObservability(): RunRecordObservability {
+  return {
+    enabled: false,
+    backend: "disabled",
+    volumeName: DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
+    mountPath: DEFAULT_DAYTONA_OBSERVABILITY_MOUNT,
+  };
+}
+
+function runRecordDriverLabel(values: Record<string, unknown>): string {
+  const driver = typeof values.driver === "string" ? values.driver : "scaffold";
+  if (driver === "scaffold") return "scaffold";
+  if (driver === "claude" || driver === "command") return `daytona(${driver})`;
+  return driver;
+}
+
+function taskRecordMetadata(
+  task: string,
+  overrides?: SingleTaskRunOverrides,
+) {
+  return {
+    description: task,
+    ...(overrides?.taskId ? { taskId: overrides.taskId } : {}),
+    ...(overrides?.seriesId ? { seriesId: overrides.seriesId } : {}),
+    ...(overrides?.taskIndex !== undefined ? { index: overrides.taskIndex } : {}),
+    ...(overrides?.taskTotal !== undefined ? { total: overrides.taskTotal } : {}),
+  };
+}
+
+function seriesSummaryFromLedger(
+  cwd: string,
+  config: TaskSeriesConfig,
+): { attempts: number; summary: RunOutcome["report"]["summary"] } {
+  const ledger = readSeriesLedger(cwd, config.seriesId);
+  const summary: RunOutcome["report"]["summary"] = {
+    total: config.tasks.length,
+    pass: 0,
+    fail: 0,
+    error: 0,
+    needsReview: 0,
+  };
+  if (!ledger) return { attempts: 0, summary };
+
+  for (const task of ledger.tasks) {
+    if (task.status === "completed" || task.status === "ready_to_commit") {
+      summary.pass += 1;
+    } else if (task.status === "blocked") {
+      summary.needsReview += 1;
+    } else if (task.status === "escalated") {
+      summary.fail += 1;
+    } else if (task.status === "error") {
+      summary.error += 1;
+    }
+  }
+
+  return { attempts: ledger.tasks.length, summary };
+}
+
+function seriesChildRecords(cwd: string, parentRunId: string): RunRecordChild[] {
+  return new RunStore(cwd).listRuns({
+    kind: "series-task",
+    parentRunId,
+  })
+    .sort((a, b) => Number(a.task.index) - Number(b.task.index))
+    .map((record) => ({
+      runId: record.runId,
+      taskId: record.task.taskId!,
+      index: record.task.index!,
+      status: record.status,
+      ...(record.outcome ? { outcome: record.outcome } : {}),
+    }));
+}
+
+function attachSeriesChildren(cwd: string, parentRunId: string, recorder: {
+  setChildren(children: RunRecordChild[]): void;
+}): void {
+  const children = seriesChildRecords(cwd, parentRunId);
+  if (children.length > 0) recorder.setChildren(children);
 }
 
 export interface SingleTaskRunOverrides {
   selectedContracts?: Contract[];
+  kind?: "single" | "series-task";
+  parentRunId?: string;
+  taskId?: string;
+  seriesId?: string;
+  taskIndex?: number;
+  taskTotal?: number;
 }
 
 export interface SingleTaskRunResult {
@@ -366,53 +448,45 @@ async function runSingleTask(
   const { values } = parse(args);
   const cwd = process.cwd();
   const dir = resolve(cwd, values.dir as string);
+  const runId = buildRunId();
+  const runStore = new RunStore(cwd, { makeRunId: () => runId });
+  const recorder = runStore.startRun({
+    runId,
+    kind: overrides?.kind ?? "single",
+    ...(overrides?.parentRunId ? { parentRunId: overrides.parentRunId } : {}),
+    task: taskRecordMetadata(task, overrides),
+    driver: runRecordDriverLabel(values),
+    observability: disabledRunObservability(),
+    selectedContracts: overrides?.selectedContracts?.map((contract) => contract.id) ?? [],
+  });
 
-  let agent: AgentSpec;
   try {
-    agent = selectAgent(values);
-  } catch (error) {
-    fail(error instanceof Error ? error.message : String(error));
-  }
-  let recorder: RunRecorder | undefined;
-  let observability:
-    | {
-      runId: string;
-      config: ReturnType<typeof loadDaytonaObservabilityConfig>;
-    }
-    | undefined;
-  if (agent.kind === "claude") {
-    const runId = buildRunId();
-    try {
+    const agent = selectAgent(values);
+    let observability:
+      | {
+        runId: string;
+        config: ReturnType<typeof loadDaytonaObservabilityConfig>;
+      }
+      | undefined;
+    if (agent.kind === "claude") {
       const observabilityConfig = loadDaytonaObservabilityConfig(process.env);
       observability = { runId, config: observabilityConfig };
-      recorder = createClaudeRunRecorder(
-        cwd,
-        task,
-        runId,
-        observabilityConfig,
-      );
-    } catch (error) {
-      recorder = createClaudeRunRecorder(cwd, task, runId, {
-        enabled: false,
-        backend: "disabled",
-        volumeName: DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
-        mountPath: DEFAULT_DAYTONA_OBSERVABILITY_MOUNT,
-      });
-      recorder.fail(error);
-      throw error;
+      recorder.setObservability(claudeRunObservability(runId, observabilityConfig));
     }
-  }
 
-  try {
     const contracts = loadRunnableContracts(dir);
 
     const selected = overrides?.selectedContracts ?? (values.stage
       ? selectByStage(contracts, values.stage as string)
       : contracts);
+    recorder.setSelectedContracts(selected.map((contract) => contract.id));
     const gate = await buildGate(values.properties as string | undefined);
     const ctx: RunContext = { cwd, verdicts: loadVerdicts(cwd) };
     if (values["base-url"]) (ctx as { baseUrl?: string }).baseUrl =
       values["base-url"] as string;
+    const environmentName = agent.kind === "scaffold"
+      ? "scaffold"
+      : `daytona(${agent.kind})`;
     const config = loadHarnessConfig(
       cwd,
       values.config as string | undefined,
@@ -455,22 +529,16 @@ async function runSingleTask(
     });
 
     let recPath: string;
-    if (recorder) {
-      recorder.complete({
-        outcome: outcome.outcome,
-        attempts: outcome.attempts,
-        summary: outcome.report.summary,
-        ...(outcome.action ? { action: outcome.action } : {}),
-      });
-      recPath = recorder.path;
-    } else {
-      const rec: RunRecord = {
-        at: new Date().toISOString(), task, driver: environment.name,
-        outcome: outcome.outcome, attempts: outcome.attempts, summary: outcome.report.summary,
-        ...(outcome.action ? { action: outcome.action } : {}),
-      };
-      recPath = writeRunRecord(cwd, rec);
-    }
+    recorder.complete({
+      outcome: outcome.outcome,
+      attempts: outcome.attempts,
+      summary: outcome.report.summary,
+      report: outcome.report,
+      logs: outcome.logs,
+      ...(outcome.publication ? { publication: outcome.publication } : {}),
+      ...(outcome.action ? { action: outcome.action } : {}),
+    });
+    recPath = recorder.path;
 
     console.log("");
     if (outcome.outcome === "ready_for_mr") {
@@ -490,7 +558,7 @@ async function runSingleTask(
       environmentName: environment.name,
     };
   } catch (error) {
-    recorder?.fail(error);
+    recorder.fail(error);
     throw error;
   }
 }
@@ -520,30 +588,101 @@ async function cmdRun(args: string[]): Promise<void> {
   }
 
   const dir = resolve(cwd, values.dir as string);
-  const contracts = loadRunnableContracts(dir);
-
-  console.log(
-    `harness series · id=${seriesConfig.seriesId} · tasks=${seriesConfig.tasks.length}`,
-  );
-  const result = await runTaskSeries({
-    cwd,
-    config: seriesConfig,
-    contracts,
-    fallbackStage: values.stage as string | undefined,
-    executeTask: async (input) => {
-      console.log(`\n[${input.index}/${input.total}] ${input.task.id}`);
-      return runSingleTask(args, input.task.task, undefined, {
-        selectedContracts: input.contracts,
-      });
+  const seriesRunId = buildRunId();
+  const seriesRecorder = new RunStore(cwd, { makeRunId: () => seriesRunId }).startRun({
+    runId: seriesRunId,
+    kind: "series",
+    task: {
+      description: `task series ${seriesConfig.seriesId}`,
+      seriesId: seriesConfig.seriesId,
+      total: seriesConfig.tasks.length,
     },
+    driver: `series(${values.driver as string})`,
+    observability: disabledRunObservability(),
   });
 
+  let result;
+  try {
+    const contracts = loadRunnableContracts(dir);
+    console.log(
+      `harness series · id=${seriesConfig.seriesId} · tasks=${seriesConfig.tasks.length}`,
+    );
+    result = await runTaskSeries({
+      cwd,
+      config: seriesConfig,
+      contracts,
+      fallbackStage: values.stage as string | undefined,
+      executeTask: async (input) => {
+        console.log(`\n[${input.index}/${input.total}] ${input.task.id}`);
+        return runSingleTask(args, input.task.task, undefined, {
+          kind: "series-task",
+          parentRunId: seriesRunId,
+          taskId: input.task.id,
+          seriesId: seriesConfig.seriesId,
+          taskIndex: input.index,
+          taskTotal: input.total,
+          selectedContracts: input.contracts,
+        });
+      },
+      recordTaskSetupError: (input) => {
+        const childRunId = buildRunId();
+        const childRecorder = new RunStore(cwd, { makeRunId: () => childRunId }).startRun({
+          runId: childRunId,
+          kind: "series-task",
+          parentRunId: seriesRunId,
+          task: {
+            description: input.task.task,
+            taskId: input.task.id,
+            seriesId: seriesConfig.seriesId,
+            index: input.index,
+            total: input.total,
+          },
+          driver: runRecordDriverLabel(values),
+          observability: disabledRunObservability(),
+        });
+        childRecorder.fail(input.error, {
+          logs: [
+            `series task setup failed: ${
+              input.error instanceof Error ? input.error.message : String(input.error)
+            }`,
+          ],
+        });
+        return childRecorder.path;
+      },
+    });
+  } catch (error) {
+    attachSeriesChildren(cwd, seriesRunId, seriesRecorder);
+    seriesRecorder.fail(error);
+    throw error;
+  }
+
+  const progress = seriesSummaryFromLedger(cwd, seriesConfig);
+  attachSeriesChildren(cwd, seriesRunId, seriesRecorder);
   if (result.outcome === "completed") {
+    seriesRecorder.complete({
+      outcome: "completed",
+      attempts: progress.attempts,
+      summary: progress.summary,
+      logs: ["series completed"],
+    });
     console.log("\n✓ series completed");
     process.exitCode = 0;
     return;
   }
 
+  const stopLog = `series stopped at ${result.taskId}: ${result.outcome}` +
+    `${result.reason ? ` ${result.reason}` : ""}`;
+  const stopDetails = {
+    outcome: result.outcome === "error" ? "error" as const : result.outcome,
+    attempts: progress.attempts,
+    summary: progress.summary,
+    logs: [stopLog],
+  };
+  if (result.outcome === "error") {
+    seriesRecorder.fail(result.reason ?? stopLog, stopDetails);
+  } else {
+    seriesRecorder.complete(stopDetails);
+  }
   console.log(
     `\n■ series stopped at ${result.taskId}: ${result.outcome}` +
     `${result.reason ? ` ${result.reason}` : ""}`,
@@ -608,6 +747,59 @@ function cmdStatus(args: string[]): void {
   console.log(gatherStatus(cwd, dir).join("\n"));
 }
 
+function cmdRuns(args: string[]): void {
+  const { values, positionals } = parse(args);
+  const sub = positionals[0] ?? "list";
+  const store = new RunStore(process.cwd());
+
+  if (sub === "list") {
+    const runs = store.listRuns({
+      ...(values["task-id"] ? { taskId: values["task-id"] as string } : {}),
+      ...(values["series-id"] ? { seriesId: values["series-id"] as string } : {}),
+    });
+    if (values.json) {
+      console.log(JSON.stringify(runs, null, 2));
+      return;
+    }
+    if (runs.length === 0) {
+      console.log("没有 run 记录");
+      return;
+    }
+    for (const run of runs) {
+      console.log(
+        `${run.runId} · ${run.kind} · ${run.status}` +
+          ` · ${run.driver} · ${run.task.description}`,
+      );
+    }
+    return;
+  }
+
+  if (sub === "show") {
+    const runId = positionals[1];
+    if (!runId) fail("用法: harness runs show <runId> [--json]");
+    const run = store.readRun(runId);
+    if (!run) fail(`未找到 run 记录: ${runId}`);
+    if (values.json) {
+      console.log(JSON.stringify(run, null, 2));
+      return;
+    }
+    console.log(`${run.runId} · ${run.kind} · ${run.status}`);
+    console.log(`task: ${run.task.description}`);
+    console.log(`driver: ${run.driver}`);
+    if (run.outcome) console.log(`outcome: ${run.outcome}`);
+    if (run.summary) {
+      console.log(
+        `summary: pass ${run.summary.pass}/${run.summary.total}, ` +
+          `fail ${run.summary.fail}, error ${run.summary.error}, review ${run.summary.needsReview}`,
+      );
+    }
+    if (run.report) console.log(`report: ${run.report.outcome}`);
+    return;
+  }
+
+  fail("用法: harness runs [list|show <runId>] [--json] [--task-id id] [--series-id id]");
+}
+
 function cmdCreate(args: string[]): void {
   const { values, positionals } = parse(args);
   const target = resolve(process.cwd(), positionals[0] ?? ".");
@@ -637,6 +829,8 @@ function help(): void {
   harness fix  [--driver ...] [--stage s]        # 先取门禁诊断,再驱动 driver 修复迭代
   harness review [--resolve <id> --option <o> --by <name> [--reason ...]]   # 汇总/记录人工决策
   harness status                                 # 项目状态(契约/冻结/裁决/最近 run)
+  harness runs list [--json] [--task-id id] [--series-id id]
+  harness runs show <runId> [--json]
 
 门禁(验证层):
   harness check [--dir d] [--changed a,b | --stage s] [--config f] [--base-url u] [--properties m] [--json]
@@ -657,6 +851,7 @@ async function main(): Promise<void> {
     case "fix": await cmdFix(rest); break;
     case "review": await cmdReview(rest); break;
     case "status": cmdStatus(rest); break;
+    case "runs": cmdRuns(rest); break;
     case "check": await cmdCheck(rest); break;
     case "gate": await cmdGate(rest); break;
     case "meta": await cmdMeta(rest); break;

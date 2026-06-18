@@ -157,6 +157,7 @@ export async function runLoop(o: RunOptions): Promise<RunOutcome> {
             attempts: state.attempts,
             report,
             action,
+            publication,
             logs,
           };
         }
