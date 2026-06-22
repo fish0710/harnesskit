@@ -66,6 +66,8 @@ and the `claude-stream.jsonl` file may stay empty until the command exits.
 
 Use `agent.command.heartbeat` as the liveness signal:
 
+Heartbeat is a liveness signal only; it does not prove semantic Claude progress.
+
 - If heartbeat events continue, the Agent command is active. Do not call the
   sandbox stuck only because stdout, terminal output, or stream bytes are quiet.
 - If the heartbeat stops unexpectedly, the CLI exits, the command times out, or

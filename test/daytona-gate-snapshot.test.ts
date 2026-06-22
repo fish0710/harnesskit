@@ -148,12 +148,18 @@ test("harness-prep documents Claude command heartbeat supervision", () => {
   );
   assert.match(
     runSupervision,
-    /heartbeat events continue[\s\S]*Agent command is active[\s\S]*stdout, terminal output, or stream bytes are quiet/i,
+    /Heartbeat is a liveness signal only; it does not prove semantic Claude progress\./,
   );
   assert.match(
-    blockerAnalysis,
-    /latest Agent event is `agent\.command\.heartbeat`[\s\S]*no later[\s\S]*`agent\.command\.end`[\s\S]*active unless[\s\S]*CLI process exits[\s\S]*command timeout fires[\s\S]*RunStore records an error/i,
+    runSupervision,
+    /heartbeat events continue[\s\S]*Agent command is active[\s\S]*stdout, terminal output, or stream bytes are quiet/i,
   );
+  assert.match(blockerAnalysis, /latest Agent event is `agent\.command\.heartbeat`/);
+  assert.match(blockerAnalysis, /no later\s+`agent\.command\.end`/);
+  assert.match(blockerAnalysis, /heartbeat stops unexpectedly/);
+  assert.match(blockerAnalysis, /CLI process exits/);
+  assert.match(blockerAnalysis, /command timeout fires/);
+  assert.match(blockerAnalysis, /RunStore\s+records an error/);
   assert.match(
     blockerAnalysis,
     /\/home\/daytona\/\.claude[\s\S]*inspect `projects\/`[\s\S]*manual\s+diagnosis only/i,
