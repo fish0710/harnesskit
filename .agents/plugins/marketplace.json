@@ -1,0 +1,20 @@
+{
+  "name": "harnesskit",
+  "interface": {
+    "displayName": "HarnessKit"
+  },
+  "plugins": [
+    {
+      "name": "harness-prep",
+      "source": {
+        "source": "local",
+        "path": "./plugins/harness-prep"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
