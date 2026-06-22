@@ -58,14 +58,26 @@ function includesShellWord(command: string, word: string): boolean {
   return shellWordPattern(word).test(command);
 }
 
-function sourcesNvm(command: string): boolean {
-  return /(?:^|[\s"'`])(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh(?:[\s"'`;|&]|$)/.test(command);
+function firstMatchIndex(command: string, pattern: RegExp): number | undefined {
+  const match = pattern.exec(command);
+  return match?.index;
+}
+
+function sourcesNvmBeforeUse(command: string): boolean {
+  const useIndex = firstMatchIndex(command, /\bnvm\s+use\b/);
+  if (useIndex === undefined) return false;
+  const sourcePattern = /(?:^|[\s"'`;&|])(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh(?:[\s"'`;|&]|$)/g;
+  let match: RegExpExecArray | null;
+  while ((match = sourcePattern.exec(command)) !== null) {
+    if (match.index < useIndex) return true;
+  }
+  return false;
 }
 
 function hasBareNvmUse(command: string): boolean {
   return includesShellWord(command, "nvm") &&
     /\bnvm\s+use\b/.test(command) &&
-    !sourcesNvm(command);
+    !sourcesNvmBeforeUse(command);
 }
 
 function usesNvmInstall(command: string): boolean {
@@ -81,11 +93,11 @@ function commandMentionsMissingTool(command: string): string | undefined {
 
 function bootstrapMentionsTool(command: string, tool: string): boolean {
   if (tool === "pnpm") {
-    return /\bcorepack\s+enable(?:\s+pnpm\b|\b)/.test(command) ||
+    return /\bcorepack\s+enable\s+pnpm\b/.test(command) ||
       /\bnpm\s+(?:install|i)\s+-g\s+pnpm\b/.test(command);
   }
   if (tool === "yarn") {
-    return /\bcorepack\s+enable(?:\s+yarn\b|\b)/.test(command) ||
+    return /\bcorepack\s+enable\s+yarn\b/.test(command) ||
       /\bnpm\s+(?:install|i)\s+-g\s+yarn\b/.test(command);
   }
   if (tool === "bun") {

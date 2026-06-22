@@ -58,6 +58,28 @@ test("preflight lint rejects nvm path mentions that do not source nvm", () => {
   assert.equal(findings[0]?.severity, "error");
 });
 
+test("preflight lint rejects nvm use before sourcing nvm", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["nvm use 20 && source /usr/local/nvm/nvm.sh && npm ci"]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.nvm"]);
+  assert.equal(findings[0]?.severity, "error");
+});
+
+test("preflight lint accepts dot-sourced nvm before use", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy([". /usr/local/nvm/nvm.sh && nvm use 20 && npm ci"]),
+  });
+
+  assert.deepEqual(
+    findings.filter((finding: { severity: string }) => finding.severity === "error"),
+    [],
+  );
+});
+
 test("preflight lint rejects claude in gate setup and contracts", () => {
   const contracts: Contract[] = [
     { id: "agent.leak", type: "command", cmd: "claude", args: ["--version"] },
@@ -106,6 +128,43 @@ test("preflight lint accepts conservative gate tool bootstraps", () => {
       "npm install -g yarn",
       "curl -fsSL https://bun.sh/install | bash",
     ]),
+  });
+
+  assert.deepEqual(
+    ids(findings.filter((finding) => finding.id.includes(".tool"))),
+    [],
+  );
+});
+
+test("preflight lint rejects bare corepack enable as pnpm bootstrap", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "lint.pnpm", type: "command", cmd: "pnpm", args: ["test"] },
+    ],
+    policy: policy(["corepack enable"]),
+  });
+
+  assert.deepEqual(ids(findings), ["contract.lint.pnpm.tool"]);
+});
+
+test("preflight lint rejects bare corepack enable as yarn bootstrap", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "structure.yarn", type: "structure", tool: "yarn", args: ["lint"] },
+    ],
+    policy: policy(["corepack enable"]),
+  });
+
+  assert.deepEqual(ids(findings), ["contract.structure.yarn.tool"]);
+});
+
+test("preflight lint accepts named corepack bootstraps", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "lint.pnpm", type: "command", cmd: "pnpm", args: ["test"] },
+      { id: "structure.yarn", type: "structure", tool: "yarn", args: ["lint"] },
+    ],
+    policy: policy(["corepack enable pnpm", "corepack enable yarn"]),
   });
 
   assert.deepEqual(
