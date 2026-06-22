@@ -106,6 +106,11 @@ function wholeShellScript(command: string): string | undefined {
   return match?.[2];
 }
 
+function leadingShellScript(command: string): string | undefined {
+  const match = /^\s*(?:bash|sh|zsh)\s+-l?c\s+(['"])([\s\S]*?)\1(?:\s*(?:&&|;|\|\|).*)?$/.exec(command);
+  return match?.[2];
+}
+
 function safeWholeShellNvmWrapper(command: string): boolean {
   const script = wholeShellScript(command);
   return script !== undefined && currentShellNvmUsesAreSourced(script);
@@ -139,7 +144,12 @@ function hasBareNvmUse(command: string): boolean {
   if (!/\bnvm\s+use\b/.test(command)) return false;
   if (safeWholeShellNvmWrapper(command)) return false;
   const unquoted = maskQuotedText(command);
-  if (!/\bnvm\s+use\b/.test(unquoted)) return true;
+  if (!/\bnvm\s+use\b/.test(unquoted)) {
+    const script = leadingShellScript(command);
+    return script !== undefined &&
+      /\bnvm\s+use\b/.test(script) &&
+      !currentShellNvmUsesAreSourced(script);
+  }
   return !currentShellNvmUsesAreSourced(command);
 }
 
@@ -169,15 +179,15 @@ function bootstrapMentionsTool(command: string, tool: string): boolean {
 
 function segmentBootstrapsTool(segment: string, tool: string): boolean {
   if (tool === "pnpm") {
-    return /^corepack\s+enable\s+["']?pnpm["']?(?:\s|$)/.test(segment) ||
-      /^npm\s+(?:install|i)\s+-g\s+["']?pnpm["']?(?:\s|$)/.test(segment);
+    return /^corepack\s+enable\s+["']?pnpm(?:@[^"'\s]+)?["']?(?:\s|$)/.test(segment) ||
+      /^npm\s+(?:install|i)\s+-g\s+["']?pnpm(?:@[^"'\s]+)?["']?(?:\s|$)/.test(segment);
   }
   if (tool === "yarn") {
-    return /^corepack\s+enable\s+["']?yarn["']?(?:\s|$)/.test(segment) ||
-      /^npm\s+(?:install|i)\s+-g\s+["']?yarn["']?(?:\s|$)/.test(segment);
+    return /^corepack\s+enable\s+["']?yarn(?:@[^"'\s]+)?["']?(?:\s|$)/.test(segment) ||
+      /^npm\s+(?:install|i)\s+-g\s+["']?yarn(?:@[^"'\s]+)?["']?(?:\s|$)/.test(segment);
   }
   if (tool === "bun") {
-    return /^npm\s+(?:install|i)\s+-g\s+["']?bun["']?(?:\s|$)/.test(segment) ||
+    return /^npm\s+(?:install|i)\s+-g\s+["']?bun(?:@[^"'\s]+)?["']?(?:\s|$)/.test(segment) ||
       /^curl\b[\s\S]*\bbun\.sh\/install["']?\b[\s\S]*\|\s*bash\b/.test(segment);
   }
   if (tool === "git") {
@@ -186,8 +196,10 @@ function segmentBootstrapsTool(segment: string, tool: string): boolean {
   return false;
 }
 
-function gateSetupMissingTool(command: string): string | undefined {
-  const bootstrapped = new Set<string>();
+function gateSetupMissingTool(
+  command: string,
+  bootstrapped: Set<string>,
+): string | undefined {
   for (const segment of executableSegments(command)) {
     for (const tool of MISSING_DEFAULT_TOOLS) {
       if (segmentBootstrapsTool(segment, tool)) bootstrapped.add(tool);
@@ -290,7 +302,7 @@ function rawRuntimeFailureText(text: string): boolean {
 }
 
 function productAssertionText(text: string): boolean {
-  return /\bexpected\b/.test(text) || /\bassertionerror\b/.test(text);
+  return /^\s*expected\b/.test(text) || /\bassertionerror:\s*expected\b/.test(text);
 }
 
 function resultText(result: GateReport["results"][number]): string {
@@ -323,6 +335,7 @@ function finding(
 
 export function lintGateReadiness(input: GateReadinessLintInput): PreflightFinding[] {
   const findings: PreflightFinding[] = [];
+  const gateSetupBootstrappedTools = new Set<string>();
 
   input.policy.gateSetup.forEach((command, index) => {
     const label = `gateSetup.${index + 1}`;
@@ -350,7 +363,7 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
         "static",
       ));
     }
-    const tool = gateSetupMissingTool(command);
+    const tool = gateSetupMissingTool(command, gateSetupBootstrappedTools);
     if (tool) {
       findings.push(finding(
         `${label}.tool`,

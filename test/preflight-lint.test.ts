@@ -48,6 +48,20 @@ test("preflight lint accepts sourced nvm use in gate setup", () => {
   );
 });
 
+test("preflight lint accepts sourced nvm wrapper followed by harmless command", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy([
+      "bash -lc 'source /usr/local/nvm/nvm.sh && nvm use 20 && npm ci' && echo done",
+    ]),
+  });
+
+  assert.deepEqual(
+    findings.filter((finding: { severity: string }) => finding.severity === "error"),
+    [],
+  );
+});
+
 test("preflight lint rejects child-shell nvm source before later bare nvm use", () => {
   const findings = lintGateReadiness({
     contracts: [],
@@ -304,6 +318,26 @@ test("preflight lint accepts quoted bootstrap arguments", () => {
   );
 });
 
+test("preflight lint accepts pinned package manager bootstraps", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "lint.pnpm", type: "command", cmd: "pnpm", args: ["test"] },
+      { id: "structure.yarn", type: "structure", tool: "yarn", args: ["lint"] },
+      { id: "app.bun", type: "command", cmd: "bun", args: ["test"] },
+    ],
+    policy: policy([
+      "npm install -g pnpm@9",
+      "npm install -g yarn@1.22.22",
+      "npm install -g bun@1.1.0",
+    ]),
+  });
+
+  assert.deepEqual(
+    ids(findings.filter((finding) => finding.id.includes(".tool"))),
+    [],
+  );
+});
+
 test("preflight lint rejects quoted bootstrap text for missing package managers", () => {
   const findings = lintGateReadiness({
     contracts: [
@@ -328,6 +362,22 @@ test("preflight lint rejects gate setup tool use before later bootstrap", () => 
   });
 
   assert.deepEqual(ids(findings), ["gateSetup.1.tool", "gateSetup.2.tool"]);
+});
+
+test("preflight lint accepts package manager bootstraps from earlier gate setup commands", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy([
+      "corepack enable pnpm",
+      "pnpm test",
+      "npm install -g yarn",
+      "yarn lint",
+      "apt install -y git",
+      "git status",
+    ]),
+  });
+
+  assert.deepEqual(ids(findings), []);
 });
 
 test("preflight lint rejects bare corepack enable as pnpm bootstrap", () => {
@@ -564,6 +614,25 @@ test("preflight readiness classification promotes node module resolution failure
     classified.readinessErrors.map((finding) => finding.contractId).sort(),
     ["build.module.cannot-find-package", "build.module.err-module-not-found"],
   );
+});
+
+test("preflight readiness classification promotes module paths containing expected", () => {
+  const result: CheckResult = {
+    id: "build.module.expected-path",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "bundle step",
+      how: "Error: Cannot find module './expected'",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([result]));
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.equal(classified.readinessErrors[0]?.contractId, "build.module.expected-path");
 });
 
 test("preflight readiness classification promotes service-not-started failures", () => {
