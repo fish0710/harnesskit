@@ -96,6 +96,23 @@ test("preflight lint rejects claude in gate setup and contracts", () => {
   assert.ok(findings.every((finding: { severity: string }) => finding.severity === "error"));
 });
 
+test("preflight lint rejects path-qualified claude in gate setup and contracts", () => {
+  const contracts: Contract[] = [
+    { id: "agent.local", type: "command", cmd: "./claude", args: ["--version"] },
+    { id: "agent.abs", type: "command", cmd: "/usr/local/bin/claude", args: ["--version"] },
+  ];
+  const findings = lintGateReadiness({
+    contracts,
+    policy: policy(["/usr/local/bin/claude --version"]),
+  });
+
+  assert.deepEqual(ids(findings), [
+    "contract.agent.abs.claude",
+    "contract.agent.local.claude",
+    "gateSetup.1.claude",
+  ]);
+});
+
 test("preflight lint reports default-missing package managers", () => {
   const contracts: Contract[] = [
     { id: "lint.pnpm", type: "command", cmd: "pnpm", args: ["test"] },
@@ -249,6 +266,39 @@ test("preflight readiness classification promotes name resolution failures", () 
   assert.deepEqual(
     classified.readinessErrors.map((finding) => finding.contractId).sort(),
     ["api.resolve.temp", "api.resolve.unknown"],
+  );
+});
+
+test("preflight readiness classification promotes service-not-started failures", () => {
+  const refused: CheckResult = {
+    id: "api.loopback.refused",
+    type: "http",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 7，期望 0",
+      why: "health check",
+      how: "curl: (7) Failed to connect to 127.0.0.1 port 3000: Connection refused",
+    }],
+  };
+  const timeout: CheckResult = {
+    id: "api.loopback.timeout",
+    type: "http",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 28，期望 0",
+      why: "health check",
+      how: "request timeout after 5000ms",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([refused, timeout]));
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.deepEqual(
+    classified.readinessErrors.map((finding) => finding.contractId).sort(),
+    ["api.loopback.refused", "api.loopback.timeout"],
   );
 });
 

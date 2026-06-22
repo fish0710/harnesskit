@@ -58,6 +58,10 @@ function includesShellWord(command: string, word: string): boolean {
   return shellWordPattern(word).test(command);
 }
 
+function mentionsClaude(command: string): boolean {
+  return /(?:^|[\s"'`])(?:[A-Za-z0-9_./~-]+\/)?claude(?:$|[\s"'`])/.test(command);
+}
+
 function firstMatchIndex(command: string, pattern: RegExp): number | undefined {
   const match = pattern.exec(command);
   return match?.index;
@@ -164,7 +168,11 @@ function runtimeFailureText(value: string): boolean {
     text.includes("network is unreachable") ||
     text.includes("could not resolve host") ||
     text.includes("temporary failure in name resolution") ||
-    text.includes("name or service not known");
+    text.includes("name or service not known") ||
+    text.includes("connection refused") ||
+    text.includes("failed to connect") ||
+    text.includes("timeout") ||
+    text.includes("timed out");
 }
 
 function resultText(result: GateReport["results"][number]): string {
@@ -216,7 +224,7 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
         "static",
       ));
     }
-    if (includesShellWord(command, "claude")) {
+    if (mentionsClaude(command)) {
       findings.push(finding(
         `${label}.claude`,
         "error",
@@ -256,7 +264,7 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
           contract.id,
         ));
       }
-      if (includesShellWord(command, "claude")) {
+      if (mentionsClaude(command)) {
         findings.push(finding(
           `contract.${contract.id}.claude`,
           "error",
