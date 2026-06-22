@@ -165,10 +165,48 @@ function commandMentionsMissingTool(command: string): string | undefined {
 }
 
 function executableSegments(command: string): string[] {
-  return command
-    .split(/&&|;|\|\|/)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
+  const segments: string[] = [];
+  let quote: "'" | "\"" | "`" | undefined;
+  let escaped = false;
+  let current = "";
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index]!;
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = undefined;
+      current += char;
+      continue;
+    }
+    if (char === "'" || char === "\"" || char === "`") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    const pair = command.slice(index, index + 2);
+    if (pair === "&&" || pair === "||") {
+      if (current.trim()) segments.push(current.trim());
+      current = "";
+      index++;
+      continue;
+    }
+    if (char === ";") {
+      if (current.trim()) segments.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim()) segments.push(current.trim());
+  return segments;
 }
 
 function bootstrapMentionsTool(command: string, tool: string): boolean {
@@ -305,7 +343,8 @@ function rawRuntimeFailureText(text: string): boolean {
 }
 
 function productAssertionText(text: string): boolean {
-  return /^\s*expected\b/.test(text) || /\bassertionerror:\s*expected\b/.test(text);
+  return /(?:^|[:\]])\s*expected\b/.test(text) ||
+    /\bassertionerror(?:\s+\[[^\]]+\])?:\s*expected\b/.test(text);
 }
 
 function resultText(result: GateReport["results"][number]): string {

@@ -394,6 +394,15 @@ test("preflight lint accepts shell-wrapped package manager bootstraps", () => {
   assert.deepEqual(ids(findings), []);
 });
 
+test("preflight lint accepts shell-wrapped bootstrap followed by use inside wrapper", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["bash -lc 'corepack enable pnpm && pnpm test'"]),
+  });
+
+  assert.deepEqual(ids(findings), []);
+});
+
 test("preflight lint rejects bare corepack enable as pnpm bootstrap", () => {
   const findings = lintGateReadiness({
     contracts: [
@@ -830,6 +839,41 @@ test("preflight readiness classification keeps readiness-keyword assertions as p
     "spec.connection-timed-out.behavior",
     "spec.econnrefused.behavior",
     "spec.module.behavior",
+  ]);
+});
+
+test("preflight readiness classification keeps prefixed expected-error assertions as product failures", () => {
+  const results: CheckResult[] = [
+    {
+      id: "spec.assertion-prefixed-econnrefused.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "AssertionError [ERR_ASSERTION]: expected ECONNREFUSED error but received success",
+      }],
+    },
+    {
+      id: "spec.error-prefixed-module.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "Error: expected Cannot find module error but received success",
+      }],
+    },
+  ];
+
+  const classified = classifyGateReportReadiness(aggregate(results));
+
+  assert.deepEqual(classified.readinessErrors, []);
+  assert.deepEqual(classified.productFailures.sort(), [
+    "spec.assertion-prefixed-econnrefused.behavior",
+    "spec.error-prefixed-module.behavior",
   ]);
 });
 
