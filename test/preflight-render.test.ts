@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  gatePreflightRunBlocker,
   renderGatePreflightJson,
   renderGatePreflightPretty,
   type GatePreflightReport,
@@ -70,4 +71,20 @@ test("renderGatePreflightPretty summarizes readiness, setup, product, and host-l
   assert.match(rendered, /\[readiness\] contract\.command\.smoke\.runtime: node: command not found/);
   assert.match(rendered, /\[product-red\] domain\.regression/);
   assert.match(rendered, /host-local contracts are not covered by Gate sandbox preflight: ui\.local/);
+});
+
+test("gatePreflightRunBlocker blocks readiness errors with actionable details", () => {
+  const blocker = gatePreflightRunBlocker(reportFixture());
+
+  assert.match(blocker ?? "", /Gate preflight readiness failed/);
+  assert.match(blocker ?? "", /contract\.command\.smoke\.runtime/);
+  assert.match(blocker ?? "", /node: command not found/);
+});
+
+test("gatePreflightRunBlocker allows product-red reports without readiness errors", () => {
+  const report = reportFixture();
+  report.readinessErrors = [];
+  report.productFailures = ["domain.regression"];
+
+  assert.equal(gatePreflightRunBlocker(report), undefined);
 });

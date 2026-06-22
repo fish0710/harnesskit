@@ -111,15 +111,16 @@ Unit tests do not require Daytona:
 npm run check
 ```
 
-Before starting a Daytona-backed implementation agent, verify Gate runtime
-readiness:
+Daytona-backed `run` and `fix` automatically verify Gate runtime readiness
+before creating the Agent sandbox. You can run the same check explicitly:
 
 ```bash
 node dist/src/cli.js preflight gate --dir contracts --config harness.config.json
 ```
 
 This command creates a short-lived Gate sandbox and catches setup/toolchain
-errors before they consume agent attempts.
+errors before they consume agent attempts. Product-red gates do not block agent
+startup; readiness errors do.
 
 The real integration flow is explicit:
 

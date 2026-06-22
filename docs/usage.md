@@ -174,7 +174,8 @@ harness check --dir contracts --base-url http://127.0.0.1:3000
 harness check --dir contracts --json
 ```
 
-在 Daytona agent 运行前，额外验证 Gate sandbox 运行时：
+在 Daytona agent 运行前，`harness run` / `harness fix` 会自动执行 Gate readiness
+preflight。你也可以手动提前验证 Gate sandbox 运行时：
 
 ```bash
 harness preflight gate --dir contracts --config harness.config.json --json
@@ -183,7 +184,8 @@ harness preflight gate --dir contracts --config harness.config.json --json
 `harness check` 在宿主机本地执行。`harness preflight gate` 会创建短生命周期
 Gate sandbox，上传当前工作区，执行 `gateSetup` 和选中的远端契约。它用于发现
 缺工具、裸 `nvm use`、Gate 里误用 `claude`、服务未在 Gate 内启动等 readiness
-错误。
+错误。自动 run barrier 只会因为 readiness error 阻断；测试断言失败这类
+product-red gate 会继续交给 agent 修。
 
 解释某条契约：
 
@@ -320,6 +322,9 @@ export NO_PROXY="localhost,127.0.0.1,proxy.localhost,.localhost"
 ```bash
 harness run "实现一个健康检查接口" --driver claude --max-attempts 3 --max-ms 6000000
 ```
+
+`run` 创建 Agent sandbox 前会先跑同一选择集的 Gate readiness preflight。如果
+preflight 发现 readiness error，Harness 会停止并记录 run error，不会启动 agent。
 
 `--max-ms` 控制 run loop 的总时间预算，默认是 `6000000` 毫秒（6000 秒）。
 
@@ -533,7 +538,7 @@ Daytona 相关命令报 `DAYTONA_API_KEY`：
 
 ```text
 原因：Gate sandbox 中缺工具、gateSetup 失败、契约命令使用宿主才有的命令，或在 Gate 里误用 agent 工具。
-处理：修 harness.config.json 的 gateSetup 或契约命令。不要启动 agent 重试业务代码，直到 preflight readiness error 清零。
+处理：修 harness.config.json 的 gateSetup 或契约命令。Daytona-backed run 会自动阻断，不会启动 agent，直到 preflight readiness error 清零。
 ```
 
 本地 Daytona 或 toolbox 请求出现 502：

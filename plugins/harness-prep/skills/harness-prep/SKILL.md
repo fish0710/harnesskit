@@ -86,7 +86,7 @@ node dist/src/cli.js check --dir contracts --config harness.config.json --json
 node dist/src/cli.js preflight gate --dir contracts --config harness.config.json --json
 ```
 
-`harness check` proves local contract behavior on the host. `harness preflight gate` proves selected remote contracts and `gateSetup` can execute in the Daytona Gate snapshot.
+`harness check` proves local contract behavior on the host. `harness preflight gate` proves selected remote contracts and `gateSetup` can execute in the Daytona Gate snapshot. Daytona-backed `harness run` also enforces this readiness barrier before creating the Agent sandbox; running it manually first gives clearer setup feedback.
 
 If checks fail because the project is not implemented yet, separate "expected red gate" from config errors. Contract syntax errors, missing commands, unsafe paths, or missing setup commands must be fixed before `harness run`.
 

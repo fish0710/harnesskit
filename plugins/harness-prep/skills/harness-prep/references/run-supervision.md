@@ -22,7 +22,7 @@ harness status --dir contracts
 4. If preflight has `error`, fix config/setup. Do not start Agent.
 5. If preflight has expected `fail`, explain that the current implementation is red and the Agent will try to satisfy it.
 6. If preflight has `blocked`, resolve or intentionally keep the review gate for runtime.
-7. If `harness preflight gate` reports readiness errors, fix config/setup/toolchain assumptions. Do not start Agent, and do not treat the error as an implementation task.
+7. If `harness preflight gate` reports readiness errors, fix config/setup/toolchain assumptions. Daytona-backed `harness run` will enforce the same readiness barrier before Agent creation; do not treat the error as an implementation task.
 8. Start one of:
 
 ```bash

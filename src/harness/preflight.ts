@@ -1004,6 +1004,18 @@ export function renderGatePreflightJson(report: GatePreflightReport): string {
   return JSON.stringify(report, null, 2);
 }
 
+export function gatePreflightRunBlocker(
+  report: GatePreflightReport,
+): string | undefined {
+  if (report.readinessErrors.length === 0) return undefined;
+  return [
+    "Gate preflight readiness failed; fix contracts/config/setup before harness run:",
+    ...report.readinessErrors.map((finding) =>
+      `- ${finding.id}: ${finding.message}`
+    ),
+  ].join("\n");
+}
+
 export function renderGatePreflightPretty(report: GatePreflightReport): string {
   const lines: string[] = [];
   lines.push("");

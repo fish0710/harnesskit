@@ -78,3 +78,31 @@ test("CLI preflight gate reports static readiness errors without requiring Dayto
   );
   assert.equal(report.sandbox, undefined);
 });
+
+test("CLI run blocks on Gate preflight readiness errors before Daytona credentials", () => {
+  const { cwd, contractsDir } = projectFixture();
+  const result = spawnSync(
+    process.execPath,
+    [
+      cliPath,
+      "run",
+      "implement task",
+      "--driver",
+      "command",
+      "--agent-cmd",
+      "node agent.js",
+      "--dir",
+      contractsDir,
+    ],
+    {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, DAYTONA_API_KEY: "" },
+    },
+  );
+
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stderr, /Gate preflight readiness failed/);
+  assert.match(result.stderr, /gateSetup\.1\.nvm/);
+  assert.doesNotMatch(result.stderr, /DAYTONA_API_KEY/);
+});

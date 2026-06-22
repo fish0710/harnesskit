@@ -67,12 +67,19 @@ import {
 import { createProject } from "./harness/scaffold.js";
 import { writePlan } from "./harness/plan.js";
 import { gatherStatus } from "./harness/status.js";
+import { isHostLocalContract } from "./harness/host-gate.js";
 import {
+  gatePreflightRunBlocker,
+  lintGateReadiness,
   renderGatePreflightJson,
   renderGatePreflightPretty,
   runGatePreflight,
+  type GatePreflightReport,
 } from "./harness/preflight.js";
-import type { SandboxProvider } from "./harness/sandbox/types.js";
+import type {
+  SandboxPolicy,
+  SandboxProvider,
+} from "./harness/sandbox/types.js";
 
 const argv = process.argv.slice(2);
 const command = argv[0] ?? "help";
@@ -208,6 +215,46 @@ function selectContractsForValues(
     return selectByChange(contracts, config, changedFiles).selected;
   }
   return contracts;
+}
+
+function staticGatePreflightReport(
+  contracts: Contract[],
+  policy: SandboxPolicy,
+  ctx: RunContext,
+): GatePreflightReport {
+  const baseUrl = (ctx as { baseUrl?: string }).baseUrl;
+  const staticFindings = lintGateReadiness({ contracts, policy, baseUrl });
+  const staticErrors = staticFindings.filter((finding) =>
+    finding.severity === "error"
+  );
+  const remoteContracts = contracts.filter((contract) =>
+    !isHostLocalContract(contract)
+  );
+  const hostLocalContracts = contracts.filter(isHostLocalContract);
+  return {
+    outcome: staticErrors.length > 0 ? "not_ready" : "ready",
+    staticFindings,
+    setup: [],
+    selectedContracts: contracts.map((contract) => contract.id),
+    remoteContracts: remoteContracts.map((contract) => contract.id),
+    hostLocalContracts: hostLocalContracts.map((contract) => contract.id),
+    readinessErrors: staticErrors,
+    productFailures: [],
+  };
+}
+
+function preflightEventSummary(
+  report: GatePreflightReport,
+): Record<string, unknown> {
+  return {
+    outcome: report.outcome,
+    selectedContracts: report.selectedContracts,
+    remoteContracts: report.remoteContracts,
+    hostLocalContracts: report.hostLocalContracts,
+    readinessErrors: report.readinessErrors.map((finding) => finding.id),
+    productFailures: report.productFailures,
+    ...(report.sandbox ? { sandbox: report.sandbox } : {}),
+  };
 }
 
 async function cmdCheck(args: string[]): Promise<void> {
@@ -553,6 +600,35 @@ async function runSingleTask(
       values.config as string | undefined,
     );
     const policy = loadSandboxPolicy(config);
+    if (agent.kind !== "scaffold") {
+      recorder.recordEvent("gate.preflight.start", {
+        selectedContracts: selected.map((contract) => contract.id),
+      });
+      console.log(`harness preflight gate · 契约 ${selected.length} 条`);
+      let preflight = staticGatePreflightReport(selected, policy, ctx);
+      if (
+        preflight.readinessErrors.length === 0 &&
+        preflight.remoteContracts.length > 0
+      ) {
+        preflight = await runGatePreflight({
+          provider: createDaytonaSdkProvider(process.env),
+          root: cwd,
+          policy,
+          contracts: selected,
+          gate,
+          ctx,
+          environment: process.env,
+          retainOnFailure: policy.retainOnFailure,
+        });
+      }
+      recorder.recordEvent("gate.preflight.end", preflightEventSummary(preflight));
+      const preflightBlocker = gatePreflightRunBlocker(preflight);
+      if (preflightBlocker) throw new Error(preflightBlocker);
+      const productRed = preflight.productFailures.length > 0
+        ? ` · product-red ${preflight.productFailures.length}`
+        : "";
+      console.log(`harness preflight gate · readiness ok${productRed}`);
+    }
     let environment: RunEnvironment;
     if (agent.kind === "scaffold") {
       environment = localRunEnvironment(scaffoldDriver, cwd);

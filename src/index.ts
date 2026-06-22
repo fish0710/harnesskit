@@ -77,6 +77,7 @@ export {
 } from "./harness/host-gate.js";
 export {
   classifyGateReportReadiness,
+  gatePreflightRunBlocker,
   lintGateReadiness,
   renderGatePreflightJson,
   renderGatePreflightPretty,
