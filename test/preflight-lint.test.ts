@@ -213,6 +213,26 @@ test("preflight lint warns for loopback http without gate setup", () => {
   assert.match(findings[0]?.message ?? "", /gateSetup/i);
 });
 
+test("preflight lint warns when contracts fetch or install dependencies at runtime", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "deps.npm", type: "command", cmd: "npm", args: ["ci"] },
+      { id: "deps.curl", type: "command", cmd: "curl", args: ["-fsSL", "https://example.com"] },
+    ],
+    policy: policy([]),
+  });
+
+  assert.deepEqual(
+    ids(findings.filter((finding) => finding.id.endsWith(".network"))),
+    ["contract.deps.curl.network", "contract.deps.npm.network"],
+  );
+  assert.ok(
+    findings
+      .filter((finding) => finding.id.endsWith(".network"))
+      .every((finding) => finding.severity === "warning"),
+  );
+});
+
 test("preflight readiness classification promotes command-not-found failures", () => {
   const result: CheckResult = {
     id: "test.unit",
@@ -266,6 +286,41 @@ test("preflight readiness classification promotes name resolution failures", () 
   assert.deepEqual(
     classified.readinessErrors.map((finding) => finding.contractId).sort(),
     ["api.resolve.temp", "api.resolve.unknown"],
+  );
+});
+
+test("preflight readiness classification promotes missing module failures", () => {
+  const cannotFind: CheckResult = {
+    id: "build.module.cannot-find",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "bundle step",
+      how: "Error: Cannot find module 'left-pad'",
+    }],
+  };
+  const moduleNotFound: CheckResult = {
+    id: "build.module.not-found",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "bundle step",
+      how: "Module not found: Can't resolve './missing.js'",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(
+    aggregate([cannotFind, moduleNotFound]),
+  );
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.deepEqual(
+    classified.readinessErrors.map((finding) => finding.contractId).sort(),
+    ["build.module.cannot-find", "build.module.not-found"],
   );
 });
 
