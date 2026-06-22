@@ -62,36 +62,65 @@ function mentionsClaude(command: string): boolean {
   return /(?:^|[\s"'`;&|()])(?:[A-Za-z0-9_./~-]+\/)?claude(?:$|[\s"'`;&|()<>])/.test(command);
 }
 
-function firstMatchIndex(command: string, pattern: RegExp): number | undefined {
-  const match = pattern.exec(command);
-  return match?.index;
+function maskQuotedText(command: string): string {
+  let masked = "";
+  let quote: "'" | "\"" | "`" | undefined;
+  let escaped = false;
+  for (const char of command) {
+    if (escaped) {
+      masked += quote ? " " : char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      masked += quote ? " " : char;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = undefined;
+      masked += " ";
+      continue;
+    }
+    if (char === "'" || char === "\"" || char === "`") {
+      quote = char;
+      masked += " ";
+      continue;
+    }
+    masked += char;
+  }
+  return masked;
 }
 
-function sourcesNvmBeforeUse(command: string): boolean {
-  if (
-    /^\s*(?:bash|sh|zsh)\s+-l?c\s+['"]source\s+\/usr\/local\/nvm\/nvm\.sh\s*&&\s*nvm\s+use\b/.test(command) ||
-    /^\s*(?:bash|sh|zsh)\s+-l?c\s+['"]\.\s+\/usr\/local\/nvm\/nvm\.sh\s*&&\s*nvm\s+use\b/.test(command)
-  ) {
-    return true;
-  }
+function safeWholeShellNvmWrapper(command: string): boolean {
+  return /^\s*(?:bash|sh|zsh)\s+-l?c\s+'(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh\s*&&\s*nvm\s+use\b[\s\S]*'\s*$/.test(command) ||
+    /^\s*(?:bash|sh|zsh)\s+-l?c\s+"(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh\s*&&\s*nvm\s+use\b[\s\S]*"\s*$/.test(command);
+}
 
-  const useIndex = firstMatchIndex(command, /\bnvm\s+use\b/);
-  if (useIndex === undefined) return false;
-  const prefix = command.slice(0, useIndex);
-  const segments = prefix
+function currentShellNvmUsesAreSourced(command: string): boolean {
+  let sourced = false;
+  const segments = maskQuotedText(command)
     .split(/&&|;|\|\|/)
     .map((segment) => segment.trim())
     .filter(Boolean);
-
-  return segments.some((segment) =>
-    /^(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh\b/.test(segment)
-  );
+  for (const segment of segments) {
+    if (
+      /^(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh(?:\s|$)/.test(segment) &&
+      !/[|<>]/.test(segment)
+    ) {
+      sourced = true;
+    }
+    if (/\bnvm\s+use\b/.test(segment) && !sourced) return false;
+  }
+  return true;
 }
 
 function hasBareNvmUse(command: string): boolean {
-  return includesShellWord(command, "nvm") &&
-    /\bnvm\s+use\b/.test(command) &&
-    !sourcesNvmBeforeUse(command);
+  if (!/\bnvm\s+use\b/.test(command)) return false;
+  if (safeWholeShellNvmWrapper(command)) return false;
+  const unquoted = maskQuotedText(command);
+  if (!/\bnvm\s+use\b/.test(unquoted)) return true;
+  return !currentShellNvmUsesAreSourced(command);
 }
 
 function usesNvmInstall(command: string): boolean {
@@ -106,20 +135,32 @@ function commandMentionsMissingTool(command: string): string | undefined {
 }
 
 function bootstrapMentionsTool(command: string, tool: string): boolean {
+  const segments = maskQuotedText(command)
+    .split(/&&|;|\|\|/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
   if (tool === "pnpm") {
-    return /\bcorepack\s+enable\s+pnpm\b/.test(command) ||
-      /\bnpm\s+(?:install|i)\s+-g\s+pnpm\b/.test(command);
+    return segments.some((segment) =>
+      /^corepack\s+enable\s+pnpm\b/.test(segment) ||
+      /^npm\s+(?:install|i)\s+-g\s+pnpm\b/.test(segment)
+    );
   }
   if (tool === "yarn") {
-    return /\bcorepack\s+enable\s+yarn\b/.test(command) ||
-      /\bnpm\s+(?:install|i)\s+-g\s+yarn\b/.test(command);
+    return segments.some((segment) =>
+      /^corepack\s+enable\s+yarn\b/.test(segment) ||
+      /^npm\s+(?:install|i)\s+-g\s+yarn\b/.test(segment)
+    );
   }
   if (tool === "bun") {
-    return /\bnpm\s+(?:install|i)\s+-g\s+bun\b/.test(command) ||
-      /curl\b[\s\S]*\bbun\.sh\/install\b[\s\S]*\|\s*bash\b/.test(command);
+    return segments.some((segment) =>
+      /^npm\s+(?:install|i)\s+-g\s+bun\b/.test(segment) ||
+      /^curl\b[\s\S]*\bbun\.sh\/install\b[\s\S]*\|\s*bash\b/.test(segment)
+    );
   }
   if (tool === "git") {
-    return /\bapt(?:-get)?\s+install\b[\s\S]*\bgit\b/.test(command);
+    return segments.some((segment) =>
+      /^apt(?:-get)?\s+install\b[\s\S]*\bgit\b/.test(segment)
+    );
   }
   return false;
 }
@@ -191,10 +232,7 @@ function runtimeFailureText(value: string): boolean {
     text.includes("und_err_connect_timeout") ||
     text.includes("connect timeout") ||
     text.includes("process timed out") ||
-    text.includes("command timed out") ||
-    /(?:curl|axios|connect|connection|socket|gateway|upstream|health).{0,40}timed out/.test(text) ||
-    /(?:curl|axios|connect|connection|socket|gateway|upstream|health).{0,40}timeout/.test(text) ||
-    /timeout.{0,40}(?:connect|connection|socket|gateway|upstream|health|refused|unreachable)/.test(text);
+    text.includes("command timed out");
 }
 
 function resultText(result: GateReport["results"][number]): string {

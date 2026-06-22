@@ -58,6 +58,28 @@ test("preflight lint rejects child-shell nvm source before later bare nvm use", 
   assert.equal(findings[0]?.severity, "error");
 });
 
+test("preflight lint rejects later bare nvm use after sourced child shell", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy([
+      "bash -lc 'source /usr/local/nvm/nvm.sh && nvm use 20' && nvm use 20",
+    ]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.nvm"]);
+  assert.equal(findings[0]?.severity, "error");
+});
+
+test("preflight lint rejects nvm source in a pipeline before bare nvm use", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["source /usr/local/nvm/nvm.sh | cat && nvm use 20 && npm ci"]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.nvm"]);
+  assert.equal(findings[0]?.severity, "error");
+});
+
 test("preflight lint rejects nvm path mentions that do not source nvm", () => {
   const findings = lintGateReadiness({
     contracts: [],
@@ -211,6 +233,23 @@ test("preflight lint accepts conservative gate tool bootstraps", () => {
     ids(findings.filter((finding) => finding.id.includes(".tool"))),
     [],
   );
+});
+
+test("preflight lint rejects quoted bootstrap text for missing package managers", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "lint.pnpm", type: "command", cmd: "pnpm", args: ["test"] },
+      { id: "structure.yarn", type: "structure", tool: "yarn", args: ["lint"] },
+    ],
+    policy: policy(["echo 'npm install -g pnpm'", "echo corepack enable yarn"]),
+  });
+
+  assert.deepEqual(ids(findings), [
+    "contract.lint.pnpm.tool",
+    "contract.structure.yarn.tool",
+    "gateSetup.1.tool",
+    "gateSetup.2.tool",
+  ]);
 });
 
 test("preflight lint rejects bare corepack enable as pnpm bootstrap", () => {
@@ -491,6 +530,53 @@ test("preflight readiness classification keeps fetch timeout assertions as produ
 
   assert.deepEqual(classified.readinessErrors, []);
   assert.deepEqual(classified.productFailures, ["spec.fetch-timeout.behavior"]);
+});
+
+test("preflight readiness classification keeps infra-word timeout assertions as product failures", () => {
+  const results: CheckResult[] = [
+    {
+      id: "spec.axios-timeout.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "expected axios timeout error but received success",
+      }],
+    },
+    {
+      id: "spec.health-timeout.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "expected health endpoint timeout but got ok",
+      }],
+    },
+    {
+      id: "spec.connection-timeout.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "expected connection timeout error but received success",
+      }],
+    },
+  ];
+
+  const classified = classifyGateReportReadiness(aggregate(results));
+
+  assert.deepEqual(classified.readinessErrors, []);
+  assert.deepEqual(classified.productFailures.sort(), [
+    "spec.axios-timeout.behavior",
+    "spec.connection-timeout.behavior",
+    "spec.health-timeout.behavior",
+  ]);
 });
 
 test("preflight readiness classification keeps ordinary timeout assertions as product failures", () => {
