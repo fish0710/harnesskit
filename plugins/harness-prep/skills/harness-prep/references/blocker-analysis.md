@@ -64,6 +64,11 @@ Use this event extraction:
 harness runs show <runId> --json | node -e 'const fs=require("fs"); const r=JSON.parse(fs.readFileSync(0,"utf8")); for (const e of r.events || []) console.log(`${e.at} ${e.event} ${JSON.stringify(e.data)}`)'
 ```
 
+If the latest Agent event is `agent.command.heartbeat` and there is no later
+`agent.command.end`, classify the run as active unless the heartbeat stops unexpectedly,
+the CLI process exits, the command timeout fires, or RunStore records an error.
+A quiet Claude command is not by itself evidence of a stuck sandbox.
+
 ## Classify The Stop
 
 ### Contract/config `error`
@@ -136,6 +141,13 @@ For no-task series runs, a malformed config or missing `tasks` can fail before a
 ## Daytona `.claude` Inspection
 
 If Agent behavior is unclear, inspect persisted Claude artifacts through `observability-and-review.md`.
+
+While the Agent sandbox is still alive and heartbeat continues, the recorded
+`attempts[].claudeConfigDir` usually points at `/home/daytona/.claude`. An
+operator may attach to the Agent sandbox and inspect `projects/` under that
+directory to understand current Claude Code activity. Treat this as manual
+diagnosis only; do not parse Claude Code private files as the automated
+liveness signal.
 
 Use `.claude` to answer:
 

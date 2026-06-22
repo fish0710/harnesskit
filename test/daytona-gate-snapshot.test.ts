@@ -122,3 +122,27 @@ test("harness-prep snapshot guidance documents legacy nvm boundaries", () => {
     /source \/usr\/local\/nvm\/nvm\.sh && nvm use 14\.21\.3 && npm ci/,
   );
 });
+
+test("harness-prep documents Claude command heartbeat supervision", () => {
+  const runSupervision = readFileSync(
+    "plugins/harness-prep/skills/harness-prep/references/run-supervision.md",
+    "utf8",
+  );
+  const blockerAnalysis = readFileSync(
+    "plugins/harness-prep/skills/harness-prep/references/blocker-analysis.md",
+    "utf8",
+  );
+  const runstore = readFileSync(
+    "plugins/harness-prep/skills/harness-prep/references/runstore-observability.md",
+    "utf8",
+  );
+
+  assert.match(runSupervision, /agent\.command\.heartbeat/);
+  assert.match(runSupervision, /no Claude command output can be normal/i);
+  assert.match(runSupervision, /heartbeat.*active/i);
+  assert.match(blockerAnalysis, /heartbeat stops unexpectedly/i);
+  assert.match(blockerAnalysis, /\/home\/daytona\/\.claude/);
+  assert.match(blockerAnalysis, /projects\//);
+  assert.match(runstore, /commandLastHeartbeatAt/);
+  assert.match(runstore, /commandLastHeartbeatElapsedMs/);
+});
