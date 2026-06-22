@@ -354,6 +354,55 @@ test("RunRecorder records Claude stream progress on the attempt", () => {
   );
 });
 
+test("RunRecorder records Claude command heartbeat on the attempt", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-record-heartbeat-"));
+  const timestamps = [
+    "2026-06-22T09:00:00.000Z",
+    "2026-06-22T09:00:00.100Z",
+    "2026-06-22T09:01:30.000Z",
+    "2026-06-22T09:01:30.100Z",
+    "2026-06-22T09:01:30.200Z",
+  ];
+  const recorder = createRunRecorder(
+    cwd,
+    {
+      runId: "run-heartbeat",
+      createdAt: "2026-06-22T09:00:00.000Z",
+      task: "show Claude command liveness",
+      driver: "daytona(claude)",
+      observability: {
+        enabled: true,
+        backend: "daytona-volume",
+        volumeName: "harness-claude-observability",
+        mountPath: "/harness-observability",
+        runRoot: "/harness-observability/runs/run-heartbeat",
+      },
+    },
+    () => timestamps.shift() ?? "2026-06-22T09:01:30.300Z",
+  );
+
+  recorder.recordEvent("agent.command.heartbeat", {
+    attempt: 1,
+    id: "agent-1",
+    kind: "claude",
+    elapsedMs: 90_000,
+    claudeStreamPath: "/harness-observability/attempt-1/claude-stream.jsonl",
+  });
+
+  const parsed = JSON.parse(readFileSync(recorder.path, "utf8"));
+
+  assert.equal(parsed.attempts[0].agentSandboxId, "agent-1");
+  assert.equal(
+    parsed.attempts[0].commandLastHeartbeatAt,
+    "2026-06-22T09:01:30.000Z",
+  );
+  assert.equal(parsed.attempts[0].commandLastHeartbeatElapsedMs, 90_000);
+  assert.equal(
+    parsed.attempts[0].claudeStreamPath,
+    "/harness-observability/attempt-1/claude-stream.jsonl",
+  );
+});
+
 test("lastRunRecord reads both legacy v1 and v2 records", () => {
   const legacyCwd = mkdtempSync(join(tmpdir(), "harness-record-v1-"));
   writeRunRecord(legacyCwd, {

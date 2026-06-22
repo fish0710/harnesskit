@@ -114,6 +114,8 @@ export interface RunRecordAttempt {
   claudeLastEventType?: string;
   claudeLastTool?: string;
   claudeLastActivityAt?: string;
+  commandLastHeartbeatAt?: string;
+  commandLastHeartbeatElapsedMs?: number;
   agentSandboxId?: string;
   startedAt?: string;
   endedAt?: string;
@@ -296,6 +298,10 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
 function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";
 }
@@ -377,6 +383,17 @@ function isRunRecordAttempt(value: unknown): value is RunRecordAttempt {
     isOptionalString(value.resumedFromSessionId) &&
     isOptionalString(value.claudeConfigDir) &&
     isOptionalString(value.claudeStreamPath) &&
+    (
+      value.commandLastHeartbeatAt === undefined ||
+      (
+        typeof value.commandLastHeartbeatAt === "string" &&
+        isValidTimestamp(value.commandLastHeartbeatAt)
+      )
+    ) &&
+    (
+      value.commandLastHeartbeatElapsedMs === undefined ||
+      isNonNegativeSafeInteger(value.commandLastHeartbeatElapsedMs)
+    ) &&
     isOptionalString(value.agentSandboxId) &&
     (
       value.startedAt === undefined ||
@@ -578,6 +595,7 @@ export class RunRecorder {
       event !== "agent.command.start" &&
       event !== "agent.command.end" &&
       event !== "agent.command.progress" &&
+      event !== "agent.command.heartbeat" &&
       event !== "agent.observability.stream" &&
       event !== "gate.create.end" &&
       event !== "gate.run.end"
@@ -635,6 +653,16 @@ export class RunRecorder {
         attempt.claudeLastActivityAt = value.lastActivityAt;
       }
     }
+    if (event === "agent.command.heartbeat") {
+      if (typeof value.id === "string") attempt.agentSandboxId = value.id;
+      if (typeof value.claudeStreamPath === "string") {
+        attempt.claudeStreamPath = value.claudeStreamPath;
+      }
+      if (typeof value.elapsedMs === "number") {
+        attempt.commandLastHeartbeatElapsedMs = value.elapsedMs;
+      }
+      attempt.commandLastHeartbeatAt = this.now();
+    }
     if (event === "gate.create.end" && typeof value.id === "string") {
       if (!attempt.gateSandboxIds.includes(value.id)) {
         attempt.gateSandboxIds.push(value.id);
@@ -654,8 +682,9 @@ export class RunRecorder {
 export function createRunRecorder(
   cwd: string,
   input: CreateRunRecorderInput,
+  now?: () => string,
 ): RunRecorder {
-  return new RunRecorder(cwd, input);
+  return new RunRecorder(cwd, input, now);
 }
 
 function toRunRecordV3(value: unknown): RunRecordV3 | undefined {
