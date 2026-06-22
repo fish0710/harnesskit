@@ -658,7 +658,7 @@ export class RunRecorder {
       if (typeof value.claudeStreamPath === "string") {
         attempt.claudeStreamPath = value.claudeStreamPath;
       }
-      if (typeof value.elapsedMs === "number") {
+      if (isNonNegativeSafeInteger(value.elapsedMs)) {
         attempt.commandLastHeartbeatElapsedMs = value.elapsedMs;
       }
       attempt.commandLastHeartbeatAt = this.now();

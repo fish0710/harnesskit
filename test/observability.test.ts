@@ -15,6 +15,7 @@ import {
 } from "../src/harness/observability.js";
 import {
   RunRecorder,
+  RunStore,
   createRunRecorder,
   lastRunRecord,
   writeRunRecord,
@@ -356,9 +357,14 @@ test("RunRecorder records Claude stream progress on the attempt", () => {
 
 test("RunRecorder records Claude command heartbeat on the attempt", () => {
   const cwd = mkdtempSync(join(tmpdir(), "harness-record-heartbeat-"));
+  const createdAt = "2026-06-22T09:00:00.000Z";
+  const recordCreatedEventAt = "2026-06-22T09:00:00.100Z";
+  const heartbeatAppliedAt = "2026-06-22T09:01:30.000Z";
+  const heartbeatEventAt = "2026-06-22T09:01:30.100Z";
+  const heartbeatUpdatedAt = "2026-06-22T09:01:30.200Z";
   const timestamps = [
-    "2026-06-22T09:00:00.000Z",
     "2026-06-22T09:00:00.100Z",
+    "2026-06-22T09:00:00.200Z",
     "2026-06-22T09:01:30.000Z",
     "2026-06-22T09:01:30.100Z",
     "2026-06-22T09:01:30.200Z",
@@ -367,7 +373,7 @@ test("RunRecorder records Claude command heartbeat on the attempt", () => {
     cwd,
     {
       runId: "run-heartbeat",
-      createdAt: "2026-06-22T09:00:00.000Z",
+      createdAt,
       task: "show Claude command liveness",
       driver: "daytona(claude)",
       observability: {
@@ -391,16 +397,78 @@ test("RunRecorder records Claude command heartbeat on the attempt", () => {
 
   const parsed = JSON.parse(readFileSync(recorder.path, "utf8"));
 
+  assert.equal(parsed.events[0].at, recordCreatedEventAt);
+  assert.equal(parsed.events[1].at, heartbeatEventAt);
+  assert.equal(parsed.updatedAt, heartbeatUpdatedAt);
   assert.equal(parsed.attempts[0].agentSandboxId, "agent-1");
   assert.equal(
     parsed.attempts[0].commandLastHeartbeatAt,
-    "2026-06-22T09:01:30.000Z",
+    heartbeatAppliedAt,
   );
   assert.equal(parsed.attempts[0].commandLastHeartbeatElapsedMs, 90_000);
   assert.equal(
     parsed.attempts[0].claudeStreamPath,
     "/harness-observability/attempt-1/claude-stream.jsonl",
   );
+});
+
+test("RunRecorder ignores invalid Claude command heartbeat elapsed metadata", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-record-heartbeat-invalid-"));
+  const heartbeatAppliedAt = "2026-06-22T09:03:30.100Z";
+  const recorder = createRunRecorder(
+    cwd,
+    {
+      runId: "run-heartbeat-invalid",
+      createdAt: "2026-06-22T09:02:00.000Z",
+      task: "keep run record readable with invalid heartbeat elapsed",
+      driver: "daytona(claude)",
+      observability: {
+        enabled: true,
+        backend: "daytona-volume",
+        volumeName: "harness-claude-observability",
+        mountPath: "/harness-observability",
+        runRoot: "/harness-observability/runs/run-heartbeat-invalid",
+      },
+    },
+    (() => {
+      const timestamps = [
+        "2026-06-22T09:02:00.100Z",
+        "2026-06-22T09:03:30.000Z",
+        "2026-06-22T09:03:30.100Z",
+      ];
+      return () => timestamps.shift() ?? "2026-06-22T09:03:30.200Z";
+    })(),
+  );
+
+  recorder.recordEvent("agent.command.heartbeat", {
+    attempt: 1,
+    id: "agent-1",
+    kind: "claude",
+    elapsedMs: -1,
+    claudeStreamPath: "/harness-observability/attempt-1/claude-stream.jsonl",
+  });
+
+  const parsed = JSON.parse(readFileSync(recorder.path, "utf8"));
+
+  assert.equal(parsed.events[1].data.elapsedMs, -1);
+  assert.equal(
+    parsed.attempts[0].commandLastHeartbeatAt,
+    heartbeatAppliedAt,
+  );
+  assert.equal(
+    Object.hasOwn(parsed.attempts[0], "commandLastHeartbeatElapsedMs"),
+    false,
+  );
+
+  const stored = new RunStore(cwd).readRun("run-heartbeat-invalid");
+  assert.equal(stored?.events[1]?.data && typeof stored.events[1].data === "object"
+    ? (stored.events[1].data as { elapsedMs?: unknown }).elapsedMs
+    : undefined, -1);
+  assert.equal(
+    stored?.attempts[0]?.commandLastHeartbeatAt,
+    heartbeatAppliedAt,
+  );
+  assert.equal(stored?.attempts[0]?.commandLastHeartbeatElapsedMs, undefined);
 });
 
 test("lastRunRecord reads both legacy v1 and v2 records", () => {
