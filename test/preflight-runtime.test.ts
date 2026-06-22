@@ -155,6 +155,12 @@ class RecordingGateHandle implements SandboxHandle {
     throw new Error("preflight must not use PTY");
   }
 
+  async readFile(path: string): Promise<Buffer> {
+    const file = this.files.get(path);
+    if (!file) throw new Error(`missing fake file: ${path}`);
+    return Buffer.from(file.content);
+  }
+
   async setNetworkBlocked(blocked: boolean): Promise<void> {
     this.networkBlocks.push(blocked);
   }

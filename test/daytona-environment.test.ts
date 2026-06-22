@@ -92,6 +92,10 @@ function policy(setup: {
   });
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 interface ScriptedProvider extends SandboxProvider {
   requests: SandboxCreateRequest[];
   handles: RecordingHandle[];
@@ -133,6 +137,10 @@ class RecordingHandle implements SandboxHandle {
       mutateProtectedOnGate: boolean;
       commandExitCodes: Record<string, number>;
       throwCommands: Record<string, Error>;
+      claudeRunHooks: Array<
+        ((handle: RecordingHandle, env: Record<string, string>) => Promise<void>)
+          | undefined
+      >;
     },
   ) {}
 
@@ -267,6 +275,7 @@ class RecordingHandle implements SandboxHandle {
           ),
         );
       }
+      await this.provider.claudeRunHooks[run]?.(this, env);
       return {
         exitCode: 0,
         stdout,
@@ -329,6 +338,12 @@ class RecordingHandle implements SandboxHandle {
     return this.execute(command, cwd, env);
   }
 
+  async readFile(path: string): Promise<Buffer> {
+    const file = this.files.get(path);
+    if (!file) throw new Error(`missing fake file: ${path}`);
+    return Buffer.from(file.content);
+  }
+
   async setNetworkBlocked(blocked: boolean): Promise<void> {
     this.networkBlocks.push(blocked);
   }
@@ -349,6 +364,10 @@ function scriptedProvider(options: {
   candidateMutations?: Array<
     ((files: Map<string, WorkspaceFile>) => void) | undefined
   >;
+  claudeRunHooks?: Array<
+    ((handle: RecordingHandle, env: Record<string, string>) => Promise<void>)
+      | undefined
+  >;
   gateDeleteFails?: boolean;
   mutateProtectedOnGate?: boolean;
   commandExitCodes?: Record<string, number>;
@@ -361,6 +380,7 @@ function scriptedProvider(options: {
     ],
     agentStdout: options.agentStdout ?? "agent done",
     candidateMutations: options.candidateMutations ?? [],
+    claudeRunHooks: options.claudeRunHooks ?? [],
     gateDeleteFails: options.gateDeleteFails ?? false,
     mutateProtectedOnGate: options.mutateProtectedOnGate ?? false,
     commandExitCodes: options.commandExitCodes ?? {},
@@ -735,6 +755,72 @@ test("Claude Daytona observability persists raw stream-json stdout", async () =>
     path: "/harness-observability/attempt-1/claude-stream.jsonl",
     bytes: Buffer.byteLength(`${assistant}\n${toolResult}\n${result}\n`),
   });
+});
+
+test("Claude Daytona emits live stream progress before command end", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const assistant = JSON.stringify({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [{
+        type: "tool_use",
+        id: "tool-1",
+        name: "Bash",
+        input: { command: "npm view @dcloudio/uni-app version" },
+      }],
+    },
+  });
+  const result = JSON.stringify({
+    type: "result",
+    session_id: "session-live",
+  });
+  let releaseClaude: () => void = () => undefined;
+  const waitForRelease = new Promise<void>((resolve) => {
+    releaseClaude = resolve;
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    claudeStdouts: [`${assistant}\n${result}\n`],
+    claudeRunHooks: [async () => await waitForRelease],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    observability: {
+      runId: "run-live-stream",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const task = environment.runTask({ task: "fix it" });
+  try {
+    await delay(120);
+    const progressIndex = observations.findIndex(([event]) =>
+      event === "agent.command.progress"
+    );
+    const endIndex = observations.findIndex(([event]) =>
+      event === "agent.command.end"
+    );
+
+    assert.notEqual(progressIndex, -1);
+    assert.equal(endIndex, -1);
+    assert.ok(
+      observations.some(([event, data]) =>
+        event === "agent.claude.tool" &&
+        (data as { tool?: string }).tool === "Bash"
+      ),
+    );
+  } finally {
+    releaseClaude();
+    await task;
+  }
 });
 
 test("Claude Daytona retries strongly resume the captured session in one agent sandbox", async () => {

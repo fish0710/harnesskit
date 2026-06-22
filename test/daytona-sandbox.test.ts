@@ -1042,6 +1042,9 @@ function recordingHandle(id: string) {
     async execute() {
       return { exitCode: 0, stdout: "", stderr: "" };
     },
+    async readFile() {
+      return Buffer.alloc(0);
+    },
     async runPty() {
       return { exitCode: 0, stdout: "", stderr: "" };
     },

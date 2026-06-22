@@ -726,6 +726,10 @@ class DaytonaSandboxHandle implements SandboxHandle {
     };
   }
 
+  async readFile(path: string): Promise<Buffer> {
+    return await this.sandbox.fs.downloadFile(daytonaSdkPath(path));
+  }
+
   async runPty(
     command: string,
     cwd: string,

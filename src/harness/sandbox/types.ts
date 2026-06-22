@@ -81,6 +81,7 @@ export interface SandboxHandle {
     env?: Record<string, string>,
     timeoutMs?: number,
   ): Promise<SandboxCommandResult>;
+  readFile(path: string): Promise<Buffer>;
   runPty(
     command: string,
     cwd: string,

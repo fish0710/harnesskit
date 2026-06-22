@@ -5,6 +5,7 @@ import type {
   EnvironmentTaskInput,
   RunEnvironment,
 } from "../run.js";
+import { tailClaudeStreamDuring } from "../claude-stream.js";
 import {
   isHostLocalContract,
   runHostLocalGate,
@@ -451,19 +452,34 @@ export function createDaytonaRunEnvironment(
           const command = buildClaudeCommand(
             resume ? "resume" : undefined,
           );
-          result = await handle.execute(
-            command,
-            REMOTE_ROOT,
-            {
-              ...modelEnvironment,
-              ...claudeObservationEnv,
-              HARNESS_PROMPT: prompt,
-              ...(resume && claudeSessionId
-                ? { HARNESS_CLAUDE_SESSION_ID: claudeSessionId }
-                : {}),
-            },
-            AGENT_COMMAND_TIMEOUT_MS,
-          );
+          const commandEnv = {
+            ...modelEnvironment,
+            ...claudeObservationEnv,
+            HARNESS_PROMPT: prompt,
+            ...(resume && claudeSessionId
+              ? { HARNESS_CLAUDE_SESSION_ID: claudeSessionId }
+              : {}),
+          };
+          const runClaudeCommand = () =>
+            handle.execute(
+              command,
+              REMOTE_ROOT,
+              commandEnv,
+              AGENT_COMMAND_TIMEOUT_MS,
+            );
+          const streamPath = claudeObservationEnv.HARNESS_CLAUDE_STREAM_PATH;
+          result = streamPath
+            ? await tailClaudeStreamDuring({
+              id: handle.id,
+              attempt,
+              path: streamPath,
+              read: (path) => handle.readFile(path),
+              emit: ({ event, data }) => observe(event, data),
+              run: runClaudeCommand,
+              intervalMs: 50,
+              noOutputWarningMs: 60_000,
+            })
+            : await runClaudeCommand();
           claudeHomeSnapshotAttempted = true;
           await snapshotClaudeHome(
             handle,

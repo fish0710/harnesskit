@@ -314,6 +314,46 @@ test("RunRecorder records Claude stream path at command start for timeout diagno
   );
 });
 
+test("RunRecorder records Claude stream progress on the attempt", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-observability-record-"));
+  const recorder = createRunRecorder(cwd, {
+    runId: "run-progress",
+    createdAt: "2026-06-22T08:00:00.000Z",
+    task: "show live Claude progress",
+    driver: "daytona(claude)",
+    observability: {
+      enabled: true,
+      backend: "daytona-volume",
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+      runRoot: "/harness-observability/runs/run-progress",
+    },
+  });
+
+  recorder.recordEvent("agent.command.progress", {
+    attempt: 1,
+    path: "/harness-observability/attempt-1/claude-stream.jsonl",
+    bytes: 128,
+    lastEventType: "assistant",
+    lastTool: "Bash",
+    lastActivityAt: "2026-06-22T08:00:01.000Z",
+  });
+
+  const parsed = JSON.parse(readFileSync(recorder.path, "utf8"));
+
+  assert.equal(
+    parsed.attempts[0].claudeStreamPath,
+    "/harness-observability/attempt-1/claude-stream.jsonl",
+  );
+  assert.equal(parsed.attempts[0].claudeStreamBytes, 128);
+  assert.equal(parsed.attempts[0].claudeLastEventType, "assistant");
+  assert.equal(parsed.attempts[0].claudeLastTool, "Bash");
+  assert.equal(
+    parsed.attempts[0].claudeLastActivityAt,
+    "2026-06-22T08:00:01.000Z",
+  );
+});
+
 test("lastRunRecord reads both legacy v1 and v2 records", () => {
   const legacyCwd = mkdtempSync(join(tmpdir(), "harness-record-v1-"));
   writeRunRecord(legacyCwd, {

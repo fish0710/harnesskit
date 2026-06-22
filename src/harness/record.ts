@@ -110,6 +110,10 @@ export interface RunRecordAttempt {
   resumedFromSessionId?: string;
   claudeConfigDir?: string;
   claudeStreamPath?: string;
+  claudeStreamBytes?: number;
+  claudeLastEventType?: string;
+  claudeLastTool?: string;
+  claudeLastActivityAt?: string;
   agentSandboxId?: string;
   startedAt?: string;
   endedAt?: string;
@@ -573,6 +577,7 @@ export class RunRecorder {
     if (
       event !== "agent.command.start" &&
       event !== "agent.command.end" &&
+      event !== "agent.command.progress" &&
       event !== "agent.observability.stream" &&
       event !== "gate.create.end" &&
       event !== "gate.run.end"
@@ -612,6 +617,23 @@ export class RunRecorder {
       typeof value.path === "string"
     ) {
       attempt.claudeStreamPath = value.path;
+    }
+    if (event === "agent.command.progress") {
+      if (typeof value.path === "string") {
+        attempt.claudeStreamPath = value.path;
+      }
+      if (typeof value.bytes === "number") {
+        attempt.claudeStreamBytes = value.bytes;
+      }
+      if (typeof value.lastEventType === "string") {
+        attempt.claudeLastEventType = value.lastEventType;
+      }
+      if (typeof value.lastTool === "string") {
+        attempt.claudeLastTool = value.lastTool;
+      }
+      if (typeof value.lastActivityAt === "string") {
+        attempt.claudeLastActivityAt = value.lastActivityAt;
+      }
     }
     if (event === "gate.create.end" && typeof value.id === "string") {
       if (!attempt.gateSandboxIds.includes(value.id)) {
