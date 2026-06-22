@@ -48,6 +48,16 @@ test("preflight lint accepts sourced nvm use in gate setup", () => {
   );
 });
 
+test("preflight lint rejects child-shell nvm source before later bare nvm use", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["bash -lc 'source /usr/local/nvm/nvm.sh' && nvm use 20"]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.nvm"]);
+  assert.equal(findings[0]?.severity, "error");
+});
+
 test("preflight lint rejects nvm path mentions that do not source nvm", () => {
   const findings = lintGateReadiness({
     contracts: [],
@@ -90,6 +100,16 @@ test("preflight lint rejects quoted nvm source text that is not executed", () =>
   assert.equal(findings[0]?.severity, "error");
 });
 
+test("preflight lint rejects quoted bash wrapper text that is not executed", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["echo 'bash -lc \"source /usr/local/nvm/nvm.sh\"' && nvm use 20"]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.nvm"]);
+  assert.equal(findings[0]?.severity, "error");
+});
+
 test("preflight lint rejects claude in gate setup and contracts", () => {
   const contracts: Contract[] = [
     { id: "agent.leak", type: "command", cmd: "claude", args: ["--version"] },
@@ -119,6 +139,21 @@ test("preflight lint rejects path-qualified claude in gate setup and contracts",
   assert.deepEqual(ids(findings), [
     "contract.agent.abs.claude",
     "contract.agent.local.claude",
+    "gateSetup.1.claude",
+  ]);
+});
+
+test("preflight lint rejects redirection-delimited claude invocations", () => {
+  const contracts: Contract[] = [
+    { id: "agent.redirect.abs", type: "command", cmd: "/usr/local/bin/claude>/tmp/out" },
+  ];
+  const findings = lintGateReadiness({
+    contracts,
+    policy: policy(["claude>/tmp/out"]),
+  });
+
+  assert.deepEqual(ids(findings), [
+    "contract.agent.redirect.abs.claude",
     "gateSetup.1.claude",
   ]);
 });
@@ -279,6 +314,25 @@ test("preflight readiness classification promotes command-not-found failures", (
   assert.match(classified.readinessErrors[0]?.message ?? "", /pnpm: not found/);
 });
 
+test("preflight readiness classification promotes bare exit-127 failures", () => {
+  const result: CheckResult = {
+    id: "test.spawn",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 127，期望 0",
+      why: "smoke",
+      how: "",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([result]));
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.equal(classified.readinessErrors[0]?.contractId, "test.spawn");
+});
+
 test("preflight readiness classification promotes name resolution failures", () => {
   const temporaryFailure: CheckResult = {
     id: "api.resolve.temp",
@@ -418,6 +472,25 @@ test("preflight readiness classification keeps request timed out assertions as p
 
   assert.deepEqual(classified.readinessErrors, []);
   assert.deepEqual(classified.productFailures, ["spec.request-timeout.behavior"]);
+});
+
+test("preflight readiness classification keeps fetch timeout assertions as product failures", () => {
+  const result: CheckResult = {
+    id: "spec.fetch-timeout.behavior",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "behavior spec",
+      how: "expected fetch timeout error but received success",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([result]));
+
+  assert.deepEqual(classified.readinessErrors, []);
+  assert.deepEqual(classified.productFailures, ["spec.fetch-timeout.behavior"]);
 });
 
 test("preflight readiness classification keeps ordinary timeout assertions as product failures", () => {

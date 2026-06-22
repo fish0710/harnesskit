@@ -59,7 +59,7 @@ function includesShellWord(command: string, word: string): boolean {
 }
 
 function mentionsClaude(command: string): boolean {
-  return /(?:^|[\s"'`;&|()])(?:[A-Za-z0-9_./~-]+\/)?claude(?:$|[\s"'`;&|()])/.test(command);
+  return /(?:^|[\s"'`;&|()])(?:[A-Za-z0-9_./~-]+\/)?claude(?:$|[\s"'`;&|()<>])/.test(command);
 }
 
 function firstMatchIndex(command: string, pattern: RegExp): number | undefined {
@@ -68,10 +68,24 @@ function firstMatchIndex(command: string, pattern: RegExp): number | undefined {
 }
 
 function sourcesNvmBeforeUse(command: string): boolean {
+  if (
+    /^\s*(?:bash|sh|zsh)\s+-l?c\s+['"]source\s+\/usr\/local\/nvm\/nvm\.sh\s*&&\s*nvm\s+use\b/.test(command) ||
+    /^\s*(?:bash|sh|zsh)\s+-l?c\s+['"]\.\s+\/usr\/local\/nvm\/nvm\.sh\s*&&\s*nvm\s+use\b/.test(command)
+  ) {
+    return true;
+  }
+
   const useIndex = firstMatchIndex(command, /\bnvm\s+use\b/);
   if (useIndex === undefined) return false;
   const prefix = command.slice(0, useIndex);
-  return /(?:^|[;&|]\s*|\b(?:bash|sh|zsh)\s+-l?c\s+['"]?)(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh\b/.test(prefix);
+  const segments = prefix
+    .split(/&&|;|\|\|/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  return segments.some((segment) =>
+    /^(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh\b/.test(segment)
+  );
 }
 
 function hasBareNvmUse(command: string): boolean {
@@ -154,6 +168,8 @@ function httpContractUsesLoopback(contract: Contract): boolean {
 function runtimeFailureText(value: string): boolean {
   const text = value.toLowerCase();
   return text.includes("command not found") ||
+    text.includes("exit code 127") ||
+    text.includes("退出码 127") ||
     text.includes(": not found") ||
     text.includes("nvm: not found") ||
     text.includes("nvm.sh") ||
@@ -171,8 +187,13 @@ function runtimeFailureText(value: string): boolean {
     text.includes("connection timed out") ||
     text.includes("request timeout after") ||
     text.includes("timed out while") ||
-    /(?:curl|axios|fetch|connect|connection|socket|gateway|upstream|health).{0,40}timed out/.test(text) ||
-    /(?:curl|axios|fetch|connect|connection|socket|gateway|upstream|health).{0,40}timeout/.test(text) ||
+    text.includes("etimedout") ||
+    text.includes("und_err_connect_timeout") ||
+    text.includes("connect timeout") ||
+    text.includes("process timed out") ||
+    text.includes("command timed out") ||
+    /(?:curl|axios|connect|connection|socket|gateway|upstream|health).{0,40}timed out/.test(text) ||
+    /(?:curl|axios|connect|connection|socket|gateway|upstream|health).{0,40}timeout/.test(text) ||
     /timeout.{0,40}(?:connect|connection|socket|gateway|upstream|health|refused|unreachable)/.test(text);
 }
 
