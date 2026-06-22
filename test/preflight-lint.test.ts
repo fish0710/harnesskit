@@ -403,6 +403,15 @@ test("preflight lint accepts shell-wrapped bootstrap followed by use inside wrap
   assert.deepEqual(ids(findings), []);
 });
 
+test("preflight lint rejects shell-wrapped tool use before later bootstrap", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["bash -lc 'pnpm test && corepack enable pnpm'"]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.tool"]);
+});
+
 test("preflight lint rejects bare corepack enable as pnpm bootstrap", () => {
   const findings = lintGateReadiness({
     contracts: [

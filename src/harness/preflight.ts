@@ -241,6 +241,12 @@ function gateSetupMissingTool(
   bootstrapped: Set<string>,
 ): string | undefined {
   for (const segment of executableSegments(command)) {
+    const script = wholeShellScript(segment);
+    if (script !== undefined) {
+      const tool = gateSetupMissingTool(script, bootstrapped);
+      if (tool) return tool;
+      continue;
+    }
     for (const tool of MISSING_DEFAULT_TOOLS) {
       if (segmentBootstrapsTool(segment, tool)) bootstrapped.add(tool);
     }
