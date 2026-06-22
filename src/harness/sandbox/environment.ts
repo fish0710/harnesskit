@@ -127,6 +127,15 @@ function contractUsesLoopbackHttp(contract: Contract): boolean {
     (typeof baseUrl === "string" && urlUsesLoopback(baseUrl));
 }
 
+function validateHeartbeatIntervalMs(value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(
+      "heartbeatIntervalMs must be a positive safe integer when provided",
+    );
+  }
+}
+
 function shouldBlockGateNetwork(contracts: Contract[]): boolean {
   return !contracts.some(contractUsesLoopbackHttp);
 }
@@ -299,6 +308,7 @@ async function persistClaudeStreamOutput(
 export function createDaytonaRunEnvironment(
   options: DaytonaRunEnvironmentOptions,
 ): RunEnvironment {
+  validateHeartbeatIntervalMs(options.heartbeatIntervalMs);
   const environment = options.environment ?? process.env;
   const baseline = captureWorkspace(options.root, options.policy);
   const modelEnvironment = options.agent.kind === "claude"

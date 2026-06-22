@@ -894,6 +894,31 @@ test("Claude Daytona emits command heartbeat before command end", async () => {
   );
 });
 
+test("Claude Daytona rejects invalid heartbeat interval overrides before sandbox creation", () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+
+  for (const heartbeatIntervalMs of [0, -1, Number.POSITIVE_INFINITY, NaN, 1.5]) {
+    const provider = scriptedProvider({
+      candidateVersions: ["fixed\n"],
+      gateExitCodes: [0],
+    });
+
+    assert.throws(
+      () =>
+        createDaytonaRunEnvironment({
+          provider,
+          root,
+          policy: policy(),
+          agent: { kind: "claude" },
+          environment: configuredClaudeEnvironment,
+          heartbeatIntervalMs,
+        }),
+      /heartbeatIntervalMs/,
+    );
+    assert.deepEqual(provider.requests, []);
+  }
+});
+
 test("Claude Daytona retries strongly resume the captured session in one agent sandbox", async () => {
   const root = createGitFixture({
     "src/a.ts": "before\n",
