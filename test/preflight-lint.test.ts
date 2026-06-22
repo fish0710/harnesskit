@@ -272,7 +272,12 @@ test("preflight lint rejects path-qualified claude in gate setup and contracts",
 
 test("preflight lint rejects redirection-delimited claude invocations", () => {
   const contracts: Contract[] = [
-    { id: "agent.redirect.abs", type: "command", cmd: "/usr/local/bin/claude>/tmp/out" },
+    {
+      id: "agent.redirect.abs",
+      type: "command",
+      cmd: "bash",
+      args: ["-lc", "/usr/local/bin/claude>/tmp/out"],
+    },
   ];
   const findings = lintGateReadiness({
     contracts,
@@ -287,7 +292,12 @@ test("preflight lint rejects redirection-delimited claude invocations", () => {
 
 test("preflight lint rejects punctuation-delimited claude invocations", () => {
   const contracts: Contract[] = [
-    { id: "agent.shell", type: "command", cmd: "if", args: ["claude;", "then", "echo", "ok", "fi"] },
+    {
+      id: "agent.shell",
+      type: "command",
+      cmd: "bash",
+      args: ["-lc", "if claude; then echo ok; fi"],
+    },
   ];
   const findings = lintGateReadiness({
     contracts,
@@ -466,6 +476,30 @@ test("preflight lint rejects shell-wrapped tool use before later bootstrap", () 
   assert.deepEqual(ids(findings), ["gateSetup.1.tool"]);
 });
 
+test("preflight lint unwraps path-qualified and option-rich shell wrappers", () => {
+  const tool = lintGateReadiness({
+    contracts: [],
+    policy: policy(["/bin/bash -lc 'pnpm test'"]),
+  });
+  const claude = lintGateReadiness({
+    contracts: [],
+    policy: policy(["/bin/bash -lc 'claude --version'"]),
+  });
+  const nvm = lintGateReadiness({
+    contracts: [],
+    policy: policy(["/bin/bash -lc 'nvm use 20 && npm test'"]),
+  });
+  const options = lintGateReadiness({
+    contracts: [],
+    policy: policy(["bash -euo pipefail -c 'pnpm test'"]),
+  });
+
+  assert.deepEqual(ids(tool), ["gateSetup.1.tool"]);
+  assert.deepEqual(ids(claude), ["gateSetup.1.claude"]);
+  assert.deepEqual(ids(nvm), ["gateSetup.1.nvm"]);
+  assert.deepEqual(ids(options), ["gateSetup.1.tool"]);
+});
+
 test("preflight lint rejects conditionally skipped gate setup bootstraps", () => {
   const topLevel = lintGateReadiness({
     contracts: [],
@@ -480,6 +514,22 @@ test("preflight lint rejects conditionally skipped gate setup bootstraps", () =>
   assert.deepEqual(ids(wrapped), ["gateSetup.1.tool"]);
 });
 
+test("preflight lint does not persist conditionally skipped bootstraps", () => {
+  const laterSetup = lintGateReadiness({
+    contracts: [],
+    policy: policy(["false && corepack enable pnpm", "pnpm test"]),
+  });
+  const laterContract = lintGateReadiness({
+    contracts: [
+      { id: "lint.pnpm", type: "command", cmd: "pnpm", args: ["test"] },
+    ],
+    policy: policy(["false && corepack enable pnpm"]),
+  });
+
+  assert.deepEqual(ids(laterSetup), ["gateSetup.2.tool"]);
+  assert.deepEqual(ids(laterContract), ["contract.lint.pnpm.tool"]);
+});
+
 test("preflight lint rejects failure-branch package manager use", () => {
   const findings = lintGateReadiness({
     contracts: [],
@@ -487,6 +537,60 @@ test("preflight lint rejects failure-branch package manager use", () => {
   });
 
   assert.deepEqual(ids(findings), ["gateSetup.1.tool"]);
+});
+
+test("preflight lint rejects wrapped nvm install invocations", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "node.env", type: "command", cmd: "env", args: ["nvm", "install", "20"] },
+      { id: "node.group", type: "command", cmd: "(nvm", args: ["install", "20)"] },
+      {
+        id: "node.wrapper",
+        type: "command",
+        cmd: "bash",
+        args: ["-lc", "env nvm install 20"],
+      },
+    ],
+    policy: policy(["env nvm install 20", "(nvm install 20)"]),
+  });
+
+  assert.deepEqual(ids(findings), [
+    "contract.node.env.nvm-install",
+    "contract.node.group.nvm-install",
+    "contract.node.wrapper.nvm-install",
+    "gateSetup.1.nvm-install",
+    "gateSetup.2.nvm-install",
+  ]);
+});
+
+test("preflight lint does not treat structured contract args as executable text", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "docs.claude", type: "command", cmd: "echo", args: ["claude --version"] },
+      { id: "docs.pnpm", type: "command", cmd: "printf", args: ["%s", "pnpm test"] },
+      { id: "docs.network", type: "command", cmd: "printf", args: ["%s", "npm install && curl"] },
+    ],
+    policy: policy([]),
+  });
+
+  assert.deepEqual(ids(findings), []);
+});
+
+test("preflight lint unwraps structured shell contract commands", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "shell.pnpm", type: "command", cmd: "/bin/bash", args: ["-lc", "pnpm test"] },
+      { id: "shell.claude", type: "command", cmd: "/bin/bash", args: ["-lc", "claude --version"] },
+      { id: "shell.nvm", type: "command", cmd: "bash", args: ["-euo", "pipefail", "-c", "nvm use 20"] },
+    ],
+    policy: policy([]),
+  });
+
+  assert.deepEqual(ids(findings), [
+    "contract.shell.claude.claude",
+    "contract.shell.nvm.nvm",
+    "contract.shell.pnpm.tool",
+  ]);
 });
 
 test("preflight lint rejects bare corepack enable as pnpm bootstrap", () => {
@@ -1060,6 +1164,25 @@ test("preflight readiness classification promotes actual runtime evidence after 
 
   assert.deepEqual(classified.productFailures, []);
   assert.equal(classified.readinessErrors[0]?.contractId, "api.refused.actual-error");
+});
+
+test("preflight readiness classification promotes got runtime evidence after assertions", () => {
+  const result: CheckResult = {
+    id: "api.refused.got-word",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "http smoke",
+      how: "expected status 200 got ECONNREFUSED",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([result]));
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.equal(classified.readinessErrors[0]?.contractId, "api.refused.got-word");
 });
 
 test("preflight readiness classification promotes missing nvm version failures", () => {

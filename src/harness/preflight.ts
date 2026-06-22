@@ -98,9 +98,68 @@ function maskQuotedText(command: string): string {
   return masked;
 }
 
+function shellWords(command: string): string[] | undefined {
+  const words: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | "`" | undefined;
+  let escaped = false;
+  for (const char of command.trim()) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (quote || escaped) return undefined;
+  if (current) words.push(current);
+  return words;
+}
+
+function executableName(command: string): string {
+  let value = command.trim();
+  while (value.startsWith("(")) value = value.slice(1);
+  while (value.endsWith(")")) value = value.slice(0, -1);
+  return value.split(/[\\/]/).at(-1) ?? value;
+}
+
+function executableIs(command: string, name: string): boolean {
+  return executableName(command) === name;
+}
+
 function wholeShellScript(command: string): string | undefined {
-  const match = /^\s*(?:bash|sh|zsh)\s+-l?c\s+(['"])([\s\S]*)\1\s*$/.exec(command);
-  return match?.[2];
+  const words = shellWords(command);
+  if (!words || words.length < 3) return undefined;
+  if (!["bash", "sh", "zsh"].includes(executableName(words[0]!))) return undefined;
+  for (let index = 1; index < words.length - 1; index++) {
+    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[index]!)) {
+      return words[index + 1];
+    }
+  }
+  return undefined;
 }
 
 function currentShellNvmUsesAreSourced(command: string): boolean {
@@ -142,7 +201,7 @@ function usesNvmInstall(command: string): boolean {
   return shellSegments(command).some((segment) => {
     const script = wholeShellScript(segment.text);
     if (script !== undefined) return usesNvmInstall(script);
-    return /^(?:[A-Za-z0-9_./~-]+\/)?nvm\s+install(?:\s|$)/.test(
+    return /(?:^|[\s;&|()])(?:[A-Za-z0-9_./~-]+\/)?nvm\s+install(?:[\s)&;|]|$)/.test(
       maskQuotedText(segment.text).trim(),
     );
   });
@@ -277,7 +336,7 @@ function gateSetupMissingTool(
     for (const tool of MISSING_DEFAULT_TOOLS) {
       if (segmentBootstrapsTool(segment.text, tool)) {
         branchBootstrapped.add(tool);
-        commandReliableBootstraps.add(tool);
+        if (segment.operator === "start") commandReliableBootstraps.add(tool);
       }
     }
     for (const tool of MISSING_DEFAULT_TOOLS) {
@@ -299,22 +358,103 @@ function setupBootstrapsTool(policy: SandboxPolicy, tool: string): boolean {
   return policy.gateSetup.some((command) => bootstrapMentionsTool(command, tool));
 }
 
-function contractCommandText(contract: Contract): string | undefined {
+interface ContractCommand {
+  cmd: string;
+  args: string[];
+}
+
+function contractCommand(contract: Contract): ContractCommand | undefined {
   if (contract.type === "command" || contract.type === "boot") {
     const cmd = typeof contract.cmd === "string" ? contract.cmd : undefined;
     const args = Array.isArray(contract.args)
-      ? contract.args.map(String).join(" ")
-      : "";
-    return cmd ? `${cmd} ${args}`.trim() : undefined;
+      ? contract.args.map(String)
+      : [];
+    return cmd ? { cmd, args } : undefined;
   }
   if (contract.type === "structure") {
     const tool = typeof contract.tool === "string" ? contract.tool : undefined;
     const args = Array.isArray(contract.args)
-      ? contract.args.map(String).join(" ")
-      : "";
-    return tool ? `${tool} ${args}`.trim() : undefined;
+      ? contract.args.map(String)
+      : [];
+    return tool ? { cmd: tool, args } : undefined;
   }
   return undefined;
+}
+
+function structuredShellScript(command: ContractCommand): string | undefined {
+  if (!["bash", "sh", "zsh"].includes(executableName(command.cmd))) return undefined;
+  for (let index = 0; index < command.args.length - 1; index++) {
+    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(command.args[index]!)) {
+      return command.args[index + 1];
+    }
+  }
+  return undefined;
+}
+
+function envChildCommand(command: ContractCommand): ContractCommand | undefined {
+  if (!executableIs(command.cmd, "env")) return undefined;
+  const index = command.args.findIndex((arg) =>
+    !arg.startsWith("-") && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)
+  );
+  if (index < 0) return undefined;
+  return {
+    cmd: command.args[index]!,
+    args: command.args.slice(index + 1),
+  };
+}
+
+function contractHasBareNvmUse(command: ContractCommand): boolean {
+  const script = structuredShellScript(command);
+  if (script !== undefined) return hasBareNvmUse(script);
+  const child = envChildCommand(command);
+  if (child) return contractHasBareNvmUse(child);
+  return executableIs(command.cmd, "nvm") && command.args[0] === "use";
+}
+
+function contractUsesNvmInstall(command: ContractCommand): boolean {
+  const script = structuredShellScript(command);
+  if (script !== undefined) return usesNvmInstall(script);
+  const child = envChildCommand(command);
+  if (child) return contractUsesNvmInstall(child);
+  return executableIs(command.cmd, "nvm") && command.args[0] === "install";
+}
+
+function contractMentionsClaude(command: ContractCommand): boolean {
+  const script = structuredShellScript(command);
+  if (script !== undefined) return commandMentionsClaude(script);
+  const child = envChildCommand(command);
+  if (child) return contractMentionsClaude(child);
+  return executableIs(command.cmd, "claude");
+}
+
+function contractMentionsMissingTool(command: ContractCommand): string | undefined {
+  const script = structuredShellScript(command);
+  if (script !== undefined) return commandMentionsMissingTool(script);
+  const child = envChildCommand(command);
+  if (child) return contractMentionsMissingTool(child);
+  for (const tool of MISSING_DEFAULT_TOOLS) {
+    if (executableIs(command.cmd, tool)) return tool;
+  }
+  return undefined;
+}
+
+function shellCommandUsesNetwork(command: string): boolean {
+  const unquoted = maskQuotedText(command);
+  return /\b(?:npm|pnpm|yarn|bun|pip3?)\s+(?:install|ci)\b/.test(unquoted) ||
+    /\b(?:curl|wget)\b/.test(unquoted);
+}
+
+function contractUsesNetwork(command: ContractCommand): boolean {
+  const script = structuredShellScript(command);
+  if (script !== undefined) return shellCommandUsesNetwork(script);
+  const child = envChildCommand(command);
+  if (child) return contractUsesNetwork(child);
+  const installer = ["npm", "pnpm", "yarn", "bun", "pip", "pip3"].some((tool) =>
+    executableIs(command.cmd, tool)
+  );
+  return (installer && /^(?:install|ci)$/.test(command.args[0] ?? "")) ||
+    executableIs(command.cmd, "curl") ||
+    executableIs(command.cmd, "wget");
 }
 
 function httpContractUsesLoopback(contract: Contract): boolean {
@@ -345,7 +485,7 @@ function runtimeFailureText(value: string): boolean {
 
 function runtimeFailureLine(line: string): boolean {
   if (productAssertionText(line)) {
-    const actual = /\b(?:but\s+(?:got|received|actual)|received|actual)\b(?<actual>.*)$/.exec(line)
+    const actual = /\b(?:but\s+(?:got|received|actual)|got|received|actual)\b(?<actual>.*)$/.exec(line)
       ?.groups?.actual;
     return actual ? rawRuntimeFailureText(actual) : false;
   }
@@ -459,9 +599,9 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
   });
 
   for (const contract of input.contracts) {
-    const command = contractCommandText(contract);
+    const command = contractCommand(contract);
     if (command) {
-      if (hasBareNvmUse(command)) {
+      if (contractHasBareNvmUse(command)) {
         findings.push(finding(
           `contract.${contract.id}.nvm`,
           "error",
@@ -470,7 +610,7 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
           contract.id,
         ));
       }
-      if (usesNvmInstall(command)) {
+      if (contractUsesNvmInstall(command)) {
         findings.push(finding(
           `contract.${contract.id}.nvm-install`,
           "error",
@@ -479,7 +619,7 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
           contract.id,
         ));
       }
-      if (commandMentionsClaude(command)) {
+      if (contractMentionsClaude(command)) {
         findings.push(finding(
           `contract.${contract.id}.claude`,
           "error",
@@ -488,7 +628,7 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
           contract.id,
         ));
       }
-      const tool = commandMentionsMissingTool(command);
+      const tool = contractMentionsMissingTool(command);
       if (tool && !setupBootstrapsTool(input.policy, tool)) {
         findings.push(finding(
           `contract.${contract.id}.tool`,
@@ -498,10 +638,7 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
           contract.id,
         ));
       }
-      if (
-        /\b(?:npm|pnpm|yarn|bun|pip3?)\s+(?:install|ci)\b/.test(command) ||
-        /\b(?:curl|wget)\b/.test(command)
-      ) {
+      if (contractUsesNetwork(command)) {
         findings.push(finding(
           `contract.${contract.id}.network`,
           "warning",
