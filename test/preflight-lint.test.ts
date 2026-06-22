@@ -113,6 +113,21 @@ test("preflight lint rejects path-qualified claude in gate setup and contracts",
   ]);
 });
 
+test("preflight lint rejects punctuation-delimited claude invocations", () => {
+  const contracts: Contract[] = [
+    { id: "agent.shell", type: "command", cmd: "if", args: ["claude;", "then", "echo", "ok", "fi"] },
+  ];
+  const findings = lintGateReadiness({
+    contracts,
+    policy: policy(["claude; echo done"]),
+  });
+
+  assert.deepEqual(ids(findings), [
+    "contract.agent.shell.claude",
+    "gateSetup.1.claude",
+  ]);
+});
+
 test("preflight lint reports default-missing package managers", () => {
   const contracts: Contract[] = [
     { id: "lint.pnpm", type: "command", cmd: "pnpm", args: ["test"] },
@@ -355,6 +370,25 @@ test("preflight readiness classification promotes service-not-started failures",
     classified.readinessErrors.map((finding) => finding.contractId).sort(),
     ["api.loopback.refused", "api.loopback.timeout"],
   );
+});
+
+test("preflight readiness classification keeps ordinary timeout assertions as product failures", () => {
+  const result: CheckResult = {
+    id: "spec.timeout.behavior",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "behavior spec",
+      how: "expected timeout error but received success; request should timeout after 5s",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([result]));
+
+  assert.deepEqual(classified.readinessErrors, []);
+  assert.deepEqual(classified.productFailures, ["spec.timeout.behavior"]);
 });
 
 test("preflight readiness classification keeps ordinary product failures separate", () => {

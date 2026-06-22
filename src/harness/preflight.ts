@@ -59,7 +59,7 @@ function includesShellWord(command: string, word: string): boolean {
 }
 
 function mentionsClaude(command: string): boolean {
-  return /(?:^|[\s"'`])(?:[A-Za-z0-9_./~-]+\/)?claude(?:$|[\s"'`])/.test(command);
+  return /(?:^|[\s"'`;&|()])(?:[A-Za-z0-9_./~-]+\/)?claude(?:$|[\s"'`;&|()])/.test(command);
 }
 
 function firstMatchIndex(command: string, pattern: RegExp): number | undefined {
@@ -171,8 +171,13 @@ function runtimeFailureText(value: string): boolean {
     text.includes("name or service not known") ||
     text.includes("connection refused") ||
     text.includes("failed to connect") ||
-    text.includes("timeout") ||
-    text.includes("timed out");
+    text.includes("operation timed out") ||
+    text.includes("connection timed out") ||
+    text.includes("request timed out") ||
+    text.includes("request timeout after") ||
+    text.includes("timed out while") ||
+    /(?:curl|connect|connection|socket|gateway|upstream|health).{0,40}timeout/.test(text) ||
+    /timeout.{0,40}(?:connect|connection|socket|gateway|upstream|health|refused|unreachable)/.test(text);
 }
 
 function resultText(result: GateReport["results"][number]): string {
