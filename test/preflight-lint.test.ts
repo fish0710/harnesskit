@@ -80,6 +80,16 @@ test("preflight lint accepts dot-sourced nvm before use", () => {
   );
 });
 
+test("preflight lint rejects quoted nvm source text that is not executed", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(['echo "source /usr/local/nvm/nvm.sh" && nvm use 20 && npm ci']),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.nvm"]);
+  assert.equal(findings[0]?.severity, "error");
+});
+
 test("preflight lint rejects claude in gate setup and contracts", () => {
   const contracts: Contract[] = [
     { id: "agent.leak", type: "command", cmd: "claude", args: ["--version"] },
@@ -370,6 +380,44 @@ test("preflight readiness classification promotes service-not-started failures",
     classified.readinessErrors.map((finding) => finding.contractId).sort(),
     ["api.loopback.refused", "api.loopback.timeout"],
   );
+});
+
+test("preflight readiness classification promotes econnrefused failures", () => {
+  const result: CheckResult = {
+    id: "api.loopback.econnrefused",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "health check",
+      how: "Error: connect ECONNREFUSED 127.0.0.1:3000",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([result]));
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.equal(classified.readinessErrors[0]?.contractId, "api.loopback.econnrefused");
+});
+
+test("preflight readiness classification keeps request timed out assertions as product failures", () => {
+  const result: CheckResult = {
+    id: "spec.request-timeout.behavior",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "behavior spec",
+      how: "expected request timed out error but received success",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([result]));
+
+  assert.deepEqual(classified.readinessErrors, []);
+  assert.deepEqual(classified.productFailures, ["spec.request-timeout.behavior"]);
 });
 
 test("preflight readiness classification keeps ordinary timeout assertions as product failures", () => {

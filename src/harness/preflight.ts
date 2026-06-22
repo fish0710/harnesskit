@@ -70,12 +70,8 @@ function firstMatchIndex(command: string, pattern: RegExp): number | undefined {
 function sourcesNvmBeforeUse(command: string): boolean {
   const useIndex = firstMatchIndex(command, /\bnvm\s+use\b/);
   if (useIndex === undefined) return false;
-  const sourcePattern = /(?:^|[\s"'`;&|])(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh(?:[\s"'`;|&]|$)/g;
-  let match: RegExpExecArray | null;
-  while ((match = sourcePattern.exec(command)) !== null) {
-    if (match.index < useIndex) return true;
-  }
-  return false;
+  const prefix = command.slice(0, useIndex);
+  return /(?:^|[;&|]\s*|\b(?:bash|sh|zsh)\s+-l?c\s+['"]?)(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh\b/.test(prefix);
 }
 
 function hasBareNvmUse(command: string): boolean {
@@ -169,14 +165,14 @@ function runtimeFailureText(value: string): boolean {
     text.includes("could not resolve host") ||
     text.includes("temporary failure in name resolution") ||
     text.includes("name or service not known") ||
+    text.includes("econnrefused") ||
     text.includes("connection refused") ||
     text.includes("failed to connect") ||
-    text.includes("operation timed out") ||
     text.includes("connection timed out") ||
-    text.includes("request timed out") ||
     text.includes("request timeout after") ||
     text.includes("timed out while") ||
-    /(?:curl|connect|connection|socket|gateway|upstream|health).{0,40}timeout/.test(text) ||
+    /(?:curl|axios|fetch|connect|connection|socket|gateway|upstream|health).{0,40}timed out/.test(text) ||
+    /(?:curl|axios|fetch|connect|connection|socket|gateway|upstream|health).{0,40}timeout/.test(text) ||
     /timeout.{0,40}(?:connect|connection|socket|gateway|upstream|health|refused|unreachable)/.test(text);
 }
 
