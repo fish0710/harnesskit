@@ -96,6 +96,19 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs = 250,
+  intervalMs = 5,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (predicate()) return;
+    await delay(intervalMs);
+  }
+  throw new Error("timed out waiting for condition");
+}
+
 interface ScriptedProvider extends SandboxProvider {
   requests: SandboxCreateRequest[];
   handles: RecordingHandle[];
@@ -141,6 +154,10 @@ class RecordingHandle implements SandboxHandle {
         ((handle: RecordingHandle, env: Record<string, string>) => Promise<void>)
           | undefined
       >;
+      readFileHook?: (
+        handle: RecordingHandle,
+        path: string,
+      ) => Promise<void>;
     },
   ) {}
 
@@ -339,6 +356,7 @@ class RecordingHandle implements SandboxHandle {
   }
 
   async readFile(path: string): Promise<Buffer> {
+    await this.provider.readFileHook?.(this, path);
     const file = this.files.get(path);
     if (!file) throw new Error(`missing fake file: ${path}`);
     return Buffer.from(file.content);
@@ -368,6 +386,10 @@ function scriptedProvider(options: {
     ((handle: RecordingHandle, env: Record<string, string>) => Promise<void>)
       | undefined
   >;
+  readFileHook?: (
+    handle: RecordingHandle,
+    path: string,
+  ) => Promise<void>;
   gateDeleteFails?: boolean;
   mutateProtectedOnGate?: boolean;
   commandExitCodes?: Record<string, number>;
@@ -381,6 +403,7 @@ function scriptedProvider(options: {
     agentStdout: options.agentStdout ?? "agent done",
     candidateMutations: options.candidateMutations ?? [],
     claudeRunHooks: options.claudeRunHooks ?? [],
+    readFileHook: options.readFileHook,
     gateDeleteFails: options.gateDeleteFails ?? false,
     mutateProtectedOnGate: options.mutateProtectedOnGate ?? false,
     commandExitCodes: options.commandExitCodes ?? {},
@@ -820,6 +843,149 @@ test("Claude Daytona emits live stream progress before command end", async () =>
   } finally {
     releaseClaude();
     await task;
+  }
+});
+
+test("Claude Daytona emits command heartbeat before command end", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const observations: Array<[string, unknown]> = [];
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    claudeStdouts: [
+      JSON.stringify({ type: "result", session_id: "session-heartbeat" }),
+    ],
+    claudeRunHooks: [async () => {
+      await waitUntil(() =>
+        observations.some(([event]) => event === "agent.command.heartbeat")
+      );
+    }],
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    heartbeatIntervalMs: 5,
+    observability: {
+      runId: "run-command-heartbeat",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await environment.runTask({ task: "fix it" });
+
+  const heartbeatIndex = observations.findIndex(([event]) =>
+    event === "agent.command.heartbeat"
+  );
+  const endIndex = observations.findIndex(([event]) =>
+    event === "agent.command.end"
+  );
+  const heartbeat = observations[heartbeatIndex]?.[1] as {
+    id?: string;
+    attempt?: number;
+    kind?: string;
+    elapsedMs?: number;
+    claudeStreamPath?: string;
+  };
+
+  assert.notEqual(heartbeatIndex, -1);
+  assert.notEqual(endIndex, -1);
+  assert.ok(heartbeatIndex < endIndex);
+  assert.equal(heartbeat.id, "agent-1");
+  assert.equal(heartbeat.attempt, 1);
+  assert.equal(heartbeat.kind, "claude");
+  assert.equal(typeof heartbeat.elapsedMs, "number");
+  assert.equal(
+    heartbeat.claudeStreamPath,
+    "/harness-observability/attempt-1/claude-stream.jsonl",
+  );
+});
+
+test("Claude Daytona command heartbeat stops during slow final stream read", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const observations: Array<[string, unknown]> = [];
+  let streamReads = 0;
+  let delayedReadStarted = false;
+  let releaseDelayedRead: () => void = () => undefined;
+  const delayedRead = new Promise<void>((resolve) => {
+    releaseDelayedRead = resolve;
+  });
+  const heartbeatCount = () =>
+    observations.filter(([event]) => event === "agent.command.heartbeat")
+      .length;
+
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    claudeStdouts: [
+      `${JSON.stringify({ type: "result", session_id: "session-heartbeat" })}\n`,
+    ],
+    claudeRunHooks: [async () => {
+      await waitUntil(() => heartbeatCount() > 0);
+    }],
+    readFileHook: async (_handle, path) => {
+      if (!path.endsWith("/claude-stream.jsonl")) return;
+      streamReads++;
+      if (streamReads !== 2) return;
+      delayedReadStarted = true;
+      await delayedRead;
+    },
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    heartbeatIntervalMs: 5,
+    observability: {
+      runId: "run-command-heartbeat-final-read",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const task = environment.runTask({ task: "fix it" });
+  let countDuringFinalRead = 0;
+  let countAfterSlowRead = 0;
+  try {
+    await waitUntil(() => delayedReadStarted, 500);
+    countDuringFinalRead = heartbeatCount();
+    await delay(25);
+    countAfterSlowRead = heartbeatCount();
+  } finally {
+    releaseDelayedRead();
+    await task;
+  }
+
+  assert.equal(countAfterSlowRead, countDuringFinalRead);
+});
+
+test("Claude Daytona rejects invalid heartbeat interval overrides before sandbox creation", () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+
+  for (const heartbeatIntervalMs of [0, -1, Number.POSITIVE_INFINITY, NaN, 1.5]) {
+    const provider = scriptedProvider({
+      candidateVersions: ["fixed\n"],
+      gateExitCodes: [0],
+    });
+
+    assert.throws(
+      () =>
+        createDaytonaRunEnvironment({
+          provider,
+          root,
+          policy: policy(),
+          agent: { kind: "claude" },
+          environment: configuredClaudeEnvironment,
+          heartbeatIntervalMs,
+        }),
+      /heartbeatIntervalMs/,
+    );
+    assert.deepEqual(provider.requests, []);
   }
 });
 

@@ -5,6 +5,7 @@ import type {
   EnvironmentTaskInput,
   RunEnvironment,
 } from "../run.js";
+import { runWithCommandHeartbeat } from "../command-heartbeat.js";
 import { tailClaudeStreamDuring } from "../claude-stream.js";
 import {
   isHostLocalContract,
@@ -62,6 +63,7 @@ export interface DaytonaRunEnvironmentOptions {
   environment?: Record<string, string | undefined>;
   observability?: DaytonaRunObservabilityOptions;
   onObservation?: (event: string, data: unknown) => void;
+  heartbeatIntervalMs?: number;
 }
 
 interface PreparedClaudeObservability {
@@ -123,6 +125,15 @@ function contractUsesLoopbackHttp(contract: Contract): boolean {
   const { url, baseUrl } = contract.trigger;
   return (typeof url === "string" && urlUsesLoopback(url)) ||
     (typeof baseUrl === "string" && urlUsesLoopback(baseUrl));
+}
+
+function validateHeartbeatIntervalMs(value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(
+      "heartbeatIntervalMs must be a positive safe integer when provided",
+    );
+  }
 }
 
 function shouldBlockGateNetwork(contracts: Contract[]): boolean {
@@ -297,6 +308,7 @@ async function persistClaudeStreamOutput(
 export function createDaytonaRunEnvironment(
   options: DaytonaRunEnvironmentOptions,
 ): RunEnvironment {
+  validateHeartbeatIntervalMs(options.heartbeatIntervalMs);
   const environment = options.environment ?? process.env;
   const baseline = captureWorkspace(options.root, options.policy);
   const modelEnvironment = options.agent.kind === "claude"
@@ -468,18 +480,27 @@ export function createDaytonaRunEnvironment(
               AGENT_COMMAND_TIMEOUT_MS,
             );
           const streamPath = claudeObservationEnv.HARNESS_CLAUDE_STREAM_PATH;
+          const commandPromise = runWithCommandHeartbeat({
+            id: handle.id,
+            attempt,
+            kind: "claude",
+            streamPath,
+            intervalMs: options.heartbeatIntervalMs,
+            emit: ({ event, data }) => observe(event, data),
+            run: runClaudeCommand,
+          });
           result = streamPath
             ? await tailClaudeStreamDuring({
-              id: handle.id,
-              attempt,
-              path: streamPath,
-              read: (path) => handle.readFile(path),
-              emit: ({ event, data }) => observe(event, data),
-              run: runClaudeCommand,
-              intervalMs: 50,
-              noOutputWarningMs: 60_000,
-            })
-            : await runClaudeCommand();
+                id: handle.id,
+                attempt,
+                path: streamPath,
+                read: (path) => handle.readFile(path),
+                emit: ({ event, data }) => observe(event, data),
+                run: () => commandPromise,
+                intervalMs: 50,
+                noOutputWarningMs: 60_000,
+              })
+            : await commandPromise;
           claudeHomeSnapshotAttempted = true;
           await snapshotClaudeHome(
             handle,

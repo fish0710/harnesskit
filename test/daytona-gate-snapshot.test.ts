@@ -122,3 +122,48 @@ test("harness-prep snapshot guidance documents legacy nvm boundaries", () => {
     /source \/usr\/local\/nvm\/nvm\.sh && nvm use 14\.21\.3 && npm ci/,
   );
 });
+
+test("harness-prep documents Claude command heartbeat supervision", () => {
+  const runSupervision = readFileSync(
+    "plugins/harness-prep/skills/harness-prep/references/run-supervision.md",
+    "utf8",
+  );
+  const blockerAnalysis = readFileSync(
+    "plugins/harness-prep/skills/harness-prep/references/blocker-analysis.md",
+    "utf8",
+  );
+  const runstore = readFileSync(
+    "plugins/harness-prep/skills/harness-prep/references/runstore-observability.md",
+    "utf8",
+  );
+
+  assert.match(runSupervision, /agent\.command\.heartbeat/);
+  assert.match(
+    runSupervision,
+    /agent\.command\.start[\s\S]*agent\.command\.end[\s\S]*quiet[\s\S]*no Claude command output can be normal/i,
+  );
+  assert.match(
+    runSupervision,
+    /Use `agent\.command\.heartbeat` as the liveness signal/i,
+  );
+  assert.match(
+    runSupervision,
+    /Heartbeat is a liveness signal only; it does not prove semantic Claude progress\./,
+  );
+  assert.match(
+    runSupervision,
+    /heartbeat events continue[\s\S]*Agent command is active[\s\S]*stdout, terminal output, or stream bytes are quiet/i,
+  );
+  assert.match(blockerAnalysis, /latest Agent event is `agent\.command\.heartbeat`/);
+  assert.match(blockerAnalysis, /no later\s+`agent\.command\.end`/);
+  assert.match(blockerAnalysis, /heartbeat stops unexpectedly/);
+  assert.match(blockerAnalysis, /CLI process exits/);
+  assert.match(blockerAnalysis, /command timeout fires/);
+  assert.match(blockerAnalysis, /RunStore\s+records an error/);
+  assert.match(
+    blockerAnalysis,
+    /\/home\/daytona\/\.claude[\s\S]*inspect `projects\/`[\s\S]*manual\s+diagnosis only/i,
+  );
+  assert.match(runstore, /commandLastHeartbeatAt/);
+  assert.match(runstore, /commandLastHeartbeatElapsedMs/);
+});

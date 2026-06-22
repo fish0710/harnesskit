@@ -109,6 +109,10 @@ For `--driver claude`, use:
 - `attempts[].claudeSessionId` and `resumedFromSessionId` -> session continuity evidence;
 - `attempts[].gateSandboxIds` -> fresh validation sandboxes;
 - `attempts[].claudeStreamPath` -> mounted path for the raw `stream-json` transcript, usually `/harness-observability/attempt-<n>/claude-stream.jsonl`.
+- `attempts[].commandLastHeartbeatAt` -> host timestamp of the latest
+  `agent.command.heartbeat` folded into the attempt.
+- `attempts[].commandLastHeartbeatElapsedMs` -> elapsed time reported by the
+  latest heartbeat while Harness was waiting on the Agent command.
 
 While Claude runs, native state is sandbox-local:
 
