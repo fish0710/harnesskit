@@ -126,6 +126,9 @@ function currentShellNvmUsesAreSourced(command: string): boolean {
     ) {
       sourced = true;
     }
+    if (/\bnvm\s+use\b/.test(segment) && !/^nvm\s+use\b/.test(segment)) {
+      return false;
+    }
     if (/\bnvm\s+use\b/.test(segment) && /[|<>]/.test(segment)) return false;
     if (/\bnvm\s+use\b/.test(segment) && !sourced) return false;
   }
@@ -224,8 +227,22 @@ function httpContractUsesLoopback(contract: Contract): boolean {
 }
 
 function runtimeFailureText(value: string): boolean {
-  const text = value.toLowerCase();
-  if (productAssertionText(text)) return false;
+  return value
+    .toLowerCase()
+    .split(/\r?\n/)
+    .some(runtimeFailureLine);
+}
+
+function runtimeFailureLine(line: string): boolean {
+  if (productAssertionText(line)) {
+    const actual = /\b(?:but\s+(?:got|received)|received)\b(?<actual>.*)$/.exec(line)
+      ?.groups?.actual;
+    return actual ? rawRuntimeFailureText(actual) : false;
+  }
+  return rawRuntimeFailureText(line);
+}
+
+function rawRuntimeFailureText(text: string): boolean {
   return text.includes("command not found") ||
     text.includes("exit code 127") ||
     text.includes("退出码 127") ||
@@ -255,10 +272,7 @@ function runtimeFailureText(value: string): boolean {
 }
 
 function productAssertionText(text: string): boolean {
-  return text.split(/\r?\n/).some((line) =>
-    /\bexpected\b/.test(line) &&
-    /\b(?:but\s+(?:received|got)|received\s+success)\b/.test(line)
-  );
+  return /\bexpected\b/.test(text) || /\bassertionerror\b/.test(text);
 }
 
 function resultText(result: GateReport["results"][number]): string {

@@ -102,6 +102,20 @@ test("preflight lint rejects nvm use in a pipeline inside shell wrapper", () => 
   assert.equal(findings[0]?.severity, "error");
 });
 
+test("preflight lint rejects nvm use outside direct current-shell command position", () => {
+  const parenthesized = lintGateReadiness({
+    contracts: [],
+    policy: policy(["source /usr/local/nvm/nvm.sh && (nvm use 20) && npm ci"]),
+  });
+  const envWrapped = lintGateReadiness({
+    contracts: [],
+    policy: policy(["source /usr/local/nvm/nvm.sh && env nvm use 20 && npm ci"]),
+  });
+
+  assert.deepEqual(ids(parenthesized), ["gateSetup.1.nvm"]);
+  assert.deepEqual(ids(envWrapped), ["gateSetup.1.nvm"]);
+});
+
 test("preflight lint rejects nvm path mentions that do not source nvm", () => {
   const findings = lintGateReadiness({
     contracts: [],
@@ -670,6 +684,86 @@ test("preflight readiness classification keeps readiness-keyword assertions as p
     "spec.econnrefused.behavior",
     "spec.module.behavior",
   ]);
+});
+
+test("preflight readiness classification keeps short expected-error assertions as product failures", () => {
+  const results: CheckResult[] = [
+    {
+      id: "spec.expected-econnrefused.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "expected ECONNREFUSED error",
+      }],
+    },
+    {
+      id: "spec.assertion-module.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "AssertionError: expected Cannot find module to equal actual error",
+      }],
+    },
+    {
+      id: "spec.expected-timeout.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "expected connection timed out error",
+      }],
+    },
+  ];
+
+  const classified = classifyGateReportReadiness(aggregate(results));
+
+  assert.deepEqual(classified.readinessErrors, []);
+  assert.deepEqual(classified.productFailures.sort(), [
+    "spec.assertion-module.behavior",
+    "spec.expected-econnrefused.behavior",
+    "spec.expected-timeout.behavior",
+  ]);
+});
+
+test("preflight readiness classification promotes actual readiness after assertion wording", () => {
+  const multiline: CheckResult = {
+    id: "api.resolve.after-assertion",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "http smoke",
+      how: "expected health check to pass but got error\nError: getaddrinfo ENOTFOUND example.invalid",
+    }],
+  };
+  const actualInGot: CheckResult = {
+    id: "api.refused.actual-got",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "http smoke",
+      how: "expected status 200 but got ECONNREFUSED",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([multiline, actualInGot]));
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.deepEqual(
+    classified.readinessErrors.map((finding) => finding.contractId).sort(),
+    ["api.refused.actual-got", "api.resolve.after-assertion"],
+  );
 });
 
 test("preflight readiness classification keeps ordinary timeout assertions as product failures", () => {
