@@ -9,7 +9,7 @@ import type {
   SandboxPolicy,
   SandboxProvider,
 } from "./sandbox/types.js";
-import { captureWorkspace } from "./sandbox/workspace.js";
+import { agentVisibleFiles, captureWorkspace } from "./sandbox/workspace.js";
 
 export type PreflightSeverity = "warning" | "error";
 
@@ -45,6 +45,7 @@ export interface GatePreflightReport {
 export interface GateReadinessLintInput {
   contracts: Contract[];
   policy: SandboxPolicy;
+  baseUrl?: string;
 }
 
 export interface GateReadinessClassification {
@@ -529,10 +530,17 @@ function contractUsesNetwork(command: ContractCommand): boolean {
     executableIs(command.cmd, "wget");
 }
 
-function httpContractUsesLoopback(contract: Contract): boolean {
+function httpContractUsesLoopback(
+  contract: Contract,
+  fallbackBaseUrl?: string,
+): boolean {
   if (contract.type !== "http" || !isRecord(contract.trigger)) return false;
   const trigger = contract.trigger;
-  const values = [trigger.url, trigger.baseUrl].filter(
+  const values = [
+    trigger.url,
+    trigger.baseUrl,
+    typeof trigger.path === "string" ? fallbackBaseUrl : undefined,
+  ].filter(
     (value): value is string => typeof value === "string",
   );
   return values.some((value) => {
@@ -720,7 +728,10 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
         ));
       }
     }
-    if (httpContractUsesLoopback(contract) && input.policy.gateSetup.length === 0) {
+    if (
+      httpContractUsesLoopback(contract, input.baseUrl) &&
+      input.policy.gateSetup.length === 0
+    ) {
       findings.push(finding(
         `contract.${contract.id}.loopback`,
         "warning",
@@ -819,8 +830,11 @@ async function runPreflightSetup(
   return { steps, errors };
 }
 
-function shouldBlockGateNetwork(contracts: Contract[]): boolean {
-  return !contracts.some(httpContractUsesLoopback);
+function shouldBlockGateNetwork(
+  contracts: Contract[],
+  baseUrl?: string,
+): boolean {
+  return !contracts.some((contract) => httpContractUsesLoopback(contract, baseUrl));
 }
 
 function sandboxError(error: unknown): PreflightFinding {
@@ -859,9 +873,11 @@ export async function runGatePreflight(
   options: GatePreflightOptions,
 ): Promise<GatePreflightReport> {
   const environment = options.environment ?? process.env;
+  const baseUrl = (options.ctx as { baseUrl?: string }).baseUrl;
   const staticFindings = lintGateReadiness({
     contracts: options.contracts,
     policy: options.policy,
+    baseUrl,
   });
   const selectedContracts = options.contracts.map((contract) => contract.id);
   const remoteContracts = options.contracts.filter((contract) =>
@@ -916,6 +932,15 @@ export async function runGatePreflight(
       ephemeral: true,
     });
     await handle.upload([...baseline.files.values()], REMOTE_ROOT);
+    const mutablePaths = new Set(
+      agentVisibleFiles(baseline, options.policy).map((file) => file.path),
+    );
+    const protectedFiles = [...baseline.files.values()].filter((file) =>
+      !mutablePaths.has(file.path)
+    );
+    if (protectedFiles.length > 0) {
+      await handle.verify(protectedFiles, REMOTE_ROOT);
+    }
 
     const setupResult = await runPreflightSetup(
       handle,
@@ -925,7 +950,7 @@ export async function runGatePreflight(
     readinessErrors.push(...setupResult.errors);
 
     if (readinessErrors.length === 0) {
-      if (shouldBlockGateNetwork(remoteContracts)) {
+      if (shouldBlockGateNetwork(remoteContracts, baseUrl)) {
         await handle.setNetworkBlocked(true);
       }
       gateReport = await options.gate.run(remoteContracts, {
@@ -936,6 +961,9 @@ export async function runGatePreflight(
       const classified = classifyGateReportReadiness(gateReport);
       readinessErrors.push(...classified.readinessErrors);
       productFailures.push(...classified.productFailures);
+      if (protectedFiles.length > 0) {
+        await handle.verify(protectedFiles, REMOTE_ROOT);
+      }
     }
   } catch (error) {
     readinessErrors.push(sandboxError(error));

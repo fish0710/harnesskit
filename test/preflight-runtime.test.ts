@@ -22,7 +22,7 @@ import type {
 import { workspaceFile, type RemoteWorkspace } from "../src/harness/sandbox/workspace.js";
 import { commandPlugin } from "../src/plugins/command.js";
 import { httpPlugin } from "../src/plugins/http.js";
-import type { Contract } from "../src/types.js";
+import type { Contract, RunContext } from "../src/types.js";
 
 const REMOTE_ROOT = "/workspace/candidate";
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
@@ -74,6 +74,7 @@ interface ExecuteCall {
 class RecordingGateHandle implements SandboxHandle {
   readonly files = new Map<string, WorkspaceFile>();
   readonly uploads: Array<{ files: string[]; remoteRoot: string }> = [];
+  readonly verifies: Array<{ files: string[]; remoteRoot: string }> = [];
   readonly commands: string[] = [];
   readonly executeCalls: ExecuteCall[] = [];
   readonly networkBlocks: boolean[] = [];
@@ -100,7 +101,9 @@ class RecordingGateHandle implements SandboxHandle {
     for (const path of paths) this.files.delete(path);
   }
 
-  async verify(): Promise<void> {}
+  async verify(files: WorkspaceFile[], remoteRoot: string): Promise<void> {
+    this.verifies.push({ files: files.map((file) => file.path).sort(), remoteRoot });
+  }
 
   workspace(): RemoteWorkspace {
     return {
@@ -264,6 +267,10 @@ test("creates Gate sandbox, uploads baseline, runs setup and remote command, the
     files: ["contracts/test.yaml", "src/a.ts"],
     remoteRoot: REMOTE_ROOT,
   });
+  assert.deepEqual(gate.verifies, [
+    { files: ["contracts/test.yaml"], remoteRoot: REMOTE_ROOT },
+    { files: ["contracts/test.yaml"], remoteRoot: REMOTE_ROOT },
+  ]);
   assert.deepEqual(gate.commands, ["npm ci", COMMAND_TEST]);
   assert.deepEqual(gate.executeCalls.map(({ cwd }) => cwd), [REMOTE_ROOT, REMOTE_ROOT]);
   assert.equal(gate.executeCalls[0]?.timeoutMs, SETUP_TIMEOUT_MS);
@@ -382,6 +389,63 @@ test("IPv6 loopback HTTP remote contract does not block Gate network", async () 
   assert.equal(report.outcome, "ready");
   assert.deepEqual(report.remoteContracts, ["http.loopback.ipv6"]);
   assert.deepEqual(provider.handles[0]?.networkBlocks, []);
+});
+
+test("ctx baseUrl loopback HTTP remote contract does not block Gate network", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = new RecordingProvider();
+  const loopback: Contract = {
+    id: "http.loopback.ctx",
+    type: "http",
+    trigger: { path: "/health" },
+    expect: { status: 200 },
+  };
+
+  const report = await runGatePreflight({
+    ...preflightOptions(root, provider, [loopback], ["node server.js"], new GateCore().use(httpPlugin)),
+    ctx: { cwd: root, baseUrl: "http://127.0.0.1:4173" } as RunContext & { baseUrl: string },
+  });
+
+  assert.equal(report.outcome, "ready");
+  assert.deepEqual(report.remoteContracts, ["http.loopback.ctx"]);
+  assert.deepEqual(provider.handles[0]?.networkBlocks, []);
+});
+
+test("protected file verification failure is a readiness error", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/test.yaml": "trusted\n",
+  });
+  class VerifyFailHandle extends RecordingGateHandle {
+    override async verify(
+      files: WorkspaceFile[],
+      remoteRoot: string,
+    ): Promise<void> {
+      await super.verify(files, remoteRoot);
+      throw new Error("protected drift");
+    }
+  }
+  class VerifyFailProvider extends RecordingProvider {
+    override async create(request: SandboxCreateRequest): Promise<SandboxHandle> {
+      this.requests.push(request);
+      const handle = new VerifyFailHandle(
+        `${request.role}-${this.handles.length + 1}`,
+        {},
+      );
+      this.handles.push(handle);
+      return handle;
+    }
+  }
+  const provider = new VerifyFailProvider();
+
+  const report = await runGatePreflight(
+    preflightOptions(root, provider, [trustedContract]),
+  );
+
+  assert.equal(report.outcome, "not_ready");
+  assert.equal(report.readinessErrors[0]?.id, "gate.sandbox.error");
+  assert.match(report.readinessErrors[0]?.message ?? "", /protected drift/);
+  assert.equal(provider.handles[0]?.deleted, 1);
 });
 
 test("retainOnFailure keeps sandbox and marks retained", async () => {
