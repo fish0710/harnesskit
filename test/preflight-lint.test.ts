@@ -380,6 +380,20 @@ test("preflight lint accepts package manager bootstraps from earlier gate setup 
   assert.deepEqual(ids(findings), []);
 });
 
+test("preflight lint accepts shell-wrapped package manager bootstraps", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy([
+      "bash -lc 'corepack enable pnpm'",
+      "pnpm test",
+      "bash -lc 'npm install -g yarn'",
+      "yarn lint",
+    ]),
+  });
+
+  assert.deepEqual(ids(findings), []);
+});
+
 test("preflight lint rejects bare corepack enable as pnpm bootstrap", () => {
   const findings = lintGateReadiness({
     contracts: [
@@ -897,6 +911,44 @@ test("preflight readiness classification promotes actual readiness after asserti
     classified.readinessErrors.map((finding) => finding.contractId).sort(),
     ["api.refused.actual-got", "api.resolve.after-assertion"],
   );
+});
+
+test("preflight readiness classification promotes actual runtime evidence after assertions", () => {
+  const result: CheckResult = {
+    id: "api.refused.actual-error",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "http smoke",
+      how: "expected success but actual Error: connect ECONNREFUSED 127.0.0.1:3000",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([result]));
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.equal(classified.readinessErrors[0]?.contractId, "api.refused.actual-error");
+});
+
+test("preflight readiness classification promotes missing nvm version failures", () => {
+  const result: CheckResult = {
+    id: "setup.nvm.missing-version",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 3，期望 0",
+      why: "runtime setup",
+      how: 'N/A: version "14.21.3" is not yet installed.',
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([result]));
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.equal(classified.readinessErrors[0]?.contractId, "setup.nvm.missing-version");
 });
 
 test("preflight readiness classification keeps ordinary timeout assertions as product failures", () => {

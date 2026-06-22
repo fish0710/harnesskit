@@ -178,6 +178,8 @@ function bootstrapMentionsTool(command: string, tool: string): boolean {
 }
 
 function segmentBootstrapsTool(segment: string, tool: string): boolean {
+  const script = wholeShellScript(segment);
+  if (script !== undefined) return bootstrapMentionsTool(script, tool);
   if (tool === "pnpm") {
     return /^corepack\s+enable\s+["']?pnpm(?:@[^"'\s]+)?["']?(?:\s|$)/.test(segment) ||
       /^npm\s+(?:install|i)\s+-g\s+["']?pnpm(?:@[^"'\s]+)?["']?(?:\s|$)/.test(segment);
@@ -263,7 +265,7 @@ function runtimeFailureText(value: string): boolean {
 
 function runtimeFailureLine(line: string): boolean {
   if (productAssertionText(line)) {
-    const actual = /\b(?:but\s+(?:got|received)|received)\b(?<actual>.*)$/.exec(line)
+    const actual = /\b(?:but\s+(?:got|received|actual)|received|actual)\b(?<actual>.*)$/.exec(line)
       ?.groups?.actual;
     return actual ? rawRuntimeFailureText(actual) : false;
   }
@@ -277,6 +279,7 @@ function rawRuntimeFailureText(text: string): boolean {
     text.includes(": not found") ||
     text.includes("nvm: not found") ||
     text.includes("nvm.sh") ||
+    (text.includes("n/a: version") && text.includes("not yet installed")) ||
     text.includes("cannot find module") ||
     text.includes("err_module_not_found") ||
     text.includes("cannot find package") ||
