@@ -159,6 +159,7 @@ Rules:
 - If `agentSetup` or `gateSetup` requires credentials, stop and ask for a safer env-based setup.
 - If setup uses `nvm`, write `bash -lc 'source /usr/local/nvm/nvm.sh && nvm use <version> && ...'`. Plain `nvm use` is invalid in these sandboxes.
 - If a command/http contract needs tools absent from the Gate snapshot, install them in `gateSetup` before Gate network policy is applied.
+- Treat a Gate preflight readiness error as contract/config failure. Fix it before running an implementation agent.
 
 ## Validation
 
@@ -167,6 +168,7 @@ Before execution:
 ```bash
 harness contract validate contracts
 harness check --dir contracts --config harness.config.json
+harness preflight gate --dir contracts --config harness.config.json
 ```
 
 Freeze stable contracts only after the user confirms they are the intended judging rules:

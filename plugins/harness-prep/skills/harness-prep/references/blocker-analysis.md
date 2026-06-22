@@ -21,6 +21,7 @@ Run these first:
 ```bash
 git status --short
 harness status --dir contracts
+harness preflight gate --dir contracts --config harness.config.json --json
 harness review --dir contracts
 harness runs list --json
 harness runs show <runId> --json
@@ -76,6 +77,7 @@ Likely causes:
 - frozen contract hash mismatch;
 - unsafe sandbox policy path;
 - setup command failed.
+- skipped or stale Gate preflight for a changed `gateSetup`, contract command, or Gate snapshot.
 
 Action: fix contract/config/setup before retrying Agent.
 Use `sandbox-snapshots.md` to distinguish a real product failure from a missing sandbox tool. For example, `git`, `pnpm`, `yarn`, and `bun` are absent by default; `nvm` requires sourcing `/usr/local/nvm/nvm.sh`; Gate never has `claude`.

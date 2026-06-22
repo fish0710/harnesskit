@@ -17,7 +17,8 @@ function projectFiles(): FileSpec[] {
 > 地图,不是规则书(≤100 行)。细节在 docs/。
 
 ## 工作循环
-读意图(docs/specs, docs/plans) → 改代码 → 跑 \`harness check\` 拿反馈 → 修到全绿 → 才算完成。
+读意图(docs/specs, docs/plans) → 改代码 → 跑 \`harness check\` 看宿主门禁反馈 → 跑 \`harness preflight gate\` 确认 Daytona Gate sandbox 能执行远端门禁 → 修到全绿 → 才算完成。
+\`harness check\` 是 host/宿主本地验证；\`harness preflight gate\` 才会创建 Gate sandbox 演练 gateSetup/远端契约。
 你只能 push / 开 MR,不能合并;冻结契约(contracts/frozen/)不可改。
 
 ## 结构

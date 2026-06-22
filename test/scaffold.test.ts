@@ -38,6 +38,16 @@ test("create writes explicit sandbox trust policy", () => {
   assert.ok(config.sandbox.protectedPaths.includes("test/gates"));
 });
 
+test("create documents Gate sandbox preflight in AGENTS", () => {
+  const target = mkdtempSync(join(tmpdir(), "harness-create-agents-"));
+  createProject(target);
+  const agents = readFileSync(join(target, "AGENTS.md"), "utf8");
+
+  assert.match(agents, /harness preflight gate/);
+  assert.match(agents, /Gate sandbox/i);
+  assert.match(agents, /harness check.*host/i);
+});
+
 test("create initializes git when target is not inside a repository", () => {
   const parent = mkdtempSync(join(tmpdir(), "harness-create-git-"));
   const target = join(parent, "project");

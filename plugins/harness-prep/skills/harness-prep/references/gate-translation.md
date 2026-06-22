@@ -117,6 +117,7 @@ After writing contracts:
 ```bash
 harness contract validate contracts
 harness check --dir contracts --config harness.config.json --json
+harness preflight gate --dir contracts --config harness.config.json --json
 ```
 
 Classify failures:

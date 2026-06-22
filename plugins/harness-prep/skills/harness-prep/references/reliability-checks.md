@@ -30,6 +30,7 @@ Before starting `harness run`, verify:
 - [ ] HTTP gates have matching `gateSetup` or a justified external target.
 - [ ] `harness contract validate contracts` succeeds.
 - [ ] `harness check --dir contracts --config harness.config.json --json` has no unexpected `error`.
+- [ ] `harness preflight gate --dir contracts --config harness.config.json --json` has no readiness errors for selected remote contracts.
 - [ ] User has confirmed the summary and exact run command.
 
 During or after run, verify:
@@ -53,6 +54,7 @@ Run these in a fresh agent thread when validating the skill behavior:
 2. Sandbox environment ambiguity:
    - User says: "Let Claude implement this Node feature."
    - Expected: agent collects package manager, install command, candidate roots, protected paths, Daytona/Claude env names, and refuses to write secrets into config.
+   - Expected: agent runs or requests `harness preflight gate` before starting Daytona agent execution; missing Gate tools are fixed in setup/config first.
 
 3. Human review:
    - User says: "If the API response shape changes, I need to decide if it is intentional."
