@@ -154,35 +154,51 @@ function commandMentionsMissingTool(command: string): string | undefined {
   return undefined;
 }
 
-function bootstrapMentionsTool(command: string, tool: string): boolean {
-  const segments = maskQuotedText(command)
+function executableSegments(command: string): string[] {
+  return command
     .split(/&&|;|\|\|/)
     .map((segment) => segment.trim())
     .filter(Boolean);
+}
+
+function bootstrapMentionsTool(command: string, tool: string): boolean {
+  return executableSegments(command).some((segment) =>
+    segmentBootstrapsTool(segment, tool)
+  );
+}
+
+function segmentBootstrapsTool(segment: string, tool: string): boolean {
   if (tool === "pnpm") {
-    return segments.some((segment) =>
-      /^corepack\s+enable\s+pnpm\b/.test(segment) ||
-      /^npm\s+(?:install|i)\s+-g\s+pnpm\b/.test(segment)
-    );
+    return /^corepack\s+enable\s+["']?pnpm["']?(?:\s|$)/.test(segment) ||
+      /^npm\s+(?:install|i)\s+-g\s+["']?pnpm["']?(?:\s|$)/.test(segment);
   }
   if (tool === "yarn") {
-    return segments.some((segment) =>
-      /^corepack\s+enable\s+yarn\b/.test(segment) ||
-      /^npm\s+(?:install|i)\s+-g\s+yarn\b/.test(segment)
-    );
+    return /^corepack\s+enable\s+["']?yarn["']?(?:\s|$)/.test(segment) ||
+      /^npm\s+(?:install|i)\s+-g\s+["']?yarn["']?(?:\s|$)/.test(segment);
   }
   if (tool === "bun") {
-    return segments.some((segment) =>
-      /^npm\s+(?:install|i)\s+-g\s+bun\b/.test(segment) ||
-      /^curl\b[\s\S]*\bbun\.sh\/install\b[\s\S]*\|\s*bash\b/.test(segment)
-    );
+    return /^npm\s+(?:install|i)\s+-g\s+["']?bun["']?(?:\s|$)/.test(segment) ||
+      /^curl\b[\s\S]*\bbun\.sh\/install["']?\b[\s\S]*\|\s*bash\b/.test(segment);
   }
   if (tool === "git") {
-    return segments.some((segment) =>
-      /^apt(?:-get)?\s+install\b[\s\S]*\bgit\b/.test(segment)
-    );
+    return /^apt(?:-get)?\s+install\b[\s\S]*\bgit\b/.test(segment);
   }
   return false;
+}
+
+function gateSetupMissingTool(command: string): string | undefined {
+  const bootstrapped = new Set<string>();
+  for (const segment of executableSegments(command)) {
+    for (const tool of MISSING_DEFAULT_TOOLS) {
+      if (segmentBootstrapsTool(segment, tool)) bootstrapped.add(tool);
+    }
+    for (const tool of MISSING_DEFAULT_TOOLS) {
+      if (!bootstrapped.has(tool) && mentionsExecutableName(segment, tool)) {
+        return tool;
+      }
+    }
+  }
+  return undefined;
 }
 
 function setupBootstrapsTool(policy: SandboxPolicy, tool: string): boolean {
@@ -250,6 +266,8 @@ function rawRuntimeFailureText(text: string): boolean {
     text.includes("nvm: not found") ||
     text.includes("nvm.sh") ||
     text.includes("cannot find module") ||
+    text.includes("err_module_not_found") ||
+    text.includes("cannot find package") ||
     text.includes("module not found") ||
     text.includes("missing script") ||
     text.includes("enoent") ||
@@ -332,8 +350,8 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
         "static",
       ));
     }
-    const tool = commandMentionsMissingTool(command);
-    if (tool && !bootstrapMentionsTool(command, tool)) {
+    const tool = gateSetupMissingTool(command);
+    if (tool) {
       findings.push(finding(
         `${label}.tool`,
         "error",

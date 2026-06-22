@@ -284,6 +284,26 @@ test("preflight lint accepts conservative gate tool bootstraps", () => {
   );
 });
 
+test("preflight lint accepts quoted bootstrap arguments", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "lint.pnpm", type: "command", cmd: "pnpm", args: ["test"] },
+      { id: "structure.yarn", type: "structure", tool: "yarn", args: ["lint"] },
+      { id: "app.bun", type: "command", cmd: "bun", args: ["test"] },
+    ],
+    policy: policy([
+      'corepack enable "pnpm"',
+      'npm install -g "yarn"',
+      'curl -fsSL "https://bun.sh/install" | bash',
+    ]),
+  });
+
+  assert.deepEqual(
+    ids(findings.filter((finding) => finding.id.includes(".tool"))),
+    [],
+  );
+});
+
 test("preflight lint rejects quoted bootstrap text for missing package managers", () => {
   const findings = lintGateReadiness({
     contracts: [
@@ -299,6 +319,15 @@ test("preflight lint rejects quoted bootstrap text for missing package managers"
     "gateSetup.1.tool",
     "gateSetup.2.tool",
   ]);
+});
+
+test("preflight lint rejects gate setup tool use before later bootstrap", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["pnpm test && npm install -g pnpm", "yarn lint && corepack enable yarn"]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.tool", "gateSetup.2.tool"]);
 });
 
 test("preflight lint rejects bare corepack enable as pnpm bootstrap", () => {
@@ -499,6 +528,41 @@ test("preflight readiness classification promotes missing module failures", () =
   assert.deepEqual(
     classified.readinessErrors.map((finding) => finding.contractId).sort(),
     ["build.module.cannot-find", "build.module.not-found"],
+  );
+});
+
+test("preflight readiness classification promotes node module resolution failures", () => {
+  const errModule: CheckResult = {
+    id: "build.module.err-module-not-found",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "bundle step",
+      how: "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'left-pad' imported from /workspace/candidate/src/app.mjs",
+    }],
+  };
+  const cannotFindPackage: CheckResult = {
+    id: "build.module.cannot-find-package",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "bundle step",
+      how: "Cannot find package 'left-pad' imported from /workspace/candidate/src/app.mjs",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(
+    aggregate([errModule, cannotFindPackage]),
+  );
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.deepEqual(
+    classified.readinessErrors.map((finding) => finding.contractId).sort(),
+    ["build.module.cannot-find-package", "build.module.err-module-not-found"],
   );
 });
 
