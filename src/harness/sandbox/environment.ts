@@ -480,28 +480,27 @@ export function createDaytonaRunEnvironment(
               AGENT_COMMAND_TIMEOUT_MS,
             );
           const streamPath = claudeObservationEnv.HARNESS_CLAUDE_STREAM_PATH;
-          const runObservedClaudeCommand = () =>
-            streamPath
-              ? tailClaudeStreamDuring({
-                id: handle.id,
-                attempt,
-                path: streamPath,
-                read: (path) => handle.readFile(path),
-                emit: ({ event, data }) => observe(event, data),
-                run: runClaudeCommand,
-                intervalMs: 50,
-                noOutputWarningMs: 60_000,
-              })
-              : runClaudeCommand();
-          result = await runWithCommandHeartbeat({
+          const commandPromise = runWithCommandHeartbeat({
             id: handle.id,
             attempt,
             kind: "claude",
             streamPath,
             intervalMs: options.heartbeatIntervalMs,
             emit: ({ event, data }) => observe(event, data),
-            run: runObservedClaudeCommand,
+            run: runClaudeCommand,
           });
+          result = streamPath
+            ? await tailClaudeStreamDuring({
+                id: handle.id,
+                attempt,
+                path: streamPath,
+                read: (path) => handle.readFile(path),
+                emit: ({ event, data }) => observe(event, data),
+                run: () => commandPromise,
+                intervalMs: 50,
+                noOutputWarningMs: 60_000,
+              })
+            : await commandPromise;
           claudeHomeSnapshotAttempted = true;
           await snapshotClaudeHome(
             handle,

@@ -154,6 +154,10 @@ class RecordingHandle implements SandboxHandle {
         ((handle: RecordingHandle, env: Record<string, string>) => Promise<void>)
           | undefined
       >;
+      readFileHook?: (
+        handle: RecordingHandle,
+        path: string,
+      ) => Promise<void>;
     },
   ) {}
 
@@ -352,6 +356,7 @@ class RecordingHandle implements SandboxHandle {
   }
 
   async readFile(path: string): Promise<Buffer> {
+    await this.provider.readFileHook?.(this, path);
     const file = this.files.get(path);
     if (!file) throw new Error(`missing fake file: ${path}`);
     return Buffer.from(file.content);
@@ -381,6 +386,10 @@ function scriptedProvider(options: {
     ((handle: RecordingHandle, env: Record<string, string>) => Promise<void>)
       | undefined
   >;
+  readFileHook?: (
+    handle: RecordingHandle,
+    path: string,
+  ) => Promise<void>;
   gateDeleteFails?: boolean;
   mutateProtectedOnGate?: boolean;
   commandExitCodes?: Record<string, number>;
@@ -394,6 +403,7 @@ function scriptedProvider(options: {
     agentStdout: options.agentStdout ?? "agent done",
     candidateMutations: options.candidateMutations ?? [],
     claudeRunHooks: options.claudeRunHooks ?? [],
+    readFileHook: options.readFileHook,
     gateDeleteFails: options.gateDeleteFails ?? false,
     mutateProtectedOnGate: options.mutateProtectedOnGate ?? false,
     commandExitCodes: options.commandExitCodes ?? {},
@@ -892,6 +902,66 @@ test("Claude Daytona emits command heartbeat before command end", async () => {
     heartbeat.claudeStreamPath,
     "/harness-observability/attempt-1/claude-stream.jsonl",
   );
+});
+
+test("Claude Daytona command heartbeat stops during slow final stream read", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const observations: Array<[string, unknown]> = [];
+  let streamReads = 0;
+  let delayedReadStarted = false;
+  let releaseDelayedRead: () => void = () => undefined;
+  const delayedRead = new Promise<void>((resolve) => {
+    releaseDelayedRead = resolve;
+  });
+  const heartbeatCount = () =>
+    observations.filter(([event]) => event === "agent.command.heartbeat")
+      .length;
+
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    claudeStdouts: [
+      `${JSON.stringify({ type: "result", session_id: "session-heartbeat" })}\n`,
+    ],
+    claudeRunHooks: [async () => {
+      await waitUntil(() => heartbeatCount() > 0);
+    }],
+    readFileHook: async (_handle, path) => {
+      if (!path.endsWith("/claude-stream.jsonl")) return;
+      streamReads++;
+      if (streamReads !== 2) return;
+      delayedReadStarted = true;
+      await delayedRead;
+    },
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    heartbeatIntervalMs: 5,
+    observability: {
+      runId: "run-command-heartbeat-final-read",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const task = environment.runTask({ task: "fix it" });
+  let countDuringFinalRead = 0;
+  let countAfterSlowRead = 0;
+  try {
+    await waitUntil(() => delayedReadStarted, 500);
+    countDuringFinalRead = heartbeatCount();
+    await delay(25);
+    countAfterSlowRead = heartbeatCount();
+  } finally {
+    releaseDelayedRead();
+    await task;
+  }
+
+  assert.equal(countAfterSlowRead, countDuringFinalRead);
 });
 
 test("Claude Daytona rejects invalid heartbeat interval overrides before sandbox creation", () => {

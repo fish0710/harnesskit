@@ -230,6 +230,8 @@ export async function tailClaudeStreamDuring<T>(
   const runPromise = options.run().finally(() => {
     completed = true;
   });
+  // Mark the delayed await as handled; the rejection still propagates below.
+  runPromise.catch(() => undefined);
 
   while (!completed) {
     const grew = await pollStream(options, state);
