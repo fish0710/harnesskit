@@ -66,19 +66,32 @@ mount: /harness-observability
 subpath: runs/<runId>
 ```
 
-Claude Code 命令执行前，Harness 创建并注入：
+Claude Code 命令执行前，Harness 不设置 `CLAUDE_CONFIG_DIR`。它只创建
+attempt 目录并注入 Harness 自己的观测变量：
 
 ```text
-CLAUDE_CONFIG_DIR=/harness-observability/.claude
 HARNESS_RUN_ID=<runId>
 HARNESS_ATTEMPT=<n>
+HARNESS_OBSERVABILITY_ATTEMPT_ROOT=/harness-observability/attempt-<n>
+HARNESS_CLAUDE_STREAM_PATH=/harness-observability/attempt-<n>/claude-stream.jsonl
+HARNESS_CLAUDE_HOME_SNAPSHOT_DIR=/harness-observability/.claude
 ```
 
-`/harness-observability/.claude` 是 agent 沙箱内的稳定 Claude config。首轮
+`/home/daytona/.claude` 是 agent 沙箱内的稳定 Claude 原生 config/state
+目录。不要把 Daytona volume 直接挂到该路径；实测直接 mount 会让 native
+`projects/<session>.jsonl` 只保留启动事件。Harness 在 Claude 命令结束后把
+该目录复制到同一个 run volume 的 `.claude` 子目录。首轮
 Claude attempt 从 stream-json 捕获 session id；后续 gate-fail retry 在同一
 agent sandbox 中使用 `claude --resume <sessionId>`。缺失或无法确认复用该
 session 时 fail closed，不启动新对话。跨 run 隔离仍由 Daytona
 `subpath: runs/<runId>` 保证，不同 run 映射到不同持久目录。
+
+Claude CLI 的完整 `--output-format stream-json` stdout 会在远端命令运行时直接写入
+`HARNESS_CLAUDE_STREAM_PATH`，并在 RunStore attempt 中记录为
+`claudeStreamPath`。这是分析 assistant 文本、tool_use、tool_result 和最终
+result 的独立 durable 副本。Claude Code 原生 `.claude/projects/...jsonl`
+先写入 sandbox-local `/home/daytona/.claude`，事后挂载 run root 时可从
+`/harness-observability/.claude` 查看。
 
 因此，沙箱删除后仍可通过 host manifest 定位对应 Daytona volume 中的
 `.claude` artifact。这个能力解决的是“Claude Code 做过什么、哪一步失败、

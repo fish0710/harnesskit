@@ -3,6 +3,7 @@
 Related documents:
 
 - [Current architecture](architecture/daytona-sandbox-gate.md)
+- [2026-06-22 transcript persistence archive](archive/2026-06-22-daytona-claude-transcript-persistence/README.md)
 - [2026-06-15 implementation archive](archive/2026-06-15-daytona-sandbox-gate/README.md)
 
 ## Architecture
@@ -62,6 +63,18 @@ export HARNESS_DAYTONA_OBSERVABILITY_MOUNT="/harness-observability"
 Set `HARNESS_DAYTONA_OBSERVABILITY=0` only when the volume path itself is
 broken and you need to run without `.claude` persistence. The run manifest will
 still record that observability was disabled.
+
+For every Claude attempt, the remote Claude command writes the full
+`--output-format stream-json` stdout directly to the mounted run directory and
+then replays the same file back to Harness for session parsing:
+
+```text
+/harness-observability/attempt-<n>/claude-stream.jsonl
+```
+
+The RunStore attempt entry records this as `claudeStreamPath`. Use this file as
+an independent durable source for assistant text, tool_use, and tool_result
+events alongside the copied native `.claude/projects/...jsonl`.
 
 Agent and Gate Snapshots are selected by the host control plane before sandbox
 creation. If the environment variables are absent, Harness defaults to
@@ -203,16 +216,22 @@ The default durable artifact location is:
 Daytona volume: harness-claude-observability
 Durable run root: /harness-observability/runs/<runId>
 Mounted in sandbox as: /harness-observability
-Claude config in sandbox: /harness-observability/.claude
+Claude native config/state in sandbox: /home/daytona/.claude
+Copied durable native .claude path: /harness-observability/runs/<runId>/.claude
 ```
 
 Because the volume mount is scoped to `runs/<runId>`, the sandbox sees the run
 root as `/harness-observability`, while the host-side manifest records the
-durable path `/harness-observability/runs/<runId>`.
+durable path `/harness-observability/runs/<runId>`. Harness does not mount the
+volume directly on `/home/daytona/.claude`; Claude Code writes to sandbox-local
+home, then Harness copies that directory to `/harness-observability/.claude`
+after each Claude command. This avoids the Daytona volume mount behavior that
+causes native session JSONL to keep only startup events when mounted directly as
+`$HOME/.claude`.
 
 Claude retries use strong resume. The first attempt captures the stream-json
 session id; later gate-fail attempts run `claude --resume <sessionId>` in the
-same agent sandbox and reuse `/harness-observability/.claude`. Missing or
+same agent sandbox and reuse `/home/daytona/.claude`. Missing or
 inconsistent resume state fails closed instead of starting a fresh conversation.
 
 TODO: Improve HTTP gate diagnostics for connection failures. A minimal resume
@@ -230,14 +249,17 @@ node -e 'const r=require(process.argv[1]); console.log({runId:r.runId,status:r.s
 ```
 
 Use Daytona's volume inspection or a temporary sandbox mounted with the same
-volume/subpath to browse the corresponding `.claude` directory:
+volume/subpath to browse the corresponding native `.claude` directory:
 
 ```text
 /harness-observability/.claude
 ```
 
 Use the host manifest `.harness/runs/<runId>.json` to correlate that artifact
-with attempt numbers, sandbox ids, gate outcomes, and failures.
+with attempt numbers, sandbox ids, gate outcomes, and failures. In current
+Harness runs, native `.claude/projects/...jsonl` is copied from the sandbox-local
+home after the command. The RunStore attempt `claudeStreamPath` remains the
+independent complete assistant/tool_use/tool_result stream.
 
 Run unit tests without external services:
 

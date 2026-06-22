@@ -127,7 +127,8 @@ test("Claude environment reports every missing required allowlisted variable", (
 });
 
 test("Claude Code launches from the immutable image path", () => {
-  assert.match(CLAUDE_COMMAND, /^exec "\/usr\/local\/bin\/claude"/);
+  assert.match(CLAUDE_COMMAND, /exec "\/usr\/local\/bin\/claude"/);
+  assert.match(CLAUDE_COMMAND, /\$\{HARNESS_CLAUDE_STREAM_PATH:-\}/);
   assert.match(CLAUDE_COMMAND, /--dangerously-skip-permissions/);
   assert.match(CLAUDE_COMMAND, /--output-format stream-json/);
   assert.match(CLAUDE_COMMAND, /--verbose/);

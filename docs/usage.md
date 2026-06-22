@@ -336,6 +336,24 @@ volume: harness-claude-observability
 mount: /harness-observability
 ```
 
+Claude 命令运行时先写 sandbox-local `/home/daytona/.claude`。命令结束后，
+Harness 会把该目录复制到 run volume：
+
+```text
+/harness-observability/.claude
+```
+
+不要把 Daytona volume 直接挂到 `/home/daytona/.claude`；实测这样会让
+native session JSONL 只保留启动事件。同一 volume 的 run subpath 还会保存
+每次 attempt 的 Claude CLI `stream-json` stdout：
+
+```text
+/harness-observability/attempt-<n>/claude-stream.jsonl
+```
+
+这个 `claude-stream.jsonl` 是 assistant、tool_use 和 tool_result 的独立完整
+副本。
+
 `gate` 沙箱不会拿到模型凭证，也不会复用 agent 沙箱。
 
 ## 9A. 串行执行大型任务

@@ -4,6 +4,7 @@ import { posix } from "node:path";
 export const DEFAULT_DAYTONA_OBSERVABILITY_VOLUME =
   "harness-claude-observability";
 export const DEFAULT_DAYTONA_OBSERVABILITY_MOUNT = "/harness-observability";
+export const DEFAULT_DAYTONA_CLAUDE_HOME_CONFIG_DIR = "/home/daytona/.claude";
 
 export type DaytonaObservabilityBackend = "daytona-volume" | "disabled";
 
@@ -130,7 +131,7 @@ export function claudeObservabilityPaths(
   return {
     runRoot,
     attemptRoot,
-    claudeConfigDir: posix.join(attemptRoot, ".claude"),
+    claudeConfigDir: posix.join(runRoot, ".claude"),
     manifestPath: posix.join(attemptRoot, "manifest.json"),
   };
 }
@@ -155,7 +156,7 @@ export function mountedClaudeObservabilityPaths(
   return {
     runRoot,
     attemptRoot,
-    claudeConfigDir: posix.join(runRoot, ".claude"),
+    claudeConfigDir: DEFAULT_DAYTONA_CLAUDE_HOME_CONFIG_DIR,
     manifestPath: posix.join(attemptRoot, "manifest.json"),
   };
 }

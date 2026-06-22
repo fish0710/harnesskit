@@ -28,13 +28,29 @@ import {
 } from "./toolchain.js";
 
 export const DEFAULT_DAYTONA_API_URL = "http://localhost:3000/api";
-export const CLAUDE_COMMAND =
-  'exec "/usr/local/bin/claude" --dangerously-skip-permissions ' +
+const CLAUDE_INVOKE =
+  '"/usr/local/bin/claude" --dangerously-skip-permissions ' +
   '-p "$HARNESS_PROMPT" --output-format stream-json --verbose';
-const CLAUDE_RESUME_COMMAND =
-  'exec "/usr/local/bin/claude" --dangerously-skip-permissions ' +
+const CLAUDE_RESUME_INVOKE =
+  '"/usr/local/bin/claude" --dangerously-skip-permissions ' +
   '--resume "$HARNESS_CLAUDE_SESSION_ID" ' +
   '-p "$HARNESS_PROMPT" --output-format stream-json --verbose';
+
+function streamPersistingClaudeCommand(invoke: string): string {
+  return 'if [ -n "${HARNESS_CLAUDE_STREAM_PATH:-}" ]; then ' +
+    'mkdir -p "$(dirname "$HARNESS_CLAUDE_STREAM_PATH")" && ' +
+    `${invoke} > "$HARNESS_CLAUDE_STREAM_PATH"; ` +
+    'status=$?; ' +
+    'cat "$HARNESS_CLAUDE_STREAM_PATH"; ' +
+    'exit "$status"; ' +
+    "fi; " +
+    `exec ${invoke}`;
+}
+
+export const CLAUDE_COMMAND = streamPersistingClaudeCommand(CLAUDE_INVOKE);
+const CLAUDE_RESUME_COMMAND = streamPersistingClaudeCommand(
+  CLAUDE_RESUME_INVOKE,
+);
 
 function isSafeClaudeSessionId(sessionId: unknown): sessionId is string {
   return (

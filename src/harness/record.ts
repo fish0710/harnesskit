@@ -109,6 +109,7 @@ export interface RunRecordAttempt {
   claudeSessionId?: string;
   resumedFromSessionId?: string;
   claudeConfigDir?: string;
+  claudeStreamPath?: string;
   agentSandboxId?: string;
   startedAt?: string;
   endedAt?: string;
@@ -371,6 +372,7 @@ function isRunRecordAttempt(value: unknown): value is RunRecordAttempt {
     isOptionalString(value.claudeSessionId) &&
     isOptionalString(value.resumedFromSessionId) &&
     isOptionalString(value.claudeConfigDir) &&
+    isOptionalString(value.claudeStreamPath) &&
     isOptionalString(value.agentSandboxId) &&
     (
       value.startedAt === undefined ||
@@ -571,6 +573,7 @@ export class RunRecorder {
     if (
       event !== "agent.command.start" &&
       event !== "agent.command.end" &&
+      event !== "agent.observability.stream" &&
       event !== "gate.create.end" &&
       event !== "gate.run.end"
     ) {
@@ -596,10 +599,19 @@ export class RunRecorder {
       if (typeof value.claudeConfigDir === "string") {
         attempt.claudeConfigDir = value.claudeConfigDir;
       }
+      if (typeof value.claudeStreamPath === "string") {
+        attempt.claudeStreamPath = value.claudeStreamPath;
+      }
     }
     if (event === "agent.command.end") {
       attempt.endedAt = this.now();
       if (typeof value.exitCode === "number") attempt.exitCode = value.exitCode;
+    }
+    if (
+      event === "agent.observability.stream" &&
+      typeof value.path === "string"
+    ) {
+      attempt.claudeStreamPath = value.path;
     }
     if (event === "gate.create.end" && typeof value.id === "string") {
       if (!attempt.gateSandboxIds.includes(value.id)) {

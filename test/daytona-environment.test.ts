@@ -169,12 +169,14 @@ class RecordingHandle implements SandboxHandle {
   workspace() {
     return {
       list: async () =>
-        [...this.files.values()].map((file) => ({
-          path: file.path,
-          kind: "file" as const,
-          size: file.content.byteLength,
-          executable: file.executable,
-        })),
+        [...this.files.values()]
+          .filter((file) => !file.path.startsWith("/"))
+          .map((file) => ({
+            path: file.path,
+            kind: "file" as const,
+            size: file.content.byteLength,
+            executable: file.executable,
+          })),
       read: async (path: string) => {
         const file = this.files.get(path);
         if (!file) throw new Error(`missing fake file: ${path}`);
@@ -253,11 +255,47 @@ class RecordingHandle implements SandboxHandle {
         workspaceFile("src/a.ts", Buffer.from(content), false),
       );
       this.provider.candidateMutations[run]?.(this.files);
+      const stdout = this.provider.claudeStdouts[run] ??
+        this.provider.claudeStdouts.at(-1) ?? "";
+      if (typeof env.HARNESS_CLAUDE_STREAM_PATH === "string") {
+        this.files.set(
+          env.HARNESS_CLAUDE_STREAM_PATH,
+          workspaceFile(
+            env.HARNESS_CLAUDE_STREAM_PATH,
+            Buffer.from(stdout),
+            false,
+          ),
+        );
+      }
       return {
         exitCode: 0,
-        stdout: this.provider.claudeStdouts[run] ?? this.provider.claudeStdouts.at(-1) ?? "",
+        stdout,
         stderr: "",
       };
+    }
+    if (
+      this.role === "agent" &&
+      typeof env.HARNESS_CLAUDE_STREAM_TMP === "string" &&
+      typeof env.HARNESS_CLAUDE_STREAM_PATH === "string"
+    ) {
+      const tempPath = env.HARNESS_CLAUDE_STREAM_TMP.replace(
+        /^\/workspace\/candidate\//,
+        "",
+      );
+      const tempFile = this.files.get(tempPath);
+      if (!tempFile) {
+        return { exitCode: 1, stdout: "", stderr: "missing stream temp file" };
+      }
+      this.files.set(
+        env.HARNESS_CLAUDE_STREAM_PATH,
+        workspaceFile(
+          env.HARNESS_CLAUDE_STREAM_PATH,
+          tempFile.content,
+          false,
+        ),
+      );
+      this.files.delete(tempPath);
+      return { exitCode: 0, stdout: "", stderr: "" };
     }
     if (this.role === "gate" && command.includes("/usr/bin/env")) {
       const exitCode = this.provider.gateExitCodes[
@@ -481,7 +519,7 @@ test("gate sandboxes use Gate runtime snapshots without model credentials or Cla
   );
 });
 
-test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE_CONFIG_DIR", async () => {
+test("Claude Daytona observability snapshots the Agent home .claude without mounting it", async () => {
   const root = createGitFixture({ "src/a.ts": "before\n" });
   const provider = scriptedProvider({
     candidateVersions: ["fixed\n"],
@@ -524,11 +562,11 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
 
   const agent = provider.handles.find((handle) => handle.role === "agent")!;
   const mkdirCall = agent.executeCalls.find((call) =>
-    call.command === 'mkdir -p "$CLAUDE_CONFIG_DIR"'
+    call.command === 'mkdir -p "$HARNESS_OBSERVABILITY_ATTEMPT_ROOT"'
   );
   assert.equal(
-    mkdirCall?.env.CLAUDE_CONFIG_DIR,
-    "/harness-observability/.claude",
+    mkdirCall?.env.HARNESS_OBSERVABILITY_ATTEMPT_ROOT,
+    "/harness-observability/attempt-1",
   );
   assert.equal(mkdirCall?.timeoutMs, 30_000);
 
@@ -536,7 +574,11 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
     call.command === CLAUDE_COMMAND
   );
   assert.equal(
-    claudeCall?.env.CLAUDE_CONFIG_DIR,
+    claudeCall ? "CLAUDE_CONFIG_DIR" in claudeCall.env : true,
+    false,
+  );
+  assert.equal(
+    claudeCall?.env.HARNESS_CLAUDE_HOME_SNAPSHOT_DIR,
     "/harness-observability/.claude",
   );
   assert.equal(claudeCall?.env.HARNESS_RUN_ID, "run-obs");
@@ -549,9 +591,29 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
     claudeCall?.env.HARNESS_OBSERVABILITY_ATTEMPT_ROOT,
     "/harness-observability/attempt-1",
   );
+  const snapshotCall = agent.executeCalls.find((call) =>
+    call.command.includes("HARNESS_CLAUDE_HOME_SNAPSHOT_DIR") &&
+    call.command.includes("cp -R")
+  );
+  assert.equal(
+    snapshotCall?.env.HARNESS_CLAUDE_HOME_SNAPSHOT_DIR,
+    "/harness-observability/.claude",
+  );
+  assert.equal(
+    agent.executeCalls.indexOf(snapshotCall!),
+    agent.executeCalls.indexOf(claudeCall!) + 1,
+  );
 
   const commandStart = observations.find(([event]) =>
     event === "agent.command.start"
+  );
+  assert.equal(
+    (commandStart?.[1] as { claudeStreamPath?: string }).claudeStreamPath,
+    "/harness-observability/attempt-1/claude-stream.jsonl",
+  );
+  assert.equal(
+    (commandStart?.[1] as { claudeHomeSnapshotDir?: string }).claudeHomeSnapshotDir,
+    "/harness-observability/.claude",
   );
   const observabilityStart = observations.find(([event]) =>
     event === "agent.observability.start"
@@ -562,7 +624,7 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
   );
   assert.equal(
     (observabilityStart?.[1] as { claudeConfigDir?: string }).claudeConfigDir,
-    "/harness-observability/.claude",
+    "/home/daytona/.claude",
   );
   const observabilityEnd = observations.find(([event]) =>
     event === "agent.observability.end"
@@ -578,7 +640,21 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
   assert.equal((commandStart?.[1] as { attempt?: number }).attempt, 1);
   assert.equal(
     (commandStart?.[1] as { claudeConfigDir?: string }).claudeConfigDir,
+    "/home/daytona/.claude",
+  );
+  const snapshotStart = observations.find(([event]) =>
+    event === "agent.observability.claude-home.start"
+  );
+  assert.equal(
+    (snapshotStart?.[1] as { path?: string }).path,
     "/harness-observability/.claude",
+  );
+  const snapshotEnd = observations.find(([event]) =>
+    event === "agent.observability.claude-home.end"
+  );
+  assert.equal(
+    (snapshotEnd?.[1] as { outcome?: string }).outcome,
+    "copied",
   );
   for (const eventName of [
     "gate.create.start",
@@ -595,6 +671,70 @@ test("Claude Daytona observability mounts only the Agent sandbox and sets CLAUDE
       `${eventName} attempt`,
     );
   }
+});
+
+test("Claude Daytona observability persists raw stream-json stdout", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const assistant = JSON.stringify({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "tool-1", name: "Read" }],
+    },
+  });
+  const toolResult = JSON.stringify({
+    type: "user",
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "tool-1" }],
+    },
+  });
+  const result = JSON.stringify({
+    type: "result",
+    session_id: "session-stream",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    claudeStdouts: [`${assistant}\n${toolResult}\n${result}\n`],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    observability: {
+      runId: "run-stream",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await environment.runTask({ task: "fix it" });
+
+  const agent = provider.handles.find((handle) => handle.role === "agent")!;
+  assert.equal(
+    agent.files.get("/harness-observability/attempt-1/claude-stream.jsonl")
+      ?.content.toString(),
+    `${assistant}\n${toolResult}\n${result}\n`,
+  );
+  assert.equal(
+    agent.executeCalls.some((call) =>
+      "HARNESS_CLAUDE_STREAM_TMP" in call.env
+    ),
+    false,
+  );
+  const streamEvent = observations.find(([event]) =>
+    event === "agent.observability.stream"
+  );
+  assert.deepEqual(streamEvent?.[1], {
+    id: "agent-1",
+    attempt: 1,
+    path: "/harness-observability/attempt-1/claude-stream.jsonl",
+    bytes: Buffer.byteLength(`${assistant}\n${toolResult}\n${result}\n`),
+  });
 });
 
 test("Claude Daytona retries strongly resume the captured session in one agent sandbox", async () => {
@@ -659,8 +799,8 @@ test("Claude Daytona retries strongly resume the captured session in one agent s
     "session-abc",
   );
   assert.deepEqual(
-    claudeCalls.map((call) => call.env.CLAUDE_CONFIG_DIR),
-    ["/harness-observability/.claude", "/harness-observability/.claude"],
+    claudeCalls.map((call) => "CLAUDE_CONFIG_DIR" in call.env),
+    [false, false],
   );
 
   const commandStarts = observations.filter(([event]) =>
@@ -814,7 +954,7 @@ test("Claude Daytona observability emits an error end event when setup throws", 
     candidateVersions: ["fixed\n"],
     gateExitCodes: [0],
     throwCommands: {
-      'mkdir -p "$CLAUDE_CONFIG_DIR"': new Error("toolbox unavailable"),
+      'mkdir -p "$HARNESS_OBSERVABILITY_ATTEMPT_ROOT"': new Error("toolbox unavailable"),
     },
   });
   const observations: Array<[string, unknown]> = [];

@@ -40,7 +40,7 @@ Important fields:
 - `task`: description plus optional `taskId`, `seriesId`, `index`, `total`.
 - `driver`: `scaffold`, `daytona(command)`, `daytona(claude)`, or `series(...)`.
 - `selectedContracts`: contract ids selected for the run.
-- `attempts`: Agent sandbox ids, Gate sandbox ids, Claude session ids, resume ids, exit codes, gate outcome.
+- `attempts`: Agent sandbox ids, Gate sandbox ids, Claude session ids, resume ids, Claude stream path, exit codes, gate outcome.
 - `events`: host-side observation timeline.
 - `logs`: run loop log lines.
 - `report`: final Gate report.
@@ -107,13 +107,24 @@ For `--driver claude`, use:
 - `observability.mountPath` -> usually `/harness-observability`;
 - `attempts[].agentSandboxId` -> Agent sandbox used for that attempt;
 - `attempts[].claudeSessionId` and `resumedFromSessionId` -> session continuity evidence;
-- `attempts[].gateSandboxIds` -> fresh validation sandboxes.
+- `attempts[].gateSandboxIds` -> fresh validation sandboxes;
+- `attempts[].claudeStreamPath` -> mounted path for the raw `stream-json` transcript, usually `/harness-observability/attempt-<n>/claude-stream.jsonl`.
 
-Inside the Agent sandbox, Claude sees:
+While Claude runs, native state is sandbox-local:
+
+```text
+/home/daytona/.claude
+```
+
+Before Agent cleanup, Harness copies that directory into the mounted run volume:
 
 ```text
 /harness-observability/.claude
 ```
+
+This copy is not to the Harness host machine and not into `.harness/runs`; it is
+inside the Daytona observability volume. RunStore stores the correlation fields
+needed to mount and inspect that volume later.
 
 In the durable volume, the run is scoped by:
 
@@ -122,6 +133,18 @@ runs/<runId>
 ```
 
 Use absolute mounted paths when calling Daytona FS APIs after remounting the volume.
+
+After remounting `runs/<runId>` at `/harness-observability`, inspect:
+
+```text
+/harness-observability/.claude/projects/<project-key>/<claudeSessionId>.jsonl
+/harness-observability/attempt-<n>/claude-stream.jsonl
+```
+
+Do not create an inspection sandbox that mounts the volume at
+`/home/daytona/.claude`; direct HOME mounts can cause Claude Code native JSONL
+to contain only startup events. Mount the run root at `/harness-observability`
+and read the copied `.claude` tree.
 
 ## Diagnosis Rules
 

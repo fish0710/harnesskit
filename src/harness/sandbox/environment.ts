@@ -1,4 +1,5 @@
 import { aggregate } from "../../aggregate.js";
+import { posix } from "node:path";
 import type { CheckResult, Contract, GateReport } from "../../types.js";
 import type {
   EnvironmentTaskInput,
@@ -60,6 +61,11 @@ export interface DaytonaRunEnvironmentOptions {
   environment?: Record<string, string | undefined>;
   observability?: DaytonaRunObservabilityOptions;
   onObservation?: (event: string, data: unknown) => void;
+}
+
+interface PreparedClaudeObservability {
+  env: Record<string, string>;
+  claudeConfigDir?: string;
 }
 
 function integrityReport(reason: string): GateReport {
@@ -146,9 +152,20 @@ async function prepareClaudeObservability(
   attempt: number,
   config: DaytonaObservabilityConfig,
   observe: (event: string, data: unknown) => void,
-): Promise<Record<string, string>> {
-  if (!config.enabled) return {};
+): Promise<PreparedClaudeObservability> {
+  if (!config.enabled) return { env: {} };
   const paths = mountedClaudeObservabilityPaths(config, attempt);
+  const env = {
+    HARNESS_RUN_ID: runId,
+    HARNESS_ATTEMPT: String(attempt),
+    HARNESS_OBSERVABILITY_RUN_ROOT: paths.runRoot,
+    HARNESS_OBSERVABILITY_ATTEMPT_ROOT: paths.attemptRoot,
+    HARNESS_CLAUDE_STREAM_PATH: posix.join(
+      paths.attemptRoot,
+      "claude-stream.jsonl",
+    ),
+    HARNESS_CLAUDE_HOME_SNAPSHOT_DIR: posix.join(paths.runRoot, ".claude"),
+  };
   observe("agent.observability.start", {
     id: handle.id,
     attempt,
@@ -158,9 +175,9 @@ async function prepareClaudeObservability(
   let result;
   try {
     result = await handle.execute(
-      'mkdir -p "$CLAUDE_CONFIG_DIR"',
+      'mkdir -p "$HARNESS_OBSERVABILITY_ATTEMPT_ROOT"',
       REMOTE_ROOT,
-      { CLAUDE_CONFIG_DIR: paths.claudeConfigDir },
+      env,
       30_000,
     );
   } catch (error) {
@@ -189,12 +206,91 @@ async function prepareClaudeObservability(
     durationMs: durationSince(startedAt),
   });
   return {
-    CLAUDE_CONFIG_DIR: paths.claudeConfigDir,
-    HARNESS_RUN_ID: runId,
-    HARNESS_ATTEMPT: String(attempt),
-    HARNESS_OBSERVABILITY_RUN_ROOT: paths.runRoot,
-    HARNESS_OBSERVABILITY_ATTEMPT_ROOT: paths.attemptRoot,
+    env,
+    claudeConfigDir: paths.claudeConfigDir,
   };
+}
+
+const CLAUDE_HOME_SNAPSHOT_COMMAND =
+  'if [ -d "$HOME/.claude" ]; then ' +
+  'mkdir -p "$HARNESS_CLAUDE_HOME_SNAPSHOT_DIR" && ' +
+  'cp -R "$HOME/.claude/." "$HARNESS_CLAUDE_HOME_SNAPSHOT_DIR/"; ' +
+  "fi";
+
+async function snapshotClaudeHome(
+  handle: SandboxHandle,
+  attempt: number,
+  observationEnv: Record<string, string>,
+  observe: (event: string, data: unknown) => void,
+  failOnError: boolean,
+): Promise<void> {
+  const snapshotDir = observationEnv.HARNESS_CLAUDE_HOME_SNAPSHOT_DIR;
+  if (!snapshotDir) return;
+
+  observe("agent.observability.claude-home.start", {
+    id: handle.id,
+    attempt,
+    path: snapshotDir,
+  });
+  const startedAt = Date.now();
+  let result;
+  try {
+    result = await handle.execute(
+      CLAUDE_HOME_SNAPSHOT_COMMAND,
+      REMOTE_ROOT,
+      { HARNESS_CLAUDE_HOME_SNAPSHOT_DIR: snapshotDir },
+      60_000,
+    );
+  } catch (error) {
+    observe("agent.observability.claude-home.end", {
+      id: handle.id,
+      attempt,
+      path: snapshotDir,
+      outcome: "error",
+      errorReason: error instanceof Error ? error.message : String(error),
+      durationMs: durationSince(startedAt),
+    });
+    if (failOnError) throw error;
+    return;
+  }
+  if (result.exitCode !== 0) {
+    observe("agent.observability.claude-home.end", {
+      id: handle.id,
+      attempt,
+      path: snapshotDir,
+      outcome: "error",
+      exitCode: result.exitCode,
+      durationMs: durationSince(startedAt),
+    });
+    if (failOnError) throw commandFailure("Claude home snapshot", result);
+    return;
+  }
+  observe("agent.observability.claude-home.end", {
+    id: handle.id,
+    attempt,
+    path: snapshotDir,
+    outcome: "copied",
+    durationMs: durationSince(startedAt),
+  });
+}
+
+async function persistClaudeStreamOutput(
+  sandboxId: string,
+  attempt: number,
+  stdout: string,
+  observationEnv: Record<string, string>,
+  observe: (event: string, data: unknown) => void,
+): Promise<void> {
+  const streamPath = observationEnv.HARNESS_CLAUDE_STREAM_PATH;
+  if (!streamPath) return;
+
+  const content = Buffer.from(stdout, "utf8");
+  observe("agent.observability.stream", {
+    id: sandboxId,
+    attempt,
+    path: streamPath,
+    bytes: content.byteLength,
+  });
 }
 
 export function createDaytonaRunEnvironment(
@@ -212,13 +308,17 @@ export function createDaytonaRunEnvironment(
   const observability = options.agent.kind === "claude"
     ? options.observability
     : undefined;
-  const observabilityVolumes = observability?.config.enabled
-    ? [{
+  const observabilityVolumes = (() => {
+    if (!observability?.config.enabled) return undefined;
+    const observabilityVolumeSubpath = claudeObservabilityVolumeSubpath(
+      observability.runId,
+    );
+    return [{
       volumeName: observability.config.volumeName,
       mountPath: observability.config.mountPath,
-      subpath: claudeObservabilityVolumeSubpath(observability.runId),
-    }]
-    : undefined;
+      subpath: observabilityVolumeSubpath,
+    }];
+  })();
   let agentHandle: SandboxHandle | undefined;
   let pendingCandidate: CandidateSnapshot | undefined;
   let approvedCandidate: CandidateSnapshot | undefined;
@@ -303,6 +403,8 @@ export function createDaytonaRunEnvironment(
       let commandStartedAt = Date.now();
       let result;
       let commandStarted = false;
+      let claudeObservationEnv: Record<string, string> = {};
+      let claudeHomeSnapshotAttempted = false;
       try {
         if (options.agent.kind === "claude") {
           const resume = attempt > 1;
@@ -311,7 +413,7 @@ export function createDaytonaRunEnvironment(
               "Claude session id is required to resume a Daytona Claude attempt",
             );
           }
-          const claudeObservationEnv = observability
+          const preparedObservability = observability
             ? await prepareClaudeObservability(
               handle,
               observability.runId,
@@ -319,8 +421,9 @@ export function createDaytonaRunEnvironment(
               observability.config,
               observe,
             )
-            : {};
-          const claudeConfigDir = claudeObservationEnv.CLAUDE_CONFIG_DIR;
+            : { env: {} };
+          claudeObservationEnv = preparedObservability.env;
+          const claudeConfigDir = preparedObservability.claudeConfigDir;
           commandStartedAt = Date.now();
           observe("agent.command.start", {
             id: handle.id,
@@ -328,6 +431,18 @@ export function createDaytonaRunEnvironment(
             resume,
             ...(claudeSessionId ? { claudeSessionId } : {}),
             ...(claudeConfigDir ? { claudeConfigDir } : {}),
+            ...(claudeObservationEnv.HARNESS_CLAUDE_STREAM_PATH
+              ? {
+                claudeStreamPath:
+                  claudeObservationEnv.HARNESS_CLAUDE_STREAM_PATH,
+              }
+              : {}),
+            ...(claudeObservationEnv.HARNESS_CLAUDE_HOME_SNAPSHOT_DIR
+              ? {
+                claudeHomeSnapshotDir:
+                  claudeObservationEnv.HARNESS_CLAUDE_HOME_SNAPSHOT_DIR,
+              }
+              : {}),
           });
           commandStarted = true;
           const prompt = input.feedback
@@ -348,6 +463,21 @@ export function createDaytonaRunEnvironment(
                 : {}),
             },
             AGENT_COMMAND_TIMEOUT_MS,
+          );
+          claudeHomeSnapshotAttempted = true;
+          await snapshotClaudeHome(
+            handle,
+            attempt,
+            claudeObservationEnv,
+            observe,
+            true,
+          );
+          await persistClaudeStreamOutput(
+            handle.id,
+            attempt,
+            result.stdout,
+            claudeObservationEnv,
+            observe,
           );
           const parsedClaudeSessionId = parseClaudeSessionId(result.stdout);
           if (!parsedClaudeSessionId) {
@@ -378,6 +508,19 @@ export function createDaytonaRunEnvironment(
           );
         }
       } catch (error) {
+        if (
+          options.agent.kind === "claude" &&
+          !claudeHomeSnapshotAttempted
+        ) {
+          claudeHomeSnapshotAttempted = true;
+          await snapshotClaudeHome(
+            handle,
+            attempt,
+            claudeObservationEnv,
+            observe,
+            false,
+          );
+        }
         if (commandStarted) {
           observe("agent.command.end", {
             id: handle.id,

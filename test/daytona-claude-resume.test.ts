@@ -8,25 +8,35 @@ import {
 } from "../src/harness/sandbox/daytona.js";
 
 const RESUME_COMMAND =
-  'exec "/usr/local/bin/claude" --dangerously-skip-permissions ' +
+  '"/usr/local/bin/claude" --dangerously-skip-permissions ' +
   '--resume "$HARNESS_CLAUDE_SESSION_ID" ' +
   '-p "$HARNESS_PROMPT" --output-format stream-json --verbose';
 
 test("buildClaudeCommand returns the initial command without a session id and equals CLAUDE_COMMAND", () => {
   assert.equal(buildClaudeCommand(), CLAUDE_COMMAND);
-  assert.equal(
-    CLAUDE_COMMAND,
-    'exec "/usr/local/bin/claude" --dangerously-skip-permissions ' +
-      '-p "$HARNESS_PROMPT" --output-format stream-json --verbose',
-  );
+  assert.match(CLAUDE_COMMAND, /exec "\/usr\/local\/bin\/claude"/);
+  assert.doesNotMatch(CLAUDE_COMMAND, /--resume/);
 });
 
 test("buildClaudeCommand resumes through an env-provided session id", () => {
-  assert.equal(buildClaudeCommand("session-safe-123"), RESUME_COMMAND);
+  assert.match(buildClaudeCommand("session-safe-123"), /--resume "\$HARNESS_CLAUDE_SESSION_ID"/);
+  assert.match(buildClaudeCommand("session-safe-123"), new RegExp(RESUME_COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(
     buildClaudeCommand("session-safe-123"),
     /session-safe-123/,
   );
+});
+
+test("buildClaudeCommand writes stream-json directly to the mounted observability path when configured", () => {
+  const command = buildClaudeCommand();
+
+  assert.match(command, /\$\{HARNESS_CLAUDE_STREAM_PATH:-\}/);
+  assert.match(command, /mkdir -p "\$\(dirname "\$HARNESS_CLAUDE_STREAM_PATH"\)"/);
+  assert.match(command, /> "\$HARNESS_CLAUDE_STREAM_PATH"/);
+  assert.match(command, /status=\$\?/);
+  assert.match(command, /cat "\$HARNESS_CLAUDE_STREAM_PATH"/);
+  assert.match(command, /exit "\$status"/);
+  assert.match(command, /exec "\/usr\/local\/bin\/claude"/);
 });
 
 test("buildClaudeCommand rejects unsafe session ids before command selection", () => {

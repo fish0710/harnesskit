@@ -81,7 +81,7 @@ Evidence anchors:
 
 - `src/harness/record.ts`: defines `.harness/runs/<runId>.json` schema v3, including kind, parent/child links, repo/task metadata, attempts, sandbox ids, Claude session ids, observability config, events, logs, report, publication, outcome, summary, action, and error reason.
 - `src/harness/observability.ts`: defines default Daytona observability volume and mount paths.
-- `docs/architecture/daytona-sandbox-gate.md`: describes `.claude` persistence, `CLAUDE_CONFIG_DIR`, strong resume, Gate sandbox separation, and run manifest events.
+- `docs/architecture/daytona-sandbox-gate.md`: describes sandbox-local `.claude` copy into the Daytona observability volume, stream-json persistence, strong resume, Gate sandbox separation, and run manifest events.
 - `docs/architecture/daytona-langfuse-observability.md`: explains host-side Langfuse versus Daytona `.claude` artifact boundaries.
 - `test/run-store.test.ts`, `test/cli-run-record.test.ts`, and `test/cli-series.test.ts`: cover RunStore records, query commands, early failures, and series parent/child links.
 

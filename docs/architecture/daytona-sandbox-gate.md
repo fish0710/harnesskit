@@ -66,12 +66,18 @@ Harness 将“执行任务”和“决定是否通过”拆成两个不同权限
 4. 宿主加载并验证冻结合约，捕获当前 Git 工作区 baseline。
 5. Harness 从选定 Snapshot 创建一个 agent 沙箱并上传 agent 可见文件。
    对 Claude run，agent 沙箱额外挂载 Daytona volume
-   `harness-claude-observability`，subpath 为 `runs/<runId>`。
+   `harness-claude-observability`：`runs/<runId>` 挂到
+   `/harness-observability`。
 6. 宿主执行 Node/npm/npx/Claude preflight 和 agent setup。
 7. Claude Code 或 command agent 在该沙箱中执行任务。Claude run 在命令启动前
-   创建 `/harness-observability/.claude`，并以 `CLAUDE_CONFIG_DIR` 指向该目录。
+   不设置 `CLAUDE_CONFIG_DIR`，让 Claude Code 使用默认
+   `/home/daytona/.claude` 写入原生 `.claude` 状态文件。
    首轮 Claude attempt 从 stream-json 捕获 session id；后续 gate-fail retry
    在同一个 agent 沙箱中执行 `claude --resume <sessionId>`。
+   每次 attempt 的原始 stream-json stdout 由远端 Claude 命令直接写入
+   `/harness-observability/attempt-<n>/claude-stream.jsonl`；命令结束后 Harness
+   把 sandbox-local `/home/daytona/.claude` 复制到
+   `/harness-observability/.claude`。
 8. 宿主通过 Daytona 文件 API 收集候选文件，不信任沙箱内的 Git。
 9. 宿主严格校验路径、文件类型、大小、哈希和保护路径。
 10. Harness 按执行域拆分契约：`miniprogram` 走 host-local，其它机器门禁走远端
@@ -345,7 +351,9 @@ HARNESS_DAYTONA_OBSERVABILITY_VOLUME=harness-claude-observability
 HARNESS_DAYTONA_OBSERVABILITY_MOUNT=/harness-observability
 ```
 
-Agent sandbox 创建请求包含：
+Agent sandbox 创建请求只包含 run root mount。不要把 Daytona volume 直接挂到
+`/home/daytona/.claude`；实测该 mount 方式会让 Claude Code native
+`projects/<session>.jsonl` 只保留 queue/user/attachment 启动事件。
 
 ```json
 {
@@ -361,20 +369,32 @@ Agent sandbox 创建请求包含：
 |---|---|
 | Daytona volume durable root | `/harness-observability/runs/<runId>` |
 | Agent sandbox mounted run root | `/harness-observability` |
-| Claude config dir in sandbox | `/harness-observability/.claude` |
+| Claude native config dir while command runs | `/home/daytona/.claude` |
+| Durable copied `.claude` path when inspecting run root | `/harness-observability/.claude` |
+| Claude stream-json stdout | `/harness-observability/attempt-<n>/claude-stream.jsonl` |
 
-Harness 在执行 Claude 命令之前创建 `CLAUDE_CONFIG_DIR` 并注入：
+Harness 在执行 Claude 命令之前创建 attempt 目录并注入：
 
 ```text
-CLAUDE_CONFIG_DIR=/harness-observability/.claude
 HARNESS_RUN_ID=<runId>
 HARNESS_ATTEMPT=<n>
 HARNESS_OBSERVABILITY_RUN_ROOT=/harness-observability
+HARNESS_OBSERVABILITY_ATTEMPT_ROOT=/harness-observability/attempt-<n>
+HARNESS_CLAUDE_STREAM_PATH=/harness-observability/attempt-<n>/claude-stream.jsonl
+HARNESS_CLAUDE_HOME_SNAPSHOT_DIR=/harness-observability/.claude
 ```
 
-`/harness-observability` 在 agent 沙箱内保持稳定，便于 `claude --resume`
-使用同一份 `.claude` 状态。跨 run 隔离不依赖沙箱内路径变化，而依赖 Daytona
-volume mount 的 `subpath: runs/<runId>`：不同 run 会映射到不同持久目录。
+`/home/daytona/.claude` 在同一个 agent 沙箱生命周期内保持稳定，便于
+`claude --resume` 使用同一份 `.claude` 状态。跨 run 隔离不依赖沙箱内路径
+变化，而依赖 Daytona volume mount 的 `subpath: runs/<runId>`：不同 run 会
+映射到不同持久目录。
+Claude 命令运行时会把完整 stream-json stdout 直接写入
+`HARNESS_CLAUDE_STREAM_PATH`，结束时再回放该文件给 Harness 解析 session id；
+Harness 在命令启动时把该路径记录到 RunStore attempt 的 `claudeStreamPath`。
+Claude Code 原生 `.claude/projects/...jsonl` 由 `/home/daytona/.claude`
+写入，然后复制到 `HARNESS_CLAUDE_HOME_SNAPSHOT_DIR`。删除 agent sandbox 后，
+可通过 run volume 中的 `.claude` 分析 native transcript；同时
+`claudeStreamPath` 保留完整 stream-json 副本。
 
 强 resume 规则：
 

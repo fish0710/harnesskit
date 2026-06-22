@@ -32,14 +32,19 @@ node dist/src/cli.js runs show <runId> --json
 ```
 
 By default, the agent sandbox also mounts Daytona volume
-`harness-claude-observability` at `/harness-observability`, scoped to
-`runs/<runId>`. Claude Code receives:
+`harness-claude-observability`, scoped to `runs/<runId>`. The run root is
+mounted at `/harness-observability`. Claude writes its native `.claude` state
+to the sandbox-local home path `/home/daytona/.claude`; Harness copies that
+directory into the mounted run root after each Claude command.
+Harness does not set `CLAUDE_CONFIG_DIR`; Claude keeps writing its default
+home `.claude` state there. Claude Code receives:
 
 ```text
-CLAUDE_CONFIG_DIR=/harness-observability/.claude
+HARNESS_CLAUDE_STREAM_PATH=/harness-observability/attempt-<n>/claude-stream.jsonl
+HARNESS_CLAUDE_HOME_SNAPSHOT_DIR=/harness-observability/.claude
 ```
 
-The sandbox path is stable so gate-fail retries can resume the same Claude
+The sandbox paths are stable so gate-fail retries can resume the same Claude
 conversation. The first Claude attempt captures the stream-json session id;
 later retries run `claude --resume <sessionId>` in the same agent sandbox.
 Missing or inconsistent resume state fails closed instead of starting a fresh
@@ -47,7 +52,10 @@ conversation. Cross-run isolation still comes from the Daytona mount subpath:
 each run maps `/harness-observability` to `runs/<runId>`.
 
 Use the run record to correlate host-side events, sandbox ids, gate attempts,
-and the persisted `.claude` artifacts after the sandbox is deleted.
+persisted `.claude` artifacts, and each attempt's raw `claude-stream.jsonl`
+after the sandbox is deleted. When inspecting the run subpath later, the native
+Claude `.claude` files are visible at `/harness-observability/.claude`; the
+full assistant/tool stream is recorded in `claude-stream.jsonl`.
 
 `--driver command --agent-cmd "..."` uses the same Daytona isolation.
 There is no silent fallback to host execution. `--driver scaffold` is the only
@@ -114,5 +122,6 @@ npm run test:daytona
 - [Usage manual](docs/usage.md)
 - [Current Daytona sandbox gate architecture](docs/architecture/daytona-sandbox-gate.md)
 - [Local Daytona runbook](docs/daytona-local-claude-code-runbook.md)
+- [2026-06-22 transcript persistence archive](docs/archive/2026-06-22-daytona-claude-transcript-persistence/README.md)
 - [2026-06-17 observability persistence archive](docs/archive/2026-06-17-daytona-claude-observability-persistence/README.md)
 - [2026-06-15 implementation archive](docs/archive/2026-06-15-daytona-sandbox-gate/README.md)

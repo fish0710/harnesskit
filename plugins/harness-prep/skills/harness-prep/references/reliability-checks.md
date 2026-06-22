@@ -12,7 +12,7 @@ Use this before claiming the plugin can carry a user from natural-language reque
 | Natural-language gates become typed contracts | GateCore dispatches by `type`; plugins classify `pass/fail/error/needs_review` | `gate-translation.md` and `contracts-and-config.md` |
 | Human review stops automation | `review` contracts produce `needs_review`; aggregate outcome becomes `blocked` | `gate-translation.md`, `run-supervision.md`, `observability-and-review.md` |
 | Behavior is observable after run | RunStore v3 records store kind, selected contracts, attempts, sandbox ids, session ids, logs, report, publication, outcomes, and observability config | `runstore-observability.md`, `observability-and-review.md`, `blocker-analysis.md` |
-| Daytona Claude artifacts can be inspected | Claude runs persist `.claude` in the run-scoped Daytona volume when observability is enabled | `observability-and-review.md` |
+| Daytona Claude artifacts can be inspected | Claude runs copy sandbox-local `/home/daytona/.claude` into the run-scoped Daytona volume and persist raw stream-json output when observability is enabled | `observability-and-review.md` |
 | Publication is separate from git | Run pass publishes evaluated candidate bytes; series may auto-commit separately | `run-supervision.md`, `blocker-analysis.md` |
 
 Before using this table externally, read `source-evidence.md` and re-check any drift-prone claim against the current Harness source. This table is a capability summary; `source-evidence.md` is the evidence index.

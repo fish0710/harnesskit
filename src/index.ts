@@ -36,6 +36,7 @@ export {
   buildGenerationBudget,
 } from "./harness/budget.js";
 export {
+  DEFAULT_DAYTONA_CLAUDE_HOME_CONFIG_DIR,
   DEFAULT_DAYTONA_OBSERVABILITY_MOUNT,
   DEFAULT_DAYTONA_OBSERVABILITY_VOLUME,
   buildRunId,
