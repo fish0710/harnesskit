@@ -62,6 +62,15 @@ function mentionsClaude(command: string): boolean {
   return /(?:^|[\s"'`;&|()])(?:[A-Za-z0-9_./~-]+\/)?claude(?:$|[\s"'`;&|()<>])/.test(command);
 }
 
+function mentionsExecutableName(command: string, name: string): boolean {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    "(?:^|[\\s\"'`;&|()])(?:[A-Za-z0-9_./~-]+\\/)?" +
+      escapedName +
+      "(?:$|[\\s\"'`;&|()<>])",
+  ).test(command);
+}
+
 function maskQuotedText(command: string): string {
   let masked = "";
   let quote: "'" | "\"" | "`" | undefined;
@@ -92,15 +101,22 @@ function maskQuotedText(command: string): string {
   return masked;
 }
 
+function wholeShellScript(command: string): string | undefined {
+  const match = /^\s*(?:bash|sh|zsh)\s+-l?c\s+(['"])([\s\S]*)\1\s*$/.exec(command);
+  return match?.[2];
+}
+
 function safeWholeShellNvmWrapper(command: string): boolean {
-  return /^\s*(?:bash|sh|zsh)\s+-l?c\s+'(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh\s*&&\s*nvm\s+use\b[\s\S]*'\s*$/.test(command) ||
-    /^\s*(?:bash|sh|zsh)\s+-l?c\s+"(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh\s*&&\s*nvm\s+use\b[\s\S]*"\s*$/.test(command);
+  const script = wholeShellScript(command);
+  return script !== undefined && currentShellNvmUsesAreSourced(script);
 }
 
 function currentShellNvmUsesAreSourced(command: string): boolean {
   let sourced = false;
-  const segments = maskQuotedText(command)
-    .split(/&&|;|\|\|/)
+  const unquoted = maskQuotedText(command);
+  if (/[;]/.test(unquoted) || /\|\|/.test(unquoted)) return false;
+  const segments = unquoted
+    .split(/&&/)
     .map((segment) => segment.trim())
     .filter(Boolean);
   for (const segment of segments) {
@@ -110,6 +126,7 @@ function currentShellNvmUsesAreSourced(command: string): boolean {
     ) {
       sourced = true;
     }
+    if (/\bnvm\s+use\b/.test(segment) && /[|<>]/.test(segment)) return false;
     if (/\bnvm\s+use\b/.test(segment) && !sourced) return false;
   }
   return true;
@@ -129,7 +146,7 @@ function usesNvmInstall(command: string): boolean {
 
 function commandMentionsMissingTool(command: string): string | undefined {
   for (const tool of MISSING_DEFAULT_TOOLS) {
-    if (includesShellWord(command, tool)) return tool;
+    if (mentionsExecutableName(command, tool)) return tool;
   }
   return undefined;
 }
@@ -208,6 +225,7 @@ function httpContractUsesLoopback(contract: Contract): boolean {
 
 function runtimeFailureText(value: string): boolean {
   const text = value.toLowerCase();
+  if (productAssertionText(text)) return false;
   return text.includes("command not found") ||
     text.includes("exit code 127") ||
     text.includes("退出码 127") ||
@@ -222,6 +240,7 @@ function runtimeFailureText(value: string): boolean {
     text.includes("could not resolve host") ||
     text.includes("temporary failure in name resolution") ||
     text.includes("name or service not known") ||
+    text.includes("enotfound") ||
     text.includes("econnrefused") ||
     text.includes("connection refused") ||
     text.includes("failed to connect") ||
@@ -233,6 +252,13 @@ function runtimeFailureText(value: string): boolean {
     text.includes("connect timeout") ||
     text.includes("process timed out") ||
     text.includes("command timed out");
+}
+
+function productAssertionText(text: string): boolean {
+  return text.split(/\r?\n/).some((line) =>
+    /\bexpected\b/.test(line) &&
+    /\b(?:but\s+(?:received|got)|received\s+success)\b/.test(line)
+  );
 }
 
 function resultText(result: GateReport["results"][number]): string {

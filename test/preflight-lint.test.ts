@@ -80,6 +80,28 @@ test("preflight lint rejects nvm source in a pipeline before bare nvm use", () =
   assert.equal(findings[0]?.severity, "error");
 });
 
+test("preflight lint rejects conditionally skipped nvm source before bare nvm use", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["false && source /usr/local/nvm/nvm.sh; nvm use 20 && npm ci"]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.nvm"]);
+  assert.equal(findings[0]?.severity, "error");
+});
+
+test("preflight lint rejects nvm use in a pipeline inside shell wrapper", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy([
+      "bash -lc 'source /usr/local/nvm/nvm.sh && nvm use 20 | cat && npm ci'",
+    ]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.nvm"]);
+  assert.equal(findings[0]?.severity, "error");
+});
+
 test("preflight lint rejects nvm path mentions that do not source nvm", () => {
   const findings = lintGateReadiness({
     contracts: [],
@@ -211,6 +233,19 @@ test("preflight lint reports default-missing package managers", () => {
     "gateSetup.1.tool",
   ]);
   assert.ok(findings.every((finding: { severity: string }) => finding.severity === "error"));
+});
+
+test("preflight lint reports path-qualified default-missing package managers", () => {
+  const contracts: Contract[] = [
+    { id: "lint.pnpm.path", type: "command", cmd: "/usr/local/bin/pnpm", args: ["test"] },
+  ];
+  const findings = lintGateReadiness({
+    contracts,
+    policy: policy([]),
+  });
+
+  assert.deepEqual(ids(findings), ["contract.lint.pnpm.path.tool"]);
+  assert.equal(findings[0]?.severity, "error");
 });
 
 test("preflight lint accepts conservative gate tool bootstraps", () => {
@@ -395,15 +430,26 @@ test("preflight readiness classification promotes name resolution failures", () 
       how: "ssh: Name or service not known",
     }],
   };
+  const enotfound: CheckResult = {
+    id: "api.resolve.enotfound",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "http smoke",
+      how: "Error: getaddrinfo ENOTFOUND example.invalid",
+    }],
+  };
 
   const classified = classifyGateReportReadiness(
-    aggregate([temporaryFailure, unknownHost]),
+    aggregate([temporaryFailure, unknownHost, enotfound]),
   );
 
   assert.deepEqual(classified.productFailures, []);
   assert.deepEqual(
     classified.readinessErrors.map((finding) => finding.contractId).sort(),
-    ["api.resolve.temp", "api.resolve.unknown"],
+    ["api.resolve.enotfound", "api.resolve.temp", "api.resolve.unknown"],
   );
 });
 
@@ -576,6 +622,53 @@ test("preflight readiness classification keeps infra-word timeout assertions as 
     "spec.axios-timeout.behavior",
     "spec.connection-timeout.behavior",
     "spec.health-timeout.behavior",
+  ]);
+});
+
+test("preflight readiness classification keeps readiness-keyword assertions as product failures", () => {
+  const results: CheckResult[] = [
+    {
+      id: "spec.econnrefused.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "expected ECONNREFUSED error but received success",
+      }],
+    },
+    {
+      id: "spec.module.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "expected Cannot find module error but received success",
+      }],
+    },
+    {
+      id: "spec.connection-timed-out.behavior",
+      type: "command",
+      status: "fail",
+      durationMs: 12,
+      violations: [{
+        what: "命令退出码 1，期望 0",
+        why: "behavior spec",
+        how: "expected connection timed out error but received success",
+      }],
+    },
+  ];
+
+  const classified = classifyGateReportReadiness(aggregate(results));
+
+  assert.deepEqual(classified.readinessErrors, []);
+  assert.deepEqual(classified.productFailures.sort(), [
+    "spec.connection-timed-out.behavior",
+    "spec.econnrefused.behavior",
+    "spec.module.behavior",
   ]);
 });
 
