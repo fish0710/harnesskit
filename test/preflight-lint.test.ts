@@ -182,6 +182,61 @@ test("preflight lint rejects quoted bash wrapper text that is not executed", () 
   assert.equal(findings[0]?.severity, "error");
 });
 
+test("preflight lint rejects unsourced nvm use in later shell wrapper", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy([
+      "bash -lc 'source /usr/local/nvm/nvm.sh && nvm use 20' && bash -lc 'nvm use 20 && npm test'",
+    ]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.nvm"]);
+  assert.equal(findings[0]?.severity, "error");
+});
+
+test("preflight lint rejects path-qualified nvm install", () => {
+  const contracts: Contract[] = [
+    { id: "node.abs", type: "command", cmd: "/usr/local/bin/nvm", args: ["install", "20"] },
+    { id: "node.rel", type: "command", cmd: "./nvm", args: ["install", "20"] },
+  ];
+  const findings = lintGateReadiness({
+    contracts,
+    policy: policy(["/usr/local/bin/nvm install 20"]),
+  });
+
+  assert.deepEqual(ids(findings), [
+    "contract.node.abs.nvm-install",
+    "contract.node.rel.nvm-install",
+    "gateSetup.1.nvm-install",
+  ]);
+  assert.ok(findings.every((finding: { severity: string }) => finding.severity === "error"));
+});
+
+test("preflight lint ignores quoted nvm install documentation text", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      {
+        id: "docs.nvm",
+        type: "command",
+        cmd: "printf",
+        args: ["%s", "use nvm install 20 in docs"],
+      },
+    ],
+    policy: policy(['echo "nvm install 20"', 'printf %s "use nvm install 20 in docs"']),
+  });
+
+  assert.deepEqual(ids(findings), []);
+});
+
+test("preflight lint ignores quoted claude and tool documentation text", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["echo 'claude --version'", "echo 'pnpm test'"]),
+  });
+
+  assert.deepEqual(ids(findings), []);
+});
+
 test("preflight lint rejects claude in gate setup and contracts", () => {
   const contracts: Contract[] = [
     { id: "agent.leak", type: "command", cmd: "claude", args: ["--version"] },
@@ -350,7 +405,6 @@ test("preflight lint rejects quoted bootstrap text for missing package managers"
   assert.deepEqual(ids(findings), [
     "contract.lint.pnpm.tool",
     "contract.structure.yarn.tool",
-    "gateSetup.1.tool",
     "gateSetup.2.tool",
   ]);
 });
@@ -407,6 +461,29 @@ test("preflight lint rejects shell-wrapped tool use before later bootstrap", () 
   const findings = lintGateReadiness({
     contracts: [],
     policy: policy(["bash -lc 'pnpm test && corepack enable pnpm'"]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.tool"]);
+});
+
+test("preflight lint rejects conditionally skipped gate setup bootstraps", () => {
+  const topLevel = lintGateReadiness({
+    contracts: [],
+    policy: policy(["false && corepack enable pnpm; pnpm test"]),
+  });
+  const wrapped = lintGateReadiness({
+    contracts: [],
+    policy: policy(["bash -lc 'false && corepack enable pnpm; pnpm test'"]),
+  });
+
+  assert.deepEqual(ids(topLevel), ["gateSetup.1.tool"]);
+  assert.deepEqual(ids(wrapped), ["gateSetup.1.tool"]);
+});
+
+test("preflight lint rejects failure-branch package manager use", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["corepack enable pnpm || pnpm test"]),
   });
 
   assert.deepEqual(ids(findings), ["gateSetup.1.tool"]);

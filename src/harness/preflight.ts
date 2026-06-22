@@ -44,22 +44,15 @@ export interface GateReadinessClassification {
 
 const MISSING_DEFAULT_TOOLS = new Set(["git", "pnpm", "yarn", "bun"]);
 
+type ShellOperator = "start" | "&&" | "||" | ";";
+
+interface ShellSegment {
+  operator: ShellOperator;
+  text: string;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function shellWordPattern(word: string): RegExp {
-  return new RegExp(
-    `(^|[^A-Za-z0-9_./-])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9_/-]|$)`,
-  );
-}
-
-function includesShellWord(command: string, word: string): boolean {
-  return shellWordPattern(word).test(command);
-}
-
-function mentionsClaude(command: string): boolean {
-  return /(?:^|[\s"'`;&|()])(?:[A-Za-z0-9_./~-]+\/)?claude(?:$|[\s"'`;&|()<>])/.test(command);
 }
 
 function mentionsExecutableName(command: string, name: string): boolean {
@@ -69,6 +62,10 @@ function mentionsExecutableName(command: string, name: string): boolean {
       escapedName +
       "(?:$|[\\s\"'`;&|()<>])",
   ).test(command);
+}
+
+function mentionsExecutableNameOutsideQuotes(command: string, name: string): boolean {
+  return mentionsExecutableName(maskQuotedText(command), name);
 }
 
 function maskQuotedText(command: string): string {
@@ -106,16 +103,6 @@ function wholeShellScript(command: string): string | undefined {
   return match?.[2];
 }
 
-function leadingShellScript(command: string): string | undefined {
-  const match = /^\s*(?:bash|sh|zsh)\s+-l?c\s+(['"])([\s\S]*?)\1(?:\s*(?:&&|;|\|\|).*)?$/.exec(command);
-  return match?.[2];
-}
-
-function safeWholeShellNvmWrapper(command: string): boolean {
-  const script = wholeShellScript(command);
-  return script !== undefined && currentShellNvmUsesAreSourced(script);
-}
-
 function currentShellNvmUsesAreSourced(command: string): boolean {
   let sourced = false;
   const unquoted = maskQuotedText(command);
@@ -142,33 +129,55 @@ function currentShellNvmUsesAreSourced(command: string): boolean {
 
 function hasBareNvmUse(command: string): boolean {
   if (!/\bnvm\s+use\b/.test(command)) return false;
-  if (safeWholeShellNvmWrapper(command)) return false;
-  const unquoted = maskQuotedText(command);
-  if (!/\bnvm\s+use\b/.test(unquoted)) {
-    const script = leadingShellScript(command);
-    return script !== undefined &&
-      /\bnvm\s+use\b/.test(script) &&
-      !currentShellNvmUsesAreSourced(script);
+  for (const segment of shellSegments(command)) {
+    const script = wholeShellScript(segment.text);
+    if (script !== undefined && hasBareNvmUse(script)) return true;
   }
-  return !currentShellNvmUsesAreSourced(command);
+  const unquoted = maskQuotedText(command);
+  return /\bnvm\s+use\b/.test(unquoted) && !currentShellNvmUsesAreSourced(command);
 }
 
 function usesNvmInstall(command: string): boolean {
-  return includesShellWord(command, "nvm") && /\bnvm\s+install\b/.test(command);
+  if (!/\bnvm\s+install\b/.test(command)) return false;
+  return shellSegments(command).some((segment) => {
+    const script = wholeShellScript(segment.text);
+    if (script !== undefined) return usesNvmInstall(script);
+    return /^(?:[A-Za-z0-9_./~-]+\/)?nvm\s+install(?:\s|$)/.test(
+      maskQuotedText(segment.text).trim(),
+    );
+  });
 }
 
 function commandMentionsMissingTool(command: string): string | undefined {
-  for (const tool of MISSING_DEFAULT_TOOLS) {
-    if (mentionsExecutableName(command, tool)) return tool;
+  for (const segment of shellSegments(command)) {
+    const script = wholeShellScript(segment.text);
+    if (script !== undefined) {
+      const tool = commandMentionsMissingTool(script);
+      if (tool) return tool;
+      continue;
+    }
+    for (const tool of MISSING_DEFAULT_TOOLS) {
+      if (mentionsExecutableNameOutsideQuotes(segment.text, tool)) return tool;
+    }
   }
   return undefined;
 }
 
-function executableSegments(command: string): string[] {
-  const segments: string[] = [];
+function commandMentionsClaude(command: string): boolean {
+  return shellSegments(command).some((segment) => {
+    const script = wholeShellScript(segment.text);
+    return script !== undefined
+      ? commandMentionsClaude(script)
+      : mentionsExecutableNameOutsideQuotes(segment.text, "claude");
+  });
+}
+
+function shellSegments(command: string): ShellSegment[] {
+  const segments: ShellSegment[] = [];
   let quote: "'" | "\"" | "`" | undefined;
   let escaped = false;
   let current = "";
+  let operator: ShellOperator = "start";
   for (let index = 0; index < command.length; index++) {
     const char = command[index]!;
     if (escaped) {
@@ -193,26 +202,28 @@ function executableSegments(command: string): string[] {
     }
     const pair = command.slice(index, index + 2);
     if (pair === "&&" || pair === "||") {
-      if (current.trim()) segments.push(current.trim());
+      if (current.trim()) segments.push({ operator, text: current.trim() });
       current = "";
+      operator = pair;
       index++;
       continue;
     }
     if (char === ";") {
-      if (current.trim()) segments.push(current.trim());
+      if (current.trim()) segments.push({ operator, text: current.trim() });
       current = "";
+      operator = ";";
       continue;
     }
     current += char;
   }
-  if (current.trim()) segments.push(current.trim());
+  if (current.trim()) segments.push({ operator, text: current.trim() });
   return segments;
 }
 
 function bootstrapMentionsTool(command: string, tool: string): boolean {
-  return executableSegments(command).some((segment) =>
-    segmentBootstrapsTool(segment, tool)
-  );
+  const bootstrapped = new Set<string>();
+  gateSetupMissingTool(command, bootstrapped);
+  return bootstrapped.has(tool);
 }
 
 function segmentBootstrapsTool(segment: string, tool: string): boolean {
@@ -240,21 +251,46 @@ function gateSetupMissingTool(
   command: string,
   bootstrapped: Set<string>,
 ): string | undefined {
-  for (const segment of executableSegments(command)) {
-    const script = wholeShellScript(segment);
+  const initialBootstrapped = new Set(bootstrapped);
+  const commandReliableBootstraps = new Set<string>();
+  let branchBootstrapped = new Set(bootstrapped);
+  let canPersistBootstraps = true;
+
+  for (const segment of shellSegments(command)) {
+    if (segment.operator === ";" || segment.operator === "||") {
+      branchBootstrapped = new Set(initialBootstrapped);
+      canPersistBootstraps = false;
+    }
+    const script = wholeShellScript(segment.text);
     if (script !== undefined) {
-      const tool = gateSetupMissingTool(script, bootstrapped);
+      const nestedBootstrapped = new Set(branchBootstrapped);
+      const tool = gateSetupMissingTool(script, nestedBootstrapped);
       if (tool) return tool;
+      for (const bootstrappedTool of nestedBootstrapped) {
+        if (!branchBootstrapped.has(bootstrappedTool)) {
+          branchBootstrapped.add(bootstrappedTool);
+          commandReliableBootstraps.add(bootstrappedTool);
+        }
+      }
       continue;
     }
     for (const tool of MISSING_DEFAULT_TOOLS) {
-      if (segmentBootstrapsTool(segment, tool)) bootstrapped.add(tool);
+      if (segmentBootstrapsTool(segment.text, tool)) {
+        branchBootstrapped.add(tool);
+        commandReliableBootstraps.add(tool);
+      }
     }
     for (const tool of MISSING_DEFAULT_TOOLS) {
-      if (!bootstrapped.has(tool) && mentionsExecutableName(segment, tool)) {
+      if (
+        !branchBootstrapped.has(tool) &&
+        mentionsExecutableNameOutsideQuotes(segment.text, tool)
+      ) {
         return tool;
       }
     }
+  }
+  if (canPersistBootstraps) {
+    for (const tool of commandReliableBootstraps) bootstrapped.add(tool);
   }
   return undefined;
 }
@@ -403,7 +439,7 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
         "static",
       ));
     }
-    if (mentionsClaude(command)) {
+    if (commandMentionsClaude(command)) {
       findings.push(finding(
         `${label}.claude`,
         "error",
@@ -443,7 +479,7 @@ export function lintGateReadiness(input: GateReadinessLintInput): PreflightFindi
           contract.id,
         ));
       }
-      if (mentionsClaude(command)) {
+      if (commandMentionsClaude(command)) {
         findings.push(finding(
           `contract.${contract.id}.claude`,
           "error",
