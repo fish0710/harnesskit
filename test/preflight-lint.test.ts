@@ -698,6 +698,27 @@ test("preflight lint warns for loopback http without gate setup", () => {
   assert.match(findings[0]?.message ?? "", /gateSetup/i);
 });
 
+test("preflight lint warns for IPv6 loopback http without gate setup", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      {
+        id: "api.health.ipv6",
+        type: "http",
+        trigger: {
+          method: "GET",
+          url: "http://[::1]:3000/health",
+        },
+        expect: { status: 200 },
+      },
+    ],
+    policy: policy([]),
+  });
+
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.id, "contract.api.health.ipv6.loopback");
+  assert.equal(findings[0]?.severity, "warning");
+});
+
 test("preflight lint warns when contracts fetch or install dependencies at runtime", () => {
   const findings = lintGateReadiness({
     contracts: [

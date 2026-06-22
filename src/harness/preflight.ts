@@ -537,7 +537,7 @@ function httpContractUsesLoopback(contract: Contract): boolean {
   );
   return values.some((value) => {
     try {
-      const host = new URL(value).hostname;
+      const host = new URL(value).hostname.replace(/^\[(.*)\]$/, "$1");
       return host === "localhost" ||
         host === "127.0.0.1" ||
         host === "::1" ||
@@ -949,6 +949,7 @@ export async function runGatePreflight(
         try {
           await handle.delete();
         } catch (error) {
+          retained = true;
           readinessErrors.push(cleanupFailure(error));
         }
       }

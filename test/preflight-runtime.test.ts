@@ -365,6 +365,25 @@ test("loopback HTTP remote contract does not block Gate network", async () => {
   assert.deepEqual(provider.handles[0]?.networkBlocks, []);
 });
 
+test("IPv6 loopback HTTP remote contract does not block Gate network", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = new RecordingProvider();
+  const loopback: Contract = {
+    id: "http.loopback.ipv6",
+    type: "http",
+    trigger: { url: "http://[::1]:4173/health" },
+    expect: { status: 200 },
+  };
+
+  const report = await runGatePreflight(
+    preflightOptions(root, provider, [loopback], ["node server.js"], new GateCore().use(httpPlugin)),
+  );
+
+  assert.equal(report.outcome, "ready");
+  assert.deepEqual(report.remoteContracts, ["http.loopback.ipv6"]);
+  assert.deepEqual(provider.handles[0]?.networkBlocks, []);
+});
+
 test("retainOnFailure keeps sandbox and marks retained", async () => {
   const root = createGitFixture({ "src/a.ts": "before\n" });
   const provider = new RecordingProvider(
@@ -411,4 +430,9 @@ test("cleanup delete failure records cleanup readiness error", async () => {
   assert.equal(report.outcome, "not_ready");
   assert.equal(report.readinessErrors[0]?.id, "gate.cleanup.failed");
   assert.match(report.readinessErrors[0]?.message ?? "", /delete failed/);
+  assert.deepEqual(report.sandbox, {
+    id: "gate-1",
+    snapshot: "gate-test-snapshot",
+    retained: true,
+  });
 });
