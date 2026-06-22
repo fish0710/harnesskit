@@ -150,11 +150,19 @@ function executableIs(command: string, name: string): boolean {
   return executableName(command) === name;
 }
 
+function isEnvAssignment(word: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+}
+
 function wholeShellScript(command: string): string | undefined {
   const words = shellWords(command);
   if (!words || words.length < 3) return undefined;
-  if (!["bash", "sh", "zsh"].includes(executableName(words[0]!))) return undefined;
-  for (let index = 1; index < words.length - 1; index++) {
+  const commandIndex = words.findIndex((word) => !isEnvAssignment(word));
+  if (commandIndex < 0 || words.length - commandIndex < 3) return undefined;
+  if (!["bash", "sh", "zsh"].includes(executableName(words[commandIndex]!))) {
+    return undefined;
+  }
+  for (let index = commandIndex + 1; index < words.length - 1; index++) {
     if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[index]!)) {
       return words[index + 1];
     }
@@ -306,6 +314,11 @@ function segmentBootstrapsTool(segment: string, tool: string): boolean {
   return false;
 }
 
+function shellSegmentAlwaysFails(segment: string): boolean {
+  const words = shellWords(segment);
+  return words?.[0] === "false";
+}
+
 function gateSetupMissingTool(
   command: string,
   bootstrapped: Set<string>,
@@ -314,11 +327,18 @@ function gateSetupMissingTool(
   const commandReliableBootstraps = new Set<string>();
   let branchBootstrapped = new Set(bootstrapped);
   let canPersistBootstraps = true;
+  let previousAlwaysFails = false;
 
   for (const segment of shellSegments(command)) {
     if (segment.operator === ";" || segment.operator === "||") {
       branchBootstrapped = new Set(initialBootstrapped);
       canPersistBootstraps = false;
+      previousAlwaysFails = false;
+    }
+    const segmentRuns = !(segment.operator === "&&" && previousAlwaysFails);
+    if (!segmentRuns) {
+      previousAlwaysFails = false;
+      continue;
     }
     const script = wholeShellScript(segment.text);
     if (script !== undefined) {
@@ -328,15 +348,16 @@ function gateSetupMissingTool(
       for (const bootstrappedTool of nestedBootstrapped) {
         if (!branchBootstrapped.has(bootstrappedTool)) {
           branchBootstrapped.add(bootstrappedTool);
-          commandReliableBootstraps.add(bootstrappedTool);
+          if (canPersistBootstraps) commandReliableBootstraps.add(bootstrappedTool);
         }
       }
+      previousAlwaysFails = shellSegmentAlwaysFails(segment.text);
       continue;
     }
     for (const tool of MISSING_DEFAULT_TOOLS) {
       if (segmentBootstrapsTool(segment.text, tool)) {
         branchBootstrapped.add(tool);
-        if (segment.operator === "start") commandReliableBootstraps.add(tool);
+        if (canPersistBootstraps) commandReliableBootstraps.add(tool);
       }
     }
     for (const tool of MISSING_DEFAULT_TOOLS) {
@@ -347,6 +368,7 @@ function gateSetupMissingTool(
         return tool;
       }
     }
+    previousAlwaysFails = shellSegmentAlwaysFails(segment.text);
   }
   if (canPersistBootstraps) {
     for (const tool of commandReliableBootstraps) bootstrapped.add(tool);
@@ -393,10 +415,37 @@ function structuredShellScript(command: ContractCommand): string | undefined {
 
 function envChildCommand(command: ContractCommand): ContractCommand | undefined {
   if (!executableIs(command.cmd, "env")) return undefined;
-  const index = command.args.findIndex((arg) =>
-    !arg.startsWith("-") && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)
-  );
-  if (index < 0) return undefined;
+  let index = 0;
+  while (index < command.args.length) {
+    const arg = command.args[index]!;
+    if (arg === "--") {
+      index++;
+      break;
+    }
+    if (isEnvAssignment(arg)) {
+      index++;
+      continue;
+    }
+    if (arg === "-u" || arg === "--unset" || arg === "-C" || arg === "--chdir") {
+      index += 2;
+      continue;
+    }
+    if (
+      arg.startsWith("-u") ||
+      arg.startsWith("--unset=") ||
+      arg.startsWith("-C") ||
+      arg.startsWith("--chdir=")
+    ) {
+      index++;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      index++;
+      continue;
+    }
+    break;
+  }
+  if (index >= command.args.length) return undefined;
   return {
     cmd: command.args[index]!,
     args: command.args.slice(index + 1),
@@ -525,7 +574,7 @@ function rawRuntimeFailureText(text: string): boolean {
 }
 
 function productAssertionText(text: string): boolean {
-  return /(?:^|[:\]])\s*expected\b/.test(text) ||
+  return /(?:^|[:\]\-])\s*expected\b/.test(text) ||
     /\bassertionerror(?:\s+\[[^\]]+\])?:\s*expected\b/.test(text);
 }
 

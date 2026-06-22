@@ -500,6 +500,25 @@ test("preflight lint unwraps path-qualified and option-rich shell wrappers", () 
   assert.deepEqual(ids(options), ["gateSetup.1.tool"]);
 });
 
+test("preflight lint unwraps assignment-prefixed shell wrappers", () => {
+  const claude = lintGateReadiness({
+    contracts: [],
+    policy: policy(["FOO=1 bash -lc 'claude --version'"]),
+  });
+  const tool = lintGateReadiness({
+    contracts: [],
+    policy: policy(["FOO=1 bash -lc 'pnpm test'"]),
+  });
+  const nvm = lintGateReadiness({
+    contracts: [],
+    policy: policy(["FOO=1 bash -lc 'nvm install 20'"]),
+  });
+
+  assert.deepEqual(ids(claude), ["gateSetup.1.claude"]);
+  assert.deepEqual(ids(tool), ["gateSetup.1.tool"]);
+  assert.deepEqual(ids(nvm), ["gateSetup.1.nvm-install"]);
+});
+
 test("preflight lint rejects conditionally skipped gate setup bootstraps", () => {
   const topLevel = lintGateReadiness({
     contracts: [],
@@ -539,6 +558,17 @@ test("preflight lint rejects failure-branch package manager use", () => {
   assert.deepEqual(ids(findings), ["gateSetup.1.tool"]);
 });
 
+test("preflight lint persists successful chain bootstraps across gate setup", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "repo.git", type: "command", cmd: "git", args: ["status"] },
+    ],
+    policy: policy(["apt update && apt install -y git"]),
+  });
+
+  assert.deepEqual(ids(findings), []);
+});
+
 test("preflight lint rejects wrapped nvm install invocations", () => {
   const findings = lintGateReadiness({
     contracts: [
@@ -560,6 +590,21 @@ test("preflight lint rejects wrapped nvm install invocations", () => {
     "contract.node.wrapper.nvm-install",
     "gateSetup.1.nvm-install",
     "gateSetup.2.nvm-install",
+  ]);
+});
+
+test("preflight lint follows env option operands before child command", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "env.pnpm", type: "command", cmd: "env", args: ["-u", "FOO", "pnpm", "test"] },
+      { id: "env.nvm", type: "command", cmd: "env", args: ["-u", "FOO", "nvm", "install", "20"] },
+    ],
+    policy: policy([]),
+  });
+
+  assert.deepEqual(ids(findings), [
+    "contract.env.nvm.nvm-install",
+    "contract.env.pnpm.tool",
   ]);
 });
 
@@ -1065,6 +1110,25 @@ test("preflight readiness classification keeps prefixed expected-error assertion
     "spec.assertion-prefixed-econnrefused.behavior",
     "spec.error-prefixed-module.behavior",
   ]);
+});
+
+test("preflight readiness classification keeps prefixed received assertions as product failures", () => {
+  const result: CheckResult = {
+    id: "spec.prefixed-received.behavior",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "not ok 1 - expected ECONNREFUSED error but received success",
+      why: "behavior spec",
+      how: "",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(aggregate([result]));
+
+  assert.deepEqual(classified.readinessErrors, []);
+  assert.deepEqual(classified.productFailures, ["spec.prefixed-received.behavior"]);
 });
 
 test("preflight readiness classification keeps short expected-error assertions as product failures", () => {
