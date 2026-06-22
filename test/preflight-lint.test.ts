@@ -48,6 +48,16 @@ test("preflight lint accepts sourced nvm use in gate setup", () => {
   );
 });
 
+test("preflight lint rejects nvm path mentions that do not source nvm", () => {
+  const findings = lintGateReadiness({
+    contracts: [],
+    policy: policy(["echo /usr/local/nvm/nvm.sh && nvm use 20 && npm ci"]),
+  });
+
+  assert.deepEqual(ids(findings), ["gateSetup.1.nvm"]);
+  assert.equal(findings[0]?.severity, "error");
+});
+
 test("preflight lint rejects claude in gate setup and contracts", () => {
   const contracts: Contract[] = [
     { id: "agent.leak", type: "command", cmd: "claude", args: ["--version"] },
@@ -80,6 +90,28 @@ test("preflight lint reports default-missing package managers", () => {
     "gateSetup.1.tool",
   ]);
   assert.ok(findings.every((finding: { severity: string }) => finding.severity === "error"));
+});
+
+test("preflight lint accepts conservative gate tool bootstraps", () => {
+  const findings = lintGateReadiness({
+    contracts: [
+      { id: "repo.git", type: "command", cmd: "git", args: ["status"] },
+      { id: "lint.pnpm", type: "command", cmd: "pnpm", args: ["test"] },
+      { id: "structure.yarn", type: "structure", tool: "yarn", args: ["lint"] },
+      { id: "app.bun", type: "command", cmd: "bun", args: ["test"] },
+    ],
+    policy: policy([
+      "apt install -y git",
+      "corepack enable pnpm",
+      "npm install -g yarn",
+      "curl -fsSL https://bun.sh/install | bash",
+    ]),
+  });
+
+  assert.deepEqual(
+    ids(findings.filter((finding) => finding.id.includes(".tool"))),
+    [],
+  );
 });
 
 test("preflight lint warns for loopback http without gate setup", () => {
@@ -124,6 +156,41 @@ test("preflight readiness classification promotes command-not-found failures", (
   assert.equal(classified.readinessErrors.length, 1);
   assert.equal(classified.readinessErrors[0]?.contractId, "test.unit");
   assert.match(classified.readinessErrors[0]?.message ?? "", /pnpm: not found/);
+});
+
+test("preflight readiness classification promotes name resolution failures", () => {
+  const temporaryFailure: CheckResult = {
+    id: "api.resolve.temp",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "http smoke",
+      how: "curl: (6) Temporary failure in name resolution",
+    }],
+  };
+  const unknownHost: CheckResult = {
+    id: "api.resolve.unknown",
+    type: "command",
+    status: "fail",
+    durationMs: 12,
+    violations: [{
+      what: "命令退出码 1，期望 0",
+      why: "http smoke",
+      how: "ssh: Name or service not known",
+    }],
+  };
+
+  const classified = classifyGateReportReadiness(
+    aggregate([temporaryFailure, unknownHost]),
+  );
+
+  assert.deepEqual(classified.productFailures, []);
+  assert.deepEqual(
+    classified.readinessErrors.map((finding) => finding.contractId).sort(),
+    ["api.resolve.temp", "api.resolve.unknown"],
+  );
 });
 
 test("preflight readiness classification keeps ordinary product failures separate", () => {

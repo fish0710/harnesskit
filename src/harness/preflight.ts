@@ -58,10 +58,14 @@ function includesShellWord(command: string, word: string): boolean {
   return shellWordPattern(word).test(command);
 }
 
+function sourcesNvm(command: string): boolean {
+  return /(?:^|[\s"'`])(?:source|\.)\s+\/usr\/local\/nvm\/nvm\.sh(?:[\s"'`;|&]|$)/.test(command);
+}
+
 function hasBareNvmUse(command: string): boolean {
   return includesShellWord(command, "nvm") &&
     /\bnvm\s+use\b/.test(command) &&
-    !command.includes("/usr/local/nvm/nvm.sh");
+    !sourcesNvm(command);
 }
 
 function usesNvmInstall(command: string): boolean {
@@ -76,17 +80,20 @@ function commandMentionsMissingTool(command: string): string | undefined {
 }
 
 function bootstrapMentionsTool(command: string, tool: string): boolean {
-  if (tool === "pnpm" || tool === "yarn") {
-    return command.includes("corepack") ||
-      command.includes(`npm install -g ${tool}`) ||
-      command.includes(`npm i -g ${tool}`);
+  if (tool === "pnpm") {
+    return /\bcorepack\s+enable(?:\s+pnpm\b|\b)/.test(command) ||
+      /\bnpm\s+(?:install|i)\s+-g\s+pnpm\b/.test(command);
+  }
+  if (tool === "yarn") {
+    return /\bcorepack\s+enable(?:\s+yarn\b|\b)/.test(command) ||
+      /\bnpm\s+(?:install|i)\s+-g\s+yarn\b/.test(command);
   }
   if (tool === "bun") {
-    return command.includes("npm install -g bun") ||
-      command.includes("npm i -g bun");
+    return /\bnpm\s+(?:install|i)\s+-g\s+bun\b/.test(command) ||
+      /curl\b[\s\S]*\bbun\.sh\/install\b[\s\S]*\|\s*bash\b/.test(command);
   }
   if (tool === "git") {
-    return command.includes("apt-get install") && command.includes("git");
+    return /\bapt(?:-get)?\s+install\b[\s\S]*\bgit\b/.test(command);
   }
   return false;
 }
@@ -143,7 +150,9 @@ function runtimeFailureText(value: string): boolean {
     text.includes("missing script") ||
     text.includes("enoent") ||
     text.includes("network is unreachable") ||
-    text.includes("could not resolve host");
+    text.includes("could not resolve host") ||
+    text.includes("temporary failure in name resolution") ||
+    text.includes("name or service not known");
 }
 
 function resultText(result: GateReport["results"][number]): string {
