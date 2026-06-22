@@ -96,6 +96,19 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs = 250,
+  intervalMs = 5,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (predicate()) return;
+    await delay(intervalMs);
+  }
+  throw new Error("timed out waiting for condition");
+}
+
 interface ScriptedProvider extends SandboxProvider {
   requests: SandboxCreateRequest[];
   handles: RecordingHandle[];
@@ -821,6 +834,64 @@ test("Claude Daytona emits live stream progress before command end", async () =>
     releaseClaude();
     await task;
   }
+});
+
+test("Claude Daytona emits command heartbeat before command end", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const observations: Array<[string, unknown]> = [];
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    claudeStdouts: [
+      JSON.stringify({ type: "result", session_id: "session-heartbeat" }),
+    ],
+    claudeRunHooks: [async () => {
+      await waitUntil(() =>
+        observations.some(([event]) => event === "agent.command.heartbeat")
+      );
+    }],
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    heartbeatIntervalMs: 5,
+    observability: {
+      runId: "run-command-heartbeat",
+      config: loadDaytonaObservabilityConfig({}),
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await environment.runTask({ task: "fix it" });
+
+  const heartbeatIndex = observations.findIndex(([event]) =>
+    event === "agent.command.heartbeat"
+  );
+  const endIndex = observations.findIndex(([event]) =>
+    event === "agent.command.end"
+  );
+  const heartbeat = observations[heartbeatIndex]?.[1] as {
+    id?: string;
+    attempt?: number;
+    kind?: string;
+    elapsedMs?: number;
+    claudeStreamPath?: string;
+  };
+
+  assert.notEqual(heartbeatIndex, -1);
+  assert.notEqual(endIndex, -1);
+  assert.ok(heartbeatIndex < endIndex);
+  assert.equal(heartbeat.id, "agent-1");
+  assert.equal(heartbeat.attempt, 1);
+  assert.equal(heartbeat.kind, "claude");
+  assert.equal(typeof heartbeat.elapsedMs, "number");
+  assert.equal(
+    heartbeat.claudeStreamPath,
+    "/harness-observability/attempt-1/claude-stream.jsonl",
+  );
 });
 
 test("Claude Daytona retries strongly resume the captured session in one agent sandbox", async () => {

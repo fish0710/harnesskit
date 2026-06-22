@@ -5,6 +5,7 @@ import type {
   EnvironmentTaskInput,
   RunEnvironment,
 } from "../run.js";
+import { runWithCommandHeartbeat } from "../command-heartbeat.js";
 import { tailClaudeStreamDuring } from "../claude-stream.js";
 import {
   isHostLocalContract,
@@ -62,6 +63,7 @@ export interface DaytonaRunEnvironmentOptions {
   environment?: Record<string, string | undefined>;
   observability?: DaytonaRunObservabilityOptions;
   onObservation?: (event: string, data: unknown) => void;
+  heartbeatIntervalMs?: number;
 }
 
 interface PreparedClaudeObservability {
@@ -468,18 +470,28 @@ export function createDaytonaRunEnvironment(
               AGENT_COMMAND_TIMEOUT_MS,
             );
           const streamPath = claudeObservationEnv.HARNESS_CLAUDE_STREAM_PATH;
-          result = streamPath
-            ? await tailClaudeStreamDuring({
-              id: handle.id,
-              attempt,
-              path: streamPath,
-              read: (path) => handle.readFile(path),
-              emit: ({ event, data }) => observe(event, data),
-              run: runClaudeCommand,
-              intervalMs: 50,
-              noOutputWarningMs: 60_000,
-            })
-            : await runClaudeCommand();
+          const runObservedClaudeCommand = () =>
+            streamPath
+              ? tailClaudeStreamDuring({
+                id: handle.id,
+                attempt,
+                path: streamPath,
+                read: (path) => handle.readFile(path),
+                emit: ({ event, data }) => observe(event, data),
+                run: runClaudeCommand,
+                intervalMs: 50,
+                noOutputWarningMs: 60_000,
+              })
+              : runClaudeCommand();
+          result = await runWithCommandHeartbeat({
+            id: handle.id,
+            attempt,
+            kind: "claude",
+            streamPath,
+            intervalMs: options.heartbeatIntervalMs,
+            emit: ({ event, data }) => observe(event, data),
+            run: runObservedClaudeCommand,
+          });
           claudeHomeSnapshotAttempted = true;
           await snapshotClaudeHome(
             handle,
