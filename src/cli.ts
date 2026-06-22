@@ -67,6 +67,12 @@ import {
 import { createProject } from "./harness/scaffold.js";
 import { writePlan } from "./harness/plan.js";
 import { gatherStatus } from "./harness/status.js";
+import {
+  renderGatePreflightJson,
+  renderGatePreflightPretty,
+  runGatePreflight,
+} from "./harness/preflight.js";
+import type { SandboxProvider } from "./harness/sandbox/types.js";
 
 const argv = process.argv.slice(2);
 const command = argv[0] ?? "help";
@@ -80,6 +86,7 @@ const OPTIONS = {
   config: { type: "string" as const },
   "base-url": { type: "string" as const },
   properties: { type: "string" as const },
+  "retain-on-failure": { type: "boolean" as const, default: false },
   "task-id": { type: "string" as const },
   "series-id": { type: "string" as const },
   // 产出引擎
@@ -119,6 +126,14 @@ async function buildGate(propertiesPath?: string): Promise<GateCore> {
   const properties = await loadProperties(propertiesPath);
   if (Object.keys(properties).length > 0) gate.use(createInvariantPlugin(properties));
   return gate;
+}
+
+function createLazyDaytonaProvider(environment: NodeJS.ProcessEnv): SandboxProvider {
+  return {
+    create(request) {
+      return createDaytonaSdkProvider(environment).create(request);
+    },
+  };
 }
 
 function fail(msg: string): never {
@@ -172,6 +187,29 @@ export function redactObservationData(
   return output;
 }
 
+function selectContractsForValues(
+  contracts: Contract[],
+  values: Record<string, unknown>,
+  cwd = process.cwd(),
+): Contract[] {
+  if (values.stage) {
+    return selectByStage(contracts, values.stage as string);
+  }
+  if (values.changed) {
+    const changedFiles = (values.changed as string).split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    let config: SelectConfig = { baseline: contracts.map((c) => c.id), rules: [] };
+    if (values.config) {
+      config = JSON.parse(
+        readFileSync(resolve(cwd, values.config as string), "utf8"),
+      ) as SelectConfig;
+    }
+    return selectByChange(contracts, config, changedFiles).selected;
+  }
+  return contracts;
+}
+
 async function cmdCheck(args: string[]): Promise<void> {
   const { values } = parse(args);
   const dir = resolve(process.cwd(), values.dir as string);
@@ -193,17 +231,7 @@ async function cmdCheck(args: string[]): Promise<void> {
   }
 
   // 3) 选取:--changed + --config → 按改动;--stage → 按阶段;否则全选
-  let selected: Contract[] = contracts;
-  if (values.stage) {
-    selected = selectByStage(contracts, values.stage as string);
-  } else if (values.changed) {
-    const changedFiles = (values.changed as string).split(",").map((s) => s.trim()).filter(Boolean);
-    let config: SelectConfig = { baseline: contracts.map((c) => c.id), rules: [] }; // 缺省:全恒选
-    if (values.config) {
-      config = JSON.parse(readFileSync(resolve(process.cwd(), values.config as string), "utf8")) as SelectConfig;
-    }
-    selected = selectByChange(contracts, config, changedFiles).selected;
-  }
+  const selected = selectContractsForValues(contracts, values);
 
   // 4) 跑门禁
   const gate = await buildGate(values.properties as string | undefined);
@@ -219,6 +247,45 @@ async function cmdGate(args: string[]): Promise<void> {
   const stage = args[0];
   if (!stage) fail("用法: harness gate <stage>");
   await cmdCheck(["--stage", stage, ...args.slice(1)]);
+}
+
+async function cmdPreflight(args: string[]): Promise<void> {
+  const sub = args[0];
+  if (sub !== "gate") {
+    fail("用法: harness preflight gate [--dir d] [--config f] [--stage s] [--changed a,b] [--json] [--retain-on-failure]");
+  }
+  const { values } = parse(args.slice(1));
+  const cwd = process.cwd();
+  const dir = resolve(cwd, values.dir as string);
+  const contracts = loadRunnableContracts(dir);
+  const selected = selectContractsForValues(contracts, values, cwd);
+  const gate = await buildGate(values.properties as string | undefined);
+  const config = loadHarnessConfig(cwd, values.config as string | undefined);
+  const policy = loadSandboxPolicy(config);
+  const ctx: RunContext = { cwd, verdicts: loadVerdicts(cwd) };
+  if (values["base-url"]) (ctx as { baseUrl?: string }).baseUrl =
+    values["base-url"] as string;
+  const report = await runGatePreflight({
+    provider: createLazyDaytonaProvider(process.env),
+    root: cwd,
+    policy,
+    contracts: selected,
+    gate,
+    ctx,
+    environment: process.env,
+    retainOnFailure: Boolean(values["retain-on-failure"]),
+  });
+
+  console.log(
+    values.json
+      ? renderGatePreflightJson(report)
+      : renderGatePreflightPretty(report),
+  );
+  process.exitCode = report.outcome === "ready"
+    ? 0
+    : report.outcome === "blocked"
+      ? 2
+      : 1;
 }
 
 async function cmdMeta(args: string[]): Promise<void> {
@@ -829,6 +896,7 @@ function help(): void {
 门禁(验证层):
   harness check [--dir d] [--changed a,b | --stage s] [--config f] [--base-url u] [--properties m] [--json]
   harness gate <stage> [...]                     # = check --stage <stage>
+  harness preflight gate [--dir d] [--config f] [--stage s] [--changed a,b] [--json] # 在 Daytona Gate sandbox 中演练 setup/契约
   harness meta  [--dir d] [--properties m]        # 用 examples 标定插件(先验门禁自己没瞎)
   harness explain <contractId>
   harness contract validate <dir> | freeze <file>
@@ -848,6 +916,7 @@ async function main(): Promise<void> {
     case "runs": cmdRuns(rest); break;
     case "check": await cmdCheck(rest); break;
     case "gate": await cmdGate(rest); break;
+    case "preflight": await cmdPreflight(rest); break;
     case "meta": await cmdMeta(rest); break;
     case "explain": cmdExplain(rest); break;
     case "contract": cmdContract(rest); break;

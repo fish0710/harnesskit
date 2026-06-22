@@ -971,3 +971,46 @@ export async function runGatePreflight(
       : {}),
   };
 }
+
+export function renderGatePreflightJson(report: GatePreflightReport): string {
+  return JSON.stringify(report, null, 2);
+}
+
+export function renderGatePreflightPretty(report: GatePreflightReport): string {
+  const lines: string[] = [];
+  lines.push("");
+  lines.push("Harness Gate Preflight");
+  lines.push(
+    `selected ${report.selectedContracts.length} contracts; ` +
+      `remote ${report.remoteContracts.length}; ` +
+      `host-local ${report.hostLocalContracts.length}`,
+  );
+  lines.push(`outcome: ${report.outcome}`);
+  if (report.sandbox) {
+    lines.push(
+      `sandbox: ${report.sandbox.id} ` +
+        `snapshot=${report.sandbox.snapshot} ` +
+        `retained=${report.sandbox.retained}`,
+    );
+  }
+  for (const finding of report.staticFindings) {
+    lines.push(`[${finding.severity}] ${finding.id}: ${finding.message}`);
+  }
+  for (const step of report.setup) {
+    lines.push(`[setup] ${step.label} exit=${step.exitCode}: ${step.command}`);
+  }
+  for (const finding of report.readinessErrors) {
+    lines.push(`[readiness] ${finding.id}: ${finding.message}`);
+  }
+  for (const id of report.productFailures) {
+    lines.push(`[product-red] ${id}`);
+  }
+  if (report.hostLocalContracts.length > 0) {
+    lines.push(
+      "[info] host-local contracts are not covered by Gate sandbox preflight: " +
+        report.hostLocalContracts.join(", "),
+    );
+  }
+  lines.push("");
+  return lines.join("\n");
+}

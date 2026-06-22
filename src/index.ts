@@ -75,6 +75,20 @@ export {
   runHostLocalGate,
   type HostLocalGateOptions,
 } from "./harness/host-gate.js";
+export {
+  classifyGateReportReadiness,
+  lintGateReadiness,
+  renderGatePreflightJson,
+  renderGatePreflightPretty,
+  runGatePreflight,
+  type GatePreflightOptions,
+  type GatePreflightReport,
+  type GateReadinessClassification,
+  type GateReadinessLintInput,
+  type PreflightFinding,
+  type PreflightSeverity,
+  type PreflightStep,
+} from "./harness/preflight.js";
 export { loadVerdicts, recordVerdict } from "./harness/verdicts.js";
 export {
   RunStore,

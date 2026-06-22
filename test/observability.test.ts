@@ -19,7 +19,11 @@ import {
   lastRunRecord,
   writeRunRecord,
 } from "../src/harness/record.js";
-import { RunRecorder as ExportedRunRecorder } from "../src/index.js";
+import { runGatePreflight } from "../src/harness/preflight.js";
+import {
+  RunRecorder as ExportedRunRecorder,
+  runGatePreflight as ExportedRunGatePreflight,
+} from "../src/index.js";
 
 test("Daytona Claude observability is default-on with stable defaults", () => {
   const config = loadDaytonaObservabilityConfig({});
@@ -359,6 +363,10 @@ test("lastRunRecord reads both legacy v1 and v2 records", () => {
 
 test("root export includes the RunRecorder class", () => {
   assert.equal(ExportedRunRecorder, RunRecorder);
+});
+
+test("root export includes Gate preflight runner", () => {
+  assert.equal(ExportedRunGatePreflight, runGatePreflight);
 });
 
 test("lastRunRecord ignores non-completed v2 records even with stale outcome fields", () => {
