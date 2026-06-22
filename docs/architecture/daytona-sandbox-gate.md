@@ -2,7 +2,7 @@
 
 > 状态：当前实现
 >
-> 更新日期：2026-06-17
+> 更新日期：2026-06-22
 >
 > 适用范围：`harness run --driver claude` 与
 > `harness run --driver command`
@@ -104,6 +104,19 @@ agent 沙箱跨重试保留上下文。Claude resume 必须复用首轮捕获的
 缺失 session id、resume 后产生不一致 session，或无法确认复用时，Harness
 fail closed，不启动新的对话。gate 沙箱每轮重新创建，避免继承 agent 控制的
 进程、缓存、凭证或隐藏状态。
+
+## 4A. Gate Readiness Preflight
+
+`harness preflight gate` is the pre-run readiness barrier for Daytona-backed
+`run`. It does not start an Agent sandbox and does not publish files. It creates
+a fresh Gate sandbox from the configured Gate snapshot, uploads the current host
+workspace, runs `gateSetup`, applies the same loopback-aware network policy as
+`run`, and executes selected remote contracts through host-owned GateCore.
+
+The command separates readiness errors from product-red gates. Readiness errors
+include setup failure, missing commands, bad `nvm` usage, unknown contract
+types, evidence errors, and Gate cleanup failure. These must be fixed in
+contracts/config/setup before the implementation agent starts.
 
 ## 5. 数据所有权
 
@@ -443,8 +456,8 @@ manifest。即使 Daytona provider 创建、harness config 解析或 agent comma
 - gate 沙箱本身不是可信判定器，只是隔离的证据执行环境。
 - 可信测试必须由宿主保护并显式调用；候选可修改的 `npm test` 不能单独作为
   最终裁判。
-- `harness check` 和 `harness gate` 仍保留本地执行语义；本架构针对 agent 驱动的
-  `run` 循环。
+- `harness check` 和 `harness gate` 仍保留本地执行语义；Daytona Gate 运行时由
+  `harness preflight gate` 和 `harness run` 覆盖。
 - 当前实现不会自动 merge、push、批准 MR 或绕过 CI。
 
 ## 16. 关联资料

@@ -16,7 +16,8 @@ Harness 分两层：
 ```text
 create 初始化项目
 -> 写 contracts 和 harness.config.json
--> check/gate 验证门禁可跑
+-> check/gate 在宿主验证契约语义
+-> preflight gate 在 Daytona Gate sandbox 演练 gateSetup 和远端契约
 -> run/fix 调 agent 做修改
 -> 每轮 agent 后自动跑 gate
 -> pass 后只发布 gate 验过的候选文件
@@ -172,6 +173,17 @@ harness check --dir contracts --base-url http://127.0.0.1:3000
 ```bash
 harness check --dir contracts --json
 ```
+
+在 Daytona agent 运行前，额外验证 Gate sandbox 运行时：
+
+```bash
+harness preflight gate --dir contracts --config harness.config.json --json
+```
+
+`harness check` 在宿主机本地执行。`harness preflight gate` 会创建短生命周期
+Gate sandbox，上传当前工作区，执行 `gateSetup` 和选中的远端契约。它用于发现
+缺工具、裸 `nvm use`、Gate 里误用 `claude`、服务未在 Gate 内启动等 readiness
+错误。
 
 解释某条契约：
 
@@ -517,6 +529,13 @@ Daytona 相关命令报 `DAYTONA_API_KEY`：
 处理：export DAYTONA_API_KEY=...
 ```
 
+`harness preflight gate` 报 readiness error：
+
+```text
+原因：Gate sandbox 中缺工具、gateSetup 失败、契约命令使用宿主才有的命令，或在 Gate 里误用 agent 工具。
+处理：修 harness.config.json 的 gateSetup 或契约命令。不要启动 agent 重试业务代码，直到 preflight readiness error 清零。
+```
+
 本地 Daytona 或 toolbox 请求出现 502：
 
 ```text
@@ -561,6 +580,7 @@ npm run check
 harness create .
 harness contract validate contracts
 harness check --dir contracts --config harness.config.json
+harness preflight gate --dir contracts --config harness.config.json
 harness run "实现任务" --driver claude --max-attempts 3
 harness status
 ```
