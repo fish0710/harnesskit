@@ -1,5 +1,15 @@
-import type { GateReport, Contract } from "../types.js";
-import type { SandboxPolicy } from "./sandbox/types.js";
+import type { GateCore } from "../gate.js";
+import type { GateReport, Contract, RunContext } from "../types.js";
+import { isHostLocalContract } from "./host-gate.js";
+import { createDaytonaExecutionTarget } from "./sandbox/daytona.js";
+import { getGateSnapshot } from "./sandbox/toolchain.js";
+import type {
+  SandboxCommandResult,
+  SandboxHandle,
+  SandboxPolicy,
+  SandboxProvider,
+} from "./sandbox/types.js";
+import { captureWorkspace } from "./sandbox/workspace.js";
 
 export type PreflightSeverity = "warning" | "error";
 
@@ -42,7 +52,20 @@ export interface GateReadinessClassification {
   productFailures: string[];
 }
 
+export interface GatePreflightOptions {
+  provider: SandboxProvider;
+  root: string;
+  policy: SandboxPolicy;
+  contracts: Contract[];
+  gate: GateCore;
+  ctx: RunContext;
+  environment?: Record<string, string | undefined>;
+  retainOnFailure?: boolean;
+}
+
 const MISSING_DEFAULT_TOOLS = new Set(["git", "pnpm", "yarn", "bun"]);
+const REMOTE_ROOT = "/workspace/candidate";
+const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 
 type ShellOperator = "start" | "&&" | "||" | ";";
 
@@ -745,4 +768,205 @@ export function classifyGateReportReadiness(
   }
 
   return { readinessErrors, productFailures };
+}
+
+function commandOutput(result: SandboxCommandResult): string {
+  return [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+}
+
+function setupFailure(
+  index: number,
+  command: string,
+  result: SandboxCommandResult,
+): PreflightFinding {
+  return finding(
+    `gateSetup.${index + 1}.failed`,
+    "error",
+    `gate setup command ${index + 1} failed with exit ${result.exitCode}: ${
+      commandOutput(result) || "(no output)"
+    }`,
+    "setup",
+  );
+}
+
+async function runPreflightSetup(
+  handle: SandboxHandle,
+  commands: string[],
+): Promise<{ steps: PreflightStep[]; errors: PreflightFinding[] }> {
+  const steps: PreflightStep[] = [];
+  const errors: PreflightFinding[] = [];
+
+  for (const [index, command] of commands.entries()) {
+    const result = await handle.execute(
+      command,
+      REMOTE_ROOT,
+      {},
+      SETUP_TIMEOUT_MS,
+    );
+    steps.push({
+      label: `gateSetup.${index + 1}`,
+      command,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+    if (result.exitCode !== 0) {
+      errors.push(setupFailure(index, command, result));
+      break;
+    }
+  }
+
+  return { steps, errors };
+}
+
+function shouldBlockGateNetwork(contracts: Contract[]): boolean {
+  return !contracts.some(httpContractUsesLoopback);
+}
+
+function sandboxError(error: unknown): PreflightFinding {
+  return finding(
+    "gate.sandbox.error",
+    "error",
+    error instanceof Error ? error.message : String(error),
+    "sandbox",
+  );
+}
+
+function cleanupFailure(error: unknown): PreflightFinding {
+  return finding(
+    "gate.cleanup.failed",
+    "error",
+    `Gate sandbox cleanup failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+    "sandbox",
+  );
+}
+
+function finalOutcome(
+  readinessErrors: PreflightFinding[],
+  productFailures: string[],
+  gateReport: GateReport | undefined,
+): GatePreflightReport["outcome"] {
+  if (readinessErrors.length > 0 || productFailures.length > 0) {
+    return "not_ready";
+  }
+  if (gateReport?.outcome === "blocked") return "blocked";
+  return "ready";
+}
+
+export async function runGatePreflight(
+  options: GatePreflightOptions,
+): Promise<GatePreflightReport> {
+  const environment = options.environment ?? process.env;
+  const staticFindings = lintGateReadiness({
+    contracts: options.contracts,
+    policy: options.policy,
+  });
+  const selectedContracts = options.contracts.map((contract) => contract.id);
+  const remoteContracts = options.contracts.filter((contract) =>
+    !isHostLocalContract(contract)
+  );
+  const hostLocalContracts = options.contracts.filter(isHostLocalContract);
+  const staticErrors = staticFindings.filter((finding) =>
+    finding.severity === "error"
+  );
+
+  if (staticErrors.length > 0) {
+    return {
+      outcome: "not_ready",
+      staticFindings,
+      setup: [],
+      selectedContracts,
+      remoteContracts: remoteContracts.map((contract) => contract.id),
+      hostLocalContracts: hostLocalContracts.map((contract) => contract.id),
+      readinessErrors: staticErrors,
+      productFailures: [],
+    };
+  }
+
+  if (remoteContracts.length === 0) {
+    return {
+      outcome: "ready",
+      staticFindings,
+      setup: [],
+      selectedContracts,
+      remoteContracts: [],
+      hostLocalContracts: hostLocalContracts.map((contract) => contract.id),
+      readinessErrors: [],
+      productFailures: [],
+    };
+  }
+
+  let gateSnapshot: string | undefined;
+  let handle: SandboxHandle | undefined;
+  let setup: PreflightStep[] = [];
+  let gateReport: GateReport | undefined;
+  let retained = false;
+  const readinessErrors: PreflightFinding[] = [];
+  const productFailures: string[] = [];
+
+  try {
+    gateSnapshot = getGateSnapshot(environment);
+    const baseline = captureWorkspace(options.root, options.policy);
+    handle = await options.provider.create({
+      role: "gate",
+      snapshot: gateSnapshot,
+      envVars: {},
+      ephemeral: true,
+    });
+    await handle.upload([...baseline.files.values()], REMOTE_ROOT);
+
+    const setupResult = await runPreflightSetup(
+      handle,
+      options.policy.gateSetup,
+    );
+    setup = setupResult.steps;
+    readinessErrors.push(...setupResult.errors);
+
+    if (readinessErrors.length === 0) {
+      if (shouldBlockGateNetwork(remoteContracts)) {
+        await handle.setNetworkBlocked(true);
+      }
+      gateReport = await options.gate.run(remoteContracts, {
+        ...options.ctx,
+        cwd: REMOTE_ROOT,
+        execution: createDaytonaExecutionTarget(handle, REMOTE_ROOT),
+      });
+      const classified = classifyGateReportReadiness(gateReport);
+      readinessErrors.push(...classified.readinessErrors);
+      productFailures.push(...classified.productFailures);
+    }
+  } catch (error) {
+    readinessErrors.push(sandboxError(error));
+  } finally {
+    if (handle) {
+      const retainOnFailure = options.retainOnFailure === true &&
+        (readinessErrors.length > 0 || productFailures.length > 0);
+      if (retainOnFailure) {
+        retained = true;
+      } else {
+        try {
+          await handle.delete();
+        } catch (error) {
+          readinessErrors.push(cleanupFailure(error));
+        }
+      }
+    }
+  }
+
+  return {
+    outcome: finalOutcome(readinessErrors, productFailures, gateReport),
+    staticFindings,
+    setup,
+    selectedContracts,
+    remoteContracts: remoteContracts.map((contract) => contract.id),
+    hostLocalContracts: hostLocalContracts.map((contract) => contract.id),
+    ...(gateReport ? { gateReport } : {}),
+    readinessErrors,
+    productFailures,
+    ...(handle && gateSnapshot
+      ? { sandbox: { id: handle.id, snapshot: gateSnapshot, retained } }
+      : {}),
+  };
 }
