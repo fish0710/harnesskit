@@ -21,7 +21,7 @@ npm 10.9.2
 npx 10.9.2
 Claude Code 2.1.145
 Agent source: harness-agent-claude-2.1.145-r2
-Gate source: harness-gate-runtime-node-22.14.0-r1
+Gate source: harness-gate-runtime-node-22.14.0-r2
 ```
 
 Refresh or verify latest snapshots from the Harness source checkout:
@@ -44,7 +44,7 @@ Live probe on 2026-06-18 against both default latest snapshots showed:
 |---|---|---|---|
 | OS/user | Debian 13, user `daytona`, home `/home/daytona` | same | Avoid host-specific paths. |
 | Shell | `$SHELL=/bin/sh`, `/usr/bin/bash` exists | same | Use `bash -lc` only when needed. |
-| Node | `/usr/local/bin/node` v22.14.0 | same | Node gates can run without install. |
+| Node | `/usr/local/bin/node` v22.14.0 | same; Node 14.21.3/npm 6.14.18 also preinstalled under nvm | Default Node gates can run without install; old `.nvmrc` projects can `nvm use` the preinstalled Node 14. |
 | npm/npx | `/usr/local/bin/npm`, `/usr/local/bin/npx` 10.9.2 | same | Prefer `npm ci`/`npm test` for JS projects. |
 | nvm | `NVM_DIR=/usr/local/nvm`, `nvm.sh` exists, no `nvm` binary | same | Source nvm before `nvm use`. |
 | corepack | direct `corepack --version` works; `bash -lc corepack` did not | same | Prefer direct `corepack` or explicit path. |
@@ -63,7 +63,7 @@ codes or structured evidence markers, not exact first-line stdout.
 
 ## nvm And Shell Rules
 
-`nvm` is a shell function loaded from `/usr/local/nvm/nvm.sh`, not an executable.
+nvm is a shell function loaded from `/usr/local/nvm/nvm.sh`, not an executable.
 This fails:
 
 ```json
@@ -81,6 +81,26 @@ Use this if a project really needs `nvm`:
 Because Node 22.14.0 is already active in the default snapshots, prefer a plain
 `npm ci` unless the project explicitly requires a different Node version.
 
+The default Gate snapshot keeps Node 22.14.0 active at `/usr/local/bin/node`.
+It also preinstalls Node 14.21.3 with npm 6.14.18 for older projects. A Vue 2
+or other old `.nvmrc` project can install dependencies in `gateSetup` with:
+
+```json
+"gateSetup": [
+  "bash -lc 'source /usr/local/nvm/nvm.sh && nvm use 14.21.3 && npm ci'"
+]
+```
+
+In Gate, `/usr/local/nvm` is not writable by the `daytona` user. `nvm use` can
+select versions already present in the snapshot, but do not rely on `nvm install`
+in Gate contract commands or ordinary `gateSetup`; missing versions try to write
+`/usr/local/nvm/.cache` and can fail before contracts run.
+
+If a project requires another Node version, prefer creating a dedicated Gate
+snapshot with that version preinstalled. A user-writable
+`NVM_DIR=$HOME/.nvm` can work for explicit one-off setup, but the snapshot path
+is the recommended default for repeatable Harness runs.
+
 ## Gate Network Timing
 
 Harness assembles the evaluated candidate in a fresh Gate sandbox, runs
@@ -94,6 +114,9 @@ remote contracts.
 - Therefore install dependencies and start services in `gateSetup`.
 - Do not write command contracts that fetch from the internet during Gate run;
   fetch or install in `gateSetup`, or vendor/cache the dependency.
+- Do not open Gate contract-stage network just to install dependencies. Only
+  loopback HTTP contract checks of sandbox-local services need the network block
+  left open after setup.
 
 `127.0.0.1` in an HTTP contract means the Gate sandbox, not the host.
 

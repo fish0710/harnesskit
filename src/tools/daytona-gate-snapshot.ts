@@ -9,6 +9,9 @@ import {
   DAYTONA_GATE_IMAGE,
   DAYTONA_GATE_LATEST_SNAPSHOT,
   DAYTONA_GATE_REGISTRY_IMAGE,
+  LEGACY_NODE_VERSION,
+  LEGACY_NPM_VERSION,
+  NODE_VERSION,
 } from "../harness/sandbox/toolchain.js";
 import {
   configureLocalDaytonaProxy,
@@ -32,6 +35,36 @@ type SnapshotIdentity = {
 type SnapshotSourceSandbox = Awaited<ReturnType<Daytona["create"]>>;
 
 export const DAYTONA_GATE_DOCKERFILE = "images/daytona/gate/Dockerfile";
+
+const GATE_LEGACY_NODE_PREFLIGHT =
+  "bash -lc 'source /usr/local/nvm/nvm.sh && " +
+  `nvm use ${LEGACY_NODE_VERSION} && ` +
+  `test "$(node --version)" = "v${LEGACY_NODE_VERSION}" && ` +
+  `test "$(npm --version)" = "${LEGACY_NPM_VERSION}"'`;
+
+export const GATE_IMAGE_TOOLCHAIN_PREFLIGHT = [
+  "test -x /usr/bin/bash",
+  `test "$(node --version)" = "v${NODE_VERSION}"`,
+  "npm --version",
+  "npx --version",
+  "python3 --version",
+  "curl --version",
+  GATE_LEGACY_NODE_PREFLIGHT,
+].join(" && ");
+
+export const GATE_SNAPSHOT_TOOLCHAIN_PREFLIGHT =
+  `${GATE_IMAGE_TOOLCHAIN_PREFLIGHT} && ! command -v claude`;
+
+export function buildGateSourceCleanupCommand(): string {
+  return [
+    "sudo rm -rf /opt/claude-code /usr/local/bin/claude " +
+      "$HOME/.claude $HOME/.config/claude*",
+    `sudo env LEGACY_NODE_VERSION=${LEGACY_NODE_VERSION} ` +
+      "bash -lc 'source /usr/local/nvm/nvm.sh && " +
+      'nvm install --no-progress "${LEGACY_NODE_VERSION}"' + "'",
+    GATE_SNAPSHOT_TOOLCHAIN_PREFLIGHT,
+  ].join("; ");
+}
 
 export function readGateDockerfile(): string {
   return readFileSync(DAYTONA_GATE_DOCKERFILE, "utf8");
@@ -80,9 +113,7 @@ export function buildGateImageCommands(
         "/bin/sh",
         DAYTONA_GATE_IMAGE,
         "-lc",
-        "test -x /usr/bin/bash && node --version && " +
-          "npm --version && npx --version && python3 --version && " +
-          "curl --version",
+        GATE_IMAGE_TOOLCHAIN_PREFLIGHT,
       ],
     ],
     [
@@ -249,11 +280,7 @@ async function createLatestGateFromAgentRuntime(
     );
     rewriteRemoteToolboxProxy(sandbox, apiUrl);
     const result = await sandbox.process.executeCommand(
-      "sudo rm -rf /opt/claude-code /usr/local/bin/claude " +
-        "$HOME/.claude $HOME/.config/claude*; " +
-        "test -x /usr/bin/bash && node --version && npm --version && " +
-        "npx --version && python3 --version && curl --version && " +
-        "! command -v claude",
+      buildGateSourceCleanupCommand(),
     );
     const output = result.result.trim();
     if (result.exitCode !== 0) {
@@ -287,9 +314,7 @@ async function verifyGateSnapshotToolchain(
   rewriteRemoteToolboxProxy(sandbox, apiUrl);
   try {
     const result = await sandbox.process.executeCommand(
-      "test -x /usr/bin/bash && node --version && npm --version && " +
-        "npx --version && python3 --version && curl --version && " +
-        "! command -v claude",
+      GATE_SNAPSHOT_TOOLCHAIN_PREFLIGHT,
     );
     const output = result.result.trim();
     if (result.exitCode !== 0) {

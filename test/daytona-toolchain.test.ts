@@ -15,6 +15,8 @@ import {
   DAYTONA_GATE_REGISTRY_IMAGE,
   DAYTONA_GATE_RELEASE,
   DAYTONA_GATE_SNAPSHOT,
+  LEGACY_NODE_VERSION,
+  LEGACY_NPM_VERSION,
   NODE_VERSION,
   getGateSnapshot,
   requireAgentSnapshot,
@@ -22,6 +24,8 @@ import {
 
 test("runtime image releases are pinned to stable latest snapshot names", () => {
   assert.equal(NODE_VERSION, "22.14.0");
+  assert.equal(LEGACY_NODE_VERSION, "14.21.3");
+  assert.equal(LEGACY_NPM_VERSION, "6.14.18");
   assert.equal(CLAUDE_CODE_VERSION, "2.1.145");
   assert.equal(DAYTONA_AGENT_RELEASE, "2.1.145-r2");
   assert.equal(DAYTONA_AGENT_IMAGE, "harness-daytona-claude:2.1.145-r2");
@@ -34,13 +38,13 @@ test("runtime image releases are pinned to stable latest snapshot names", () => 
     "harness-agent-claude-2.1.145-r2",
   );
   assert.equal(DAYTONA_AGENT_LATEST_SNAPSHOT, "harness-agent-claude-latest");
-  assert.equal(DAYTONA_GATE_RELEASE, "node-22.14.0-r1");
-  assert.equal(DAYTONA_GATE_IMAGE, "harness-daytona-gate:node-22.14.0-r1");
+  assert.equal(DAYTONA_GATE_RELEASE, "node-22.14.0-r2");
+  assert.equal(DAYTONA_GATE_IMAGE, "harness-daytona-gate:node-22.14.0-r2");
   assert.equal(
     DAYTONA_GATE_REGISTRY_IMAGE,
-    "registry:6000/harness/harness-daytona-gate:node-22.14.0-r1",
+    "registry:6000/harness/harness-daytona-gate:node-22.14.0-r2",
   );
-  assert.equal(DAYTONA_GATE_SNAPSHOT, "harness-gate-runtime-node-22.14.0-r1");
+  assert.equal(DAYTONA_GATE_SNAPSHOT, "harness-gate-runtime-node-22.14.0-r2");
   assert.equal(DAYTONA_GATE_LATEST_SNAPSHOT, "harness-gate-runtime-latest");
 });
 

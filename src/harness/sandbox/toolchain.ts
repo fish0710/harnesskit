@@ -1,6 +1,8 @@
 import type { SandboxCommandResult } from "./types.js";
 
 export const NODE_VERSION = "22.14.0";
+export const LEGACY_NODE_VERSION = "14.21.3";
+export const LEGACY_NPM_VERSION = "6.14.18";
 export const CLAUDE_CODE_VERSION = "2.1.145";
 export const DAYTONA_AGENT_RELEASE = `${CLAUDE_CODE_VERSION}-r2`;
 export const DAYTONA_AGENT_IMAGE =
@@ -11,7 +13,7 @@ export const DAYTONA_AGENT_SNAPSHOT =
   `harness-agent-claude-${DAYTONA_AGENT_RELEASE}`;
 export const DAYTONA_AGENT_LATEST_SNAPSHOT = "harness-agent-claude-latest";
 
-export const DAYTONA_GATE_RELEASE = `node-${NODE_VERSION}-r1`;
+export const DAYTONA_GATE_RELEASE = `node-${NODE_VERSION}-r2`;
 export const DAYTONA_GATE_IMAGE =
   `harness-daytona-gate:${DAYTONA_GATE_RELEASE}`;
 export const DAYTONA_GATE_REGISTRY_IMAGE =
