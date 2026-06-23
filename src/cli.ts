@@ -68,6 +68,10 @@ import { createProject } from "./harness/scaffold.js";
 import { writePlan } from "./harness/plan.js";
 import { gatherStatus } from "./harness/status.js";
 import { isHostLocalContract } from "./harness/host-gate.js";
+import {
+  createDiagnosticLogger,
+  type DiagnosticLogger,
+} from "./harness/diagnostic-log.js";
 import { redactObservationData } from "./harness/redaction.js";
 import {
   gatePreflightRunBlocker,
@@ -104,6 +108,7 @@ const OPTIONS = {
   "agent-cmd": { type: "string" as const },
   "max-attempts": { type: "string" as const },
   "max-ms": { type: "string" as const },
+  verbose: { type: "boolean" as const, default: false },
   force: { type: "boolean" as const, default: false },
   // review --resolve
   resolve: { type: "string" as const },
@@ -114,6 +119,16 @@ const OPTIONS = {
 
 function parse(args: string[]) {
   return parseArgs({ args, allowPositionals: true, options: OPTIONS });
+}
+
+function isVerboseRun(
+  values: Record<string, unknown>,
+  env = process.env,
+): boolean {
+  if (values.verbose === true) return true;
+  const value = env.HARNESS_VERBOSE;
+  if (value === undefined) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
 /** 可选地从模块加载属性函数表(invariant 插件用)。 */
@@ -525,8 +540,25 @@ async function runSingleTask(
     selectedContracts: overrides?.selectedContracts?.map((contract) => contract.id) ?? [],
   });
 
+  let diagnosticLog: DiagnosticLogger | undefined;
   try {
+    diagnosticLog = createDiagnosticLogger({
+      enabled: isVerboseRun(values),
+      cwd,
+      runId,
+      redact: redactObservationData,
+    });
+    if (diagnosticLog.path) recorder.setDiagnosticLogPath(diagnosticLog.path);
+    diagnosticLog.info("run.setup", "run record created", {
+      runId,
+      kind: overrides?.kind ?? "single",
+      driver: runRecordDriverLabel(values),
+    });
     const agent = selectAgent(values);
+    diagnosticLog.debug("run.setup", "agent selected", {
+      kind: agent.kind,
+      ...(agent.kind === "command" ? { commandConfigured: true } : {}),
+    });
     let observability:
       | {
         runId: string;
@@ -540,12 +572,22 @@ async function runSingleTask(
     }
 
     const contracts = loadRunnableContracts(dir);
+    diagnosticLog.debug("run.setup", "contracts loaded", {
+      dir,
+      count: contracts.length,
+    });
 
     const selected = overrides?.selectedContracts ?? (values.stage
       ? selectByStage(contracts, values.stage as string)
       : contracts);
     recorder.setSelectedContracts(selected.map((contract) => contract.id));
+    diagnosticLog.debug("run.setup", "contracts selected", {
+      ids: selected.map((contract) => contract.id),
+    });
     const gate = await buildGate(values.properties as string | undefined);
+    diagnosticLog.debug("run.setup", "gate built", {
+      properties: values.properties ?? null,
+    });
     const ctx: RunContext = { cwd, verdicts: loadVerdicts(cwd) };
     if (values["base-url"]) (ctx as { baseUrl?: string }).baseUrl =
       values["base-url"] as string;
@@ -557,7 +599,16 @@ async function runSingleTask(
       values.config as string | undefined,
     );
     const policy = loadSandboxPolicy(config);
+    diagnosticLog.debug("run.setup", "policy loaded", {
+      candidateRoots: policy.candidateRoots,
+      readOnlyPaths: policy.readOnlyPaths,
+      protectedPaths: policy.protectedPaths,
+      retainOnFailure: policy.retainOnFailure,
+    });
     if (agent.kind !== "scaffold") {
+      diagnosticLog.info("preflight", "gate preflight start", {
+        selectedContracts: selected.map((contract) => contract.id),
+      });
       recorder.recordEvent("gate.preflight.start", {
         selectedContracts: selected.map((contract) => contract.id),
       });
@@ -578,9 +629,16 @@ async function runSingleTask(
           retainOnFailure: policy.retainOnFailure,
         });
       }
-      recorder.recordEvent("gate.preflight.end", preflightEventSummary(preflight));
+      const preflightSummary = preflightEventSummary(preflight);
+      diagnosticLog.info("preflight", "gate preflight end", preflightSummary);
+      recorder.recordEvent("gate.preflight.end", preflightSummary);
       const preflightBlocker = gatePreflightRunBlocker(preflight);
-      if (preflightBlocker) throw new Error(preflightBlocker);
+      if (preflightBlocker) {
+        diagnosticLog.error("preflight", "gate preflight blocked", {
+          reason: preflightBlocker,
+        });
+        throw new Error(preflightBlocker);
+      }
       const productRed = preflight.productFailures.length > 0
         ? ` · product-red ${preflight.productFailures.length}`
         : "";
@@ -599,13 +657,17 @@ async function runSingleTask(
         observability,
         onObservation(event, data) {
           recorder?.recordEvent(event, data);
+          const redacted = redactObservationData(data);
+          diagnosticLog?.debug("sandbox", event, redacted);
+          if (diagnosticLog?.enabled) return;
           console.log(
-            `    · ${event}: ${JSON.stringify(redactObservationData(data))}`,
+            `    · ${event}: ${JSON.stringify(redacted)}`,
           );
         },
       });
     }
     const budget = buildGenerationBudget(values, agent);
+    diagnosticLog.debug("run.setup", "budget built", budget);
 
     console.log(
       `harness run · task="${task}" · environment=${environment.name}` +
@@ -621,6 +683,7 @@ async function runSingleTask(
       environment, budget,
       ...(initialFeedback ? { initialFeedback } : {}),
       onLog: (l) => console.log(l),
+      diagnosticLog: diagnosticLog.enabled ? diagnosticLog : undefined,
     });
 
     let recPath: string;
@@ -647,14 +710,20 @@ async function runSingleTask(
       }
     }
     console.log(`运行记录: ${recPath}`);
+    if (diagnosticLog.path) console.log(`Diagnostic log: ${diagnosticLog.path}`);
     return {
       outcome,
       runRecordPath: recPath,
       environmentName: environment.name,
     };
   } catch (error) {
+    diagnosticLog?.error("run.setup", "run failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     recorder.fail(error);
     throw error;
+  } finally {
+    diagnosticLog?.close();
   }
 }
 
@@ -696,6 +765,24 @@ async function cmdRun(args: string[]): Promise<void> {
     observability: disabledRunObservability(),
   });
 
+  let diagnosticLog: DiagnosticLogger | undefined;
+  try {
+    diagnosticLog = createDiagnosticLogger({
+      enabled: isVerboseRun(values),
+      cwd,
+      runId: seriesRunId,
+      redact: redactObservationData,
+    });
+    if (diagnosticLog.path) seriesRecorder.setDiagnosticLogPath(diagnosticLog.path);
+    diagnosticLog.info("series", "series start", {
+      seriesId: seriesConfig.seriesId,
+      tasks: seriesConfig.tasks.length,
+    });
+  } catch (error) {
+    seriesRecorder.fail(error);
+    throw error;
+  }
+
   let result;
   const skippedTaskIds: string[] = [];
   try {
@@ -710,11 +797,19 @@ async function cmdRun(args: string[]): Promise<void> {
       fallbackStage: values.stage as string | undefined,
       onTaskSkipped: (input) => {
         skippedTaskIds.push(input.task.id);
+        diagnosticLog?.info("series", "task skipped", {
+          taskId: input.task.id,
+        });
         console.log(
           `[${input.index}/${input.total}] ${input.task.id} · skipped completed (taskHash unchanged)`,
         );
       },
       executeTask: async (input) => {
+        diagnosticLog?.info("series", "task start", {
+          taskId: input.task.id,
+          index: input.index,
+          total: input.total,
+        });
         console.log(`\n[${input.index}/${input.total}] ${input.task.id}`);
         return runSingleTask(args, input.task.task, undefined, {
           kind: "series-task",
@@ -727,6 +822,10 @@ async function cmdRun(args: string[]): Promise<void> {
         });
       },
       recordTaskSetupError: (input) => {
+        diagnosticLog?.error("series", "task setup failed", {
+          taskId: input.task.id,
+          error: input.error instanceof Error ? input.error.message : String(input.error),
+        });
         const childRunId = buildRunId();
         const childRecorder = new RunStore(cwd, { makeRunId: () => childRunId }).startRun({
           runId: childRunId,
@@ -754,7 +853,11 @@ async function cmdRun(args: string[]): Promise<void> {
     });
   } catch (error) {
     attachSeriesChildren(cwd, seriesRunId, seriesRecorder);
+    diagnosticLog?.error("series", "series failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     seriesRecorder.fail(error);
+    diagnosticLog?.close();
     throw error;
   }
 
@@ -771,7 +874,9 @@ async function cmdRun(args: string[]): Promise<void> {
       summary: progress.summary,
       logs,
     });
+    diagnosticLog?.info("series", "series completed", progress);
     console.log("\n✓ series completed");
+    diagnosticLog?.close();
     process.exitCode = 0;
     return;
   }
@@ -789,10 +894,12 @@ async function cmdRun(args: string[]): Promise<void> {
   } else {
     seriesRecorder.complete(stopDetails);
   }
+  diagnosticLog?.warn("series", "series stopped", stopDetails);
   console.log(
     `\n■ series stopped at ${result.taskId}: ${result.outcome}` +
     `${result.reason ? ` ${result.reason}` : ""}`,
   );
+  diagnosticLog?.close();
   process.exitCode = result.outcome === "blocked" ? 2 : 1;
 }
 
@@ -931,8 +1038,8 @@ function help(): void {
 产出引擎(可跑通;真实代码产出靠 --driver):
   harness create [dir] [--force]                # 初始化项目骨架(AGENTS.md/docs/contracts/CI/CODEOWNERS)
   harness plan "<task>"                          # 生成执行计划 Plan.md(模板)
-  harness run  "<task>" [--driver scaffold|command|claude] [--agent-cmd "..."] [--stage s] [--max-attempts n] [--max-ms ms] # 默认 max-ms=6000000
-  harness fix  [--driver ...] [--stage s]        # 先取门禁诊断,再驱动 driver 修复迭代
+  harness run  "<task>" [--driver scaffold|command|claude] [--agent-cmd "..."] [--stage s] [--max-attempts n] [--max-ms ms] [--verbose] # 默认 max-ms=6000000
+  harness fix  [--driver ...] [--stage s] [--verbose] # 先取门禁诊断,再驱动 driver 修复迭代
   harness review [--resolve <id> --option <o> --by <name> [--reason ...]]   # 汇总/记录人工决策
   harness status                                 # 项目状态(契约/冻结/裁决/最近 run)
   harness runs list [--json] [--task-id id] [--series-id id]

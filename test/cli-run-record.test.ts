@@ -132,6 +132,67 @@ test("CLI runs list and show expose persisted run records as JSON", () => {
   assert.ok(shown.logs?.some((line) => line.includes("门禁: pass")));
 });
 
+test("CLI scaffold run with --verbose writes diagnostic JSONL and records its path", () => {
+  const { cwd, contractsDir } = projectFixture();
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      cliPath,
+      "run",
+      "verbose scaffold task",
+      "--driver",
+      "scaffold",
+      "--dir",
+      contractsDir,
+      "--verbose",
+    ],
+    { cwd, encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /debug run\.setup/);
+  assert.match(result.stdout, /Diagnostic log:/);
+
+  const record = latestRunRecord(cwd);
+  assert.equal(typeof record.diagnosticLogPath, "string");
+  const diagnosticLogPath = record.diagnosticLogPath as string;
+  assert.equal(existsSync(diagnosticLogPath), true);
+  const entries = readFileSync(diagnosticLogPath, "utf8").trim().split("\n")
+    .map((line) => JSON.parse(line) as { phase?: string; message?: string });
+  assert.ok(entries.some((entry) =>
+    entry.phase === "run.setup" && entry.message === "agent selected"
+  ));
+  assert.ok(entries.some((entry) =>
+    entry.phase === "loop" && entry.message === "attempt start"
+  ));
+});
+
+test("CLI scaffold run without --verbose does not write diagnostic log path", () => {
+  const { cwd, contractsDir } = projectFixture();
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      cliPath,
+      "run",
+      "quiet scaffold task",
+      "--driver",
+      "scaffold",
+      "--dir",
+      contractsDir,
+    ],
+    { cwd, encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.doesNotMatch(result.stdout, /debug run\.setup/);
+  assert.doesNotMatch(result.stdout, /Diagnostic log:/);
+
+  const record = latestRunRecord(cwd);
+  assert.equal(record.diagnosticLogPath, undefined);
+});
+
 test("CLI run records setup failures before an agent can be selected", () => {
   const { cwd, contractsDir } = projectFixture();
 
@@ -230,4 +291,37 @@ test("CLI run records gate setup failures after selecting contracts", () => {
   assert.equal(record.outcome, "error");
   assert.match(String(record.errorReason), /missing-properties\.js/);
   assert.deepEqual(record.selectedContracts, ["smoke.boot"]);
+});
+
+test("CLI verbose setup failure records error diagnostic entry", () => {
+  const { cwd, contractsDir } = projectFixture();
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      cliPath,
+      "run",
+      "verbose setup failure",
+      "--driver",
+      "scaffold",
+      "--dir",
+      contractsDir,
+      "--properties",
+      "missing-properties.js",
+      "--verbose",
+    ],
+    { cwd, encoding: "utf8" },
+  );
+
+  assert.notEqual(result.status, 0);
+  const record = latestRunRecord(cwd);
+  assert.equal(record.status, "error");
+  assert.equal(typeof record.diagnosticLogPath, "string");
+  const entries = readFileSync(record.diagnosticLogPath as string, "utf8").trim().split("\n")
+    .map((line) => JSON.parse(line) as { level?: string; phase?: string; message?: string });
+  assert.ok(entries.some((entry) =>
+    entry.level === "error" &&
+    entry.phase === "run.setup" &&
+    entry.message === "run failed"
+  ));
 });

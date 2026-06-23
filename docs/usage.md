@@ -342,6 +342,14 @@ harness run "修复 premerge 门禁" --driver claude --stage premerge --max-atte
 harness fix --driver claude --max-attempts 3
 ```
 
+### Verbose run diagnostics
+
+Use `--verbose` or `HARNESS_VERBOSE=1` with `harness run` and `harness fix`
+to print detailed setup, preflight, sandbox, loop, and series diagnostics while
+also writing `.harness/runs/<runId>.log.jsonl`. The run record includes
+`diagnosticLogPath` when this mode is enabled. Non-verbose runs keep the normal
+compact output.
+
 每次 Claude run 会写运行记录：
 
 ```text
