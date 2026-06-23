@@ -68,13 +68,19 @@ Before execution, produce or update:
 
 ## Pre-run Checklist
 
-Run the strongest available local validation:
+Run the strongest useful host validation for the task scope:
 
 ```bash
 harness contract validate contracts
 harness check --dir contracts --config harness.config.json --json
-harness preflight gate --dir contracts --config harness.config.json --json
 harness status --dir contracts
+```
+
+When the task has a known file scope, prefer targeted contract selection instead
+of running every contract:
+
+```bash
+harness check --dir contracts --config harness.config.json --changed path/a,path/b --json
 ```
 
 If the project uses the source checkout CLI:
@@ -83,10 +89,21 @@ If the project uses the source checkout CLI:
 npm run build
 node dist/src/cli.js contract validate contracts
 node dist/src/cli.js check --dir contracts --config harness.config.json --json
-node dist/src/cli.js preflight gate --dir contracts --config harness.config.json --json
 ```
 
-`harness check` proves local contract behavior on the host. `harness preflight gate` proves selected remote contracts and `gateSetup` can execute in the Daytona Gate snapshot. Daytona-backed `harness run` also enforces this readiness barrier before creating the Agent sandbox; running it manually first gives clearer setup feedback.
+`harness check` proves local contract behavior on the host. Daytona-backed
+`harness run` enforces Gate readiness preflight before creating an Agent
+sandbox, so a separate manual `harness preflight gate` is optional diagnostic
+work, not a required extra step. Run it manually only when early setup feedback
+is worth the duplicate Gate sandbox work, for example after changing
+`gateSetup`, contract commands, Gate snapshot selection, or loopback service
+startup assumptions.
+
+For configured task series, inspect `.harness/series/<series-id>.json` before
+assuming `harness run` will start work. If every relevant task is already
+`completed` with the same `taskHash`, `harness run` will skip those tasks before
+creating an Agent, creating a Gate sandbox, or triggering the built-in preflight.
+That skip is expected resume behavior, not a failed run.
 
 If checks fail because the project is not implemented yet, separate "expected red gate" from config errors. Contract syntax errors, missing commands, unsafe paths, or missing setup commands must be fixed before `harness run`.
 

@@ -1,6 +1,25 @@
 import { loadContracts, verifyFrozen } from "../contracts.js";
 import { loadVerdicts } from "./verdicts.js";
-import { lastRunRecord } from "./record.js";
+import { lastRunRecord, RunStore, type RunRecordV3 } from "./record.js";
+
+function latestRunForStatus(cwd: string): RunRecordV3 | undefined {
+  return new RunStore(cwd).listRuns()
+    .sort((a, b) => {
+      const updated = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+      if (updated !== 0) return updated;
+      return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+    })[0];
+}
+
+function formatV3Run(run: RunRecordV3): string {
+  const attempts = run.attemptCount ?? run.attempts.length;
+  const outcome = run.outcome ?? run.status;
+  return (
+    `最近一次 run: ${run.updatedAt} · kind=${run.kind} · ` +
+    `task="${run.task.description}" · driver=${run.driver} · ` +
+    `${run.status}/${outcome}(${attempts} 轮)`
+  );
+}
 
 /** 汇总项目状态(轻量,不跑门禁)。返回可打印的行。 */
 export function gatherStatus(cwd: string, contractsDir: string): string[] {
@@ -27,11 +46,19 @@ export function gatherStatus(cwd: string, contractsDir: string): string[] {
   const verdicts = loadVerdicts(cwd);
   out.push(`已记录人工裁决: ${Object.keys(verdicts).length} 条`);
 
-  const last = lastRunRecord(cwd);
-  if (last) {
-    out.push(`最近一次 run: ${last.at} · task="${last.task}" · driver=${last.driver} · ${last.outcome}(${last.attempts} 轮)`);
+  const latest = latestRunForStatus(cwd);
+  if (latest) {
+    out.push(formatV3Run(latest));
   } else {
-    out.push("最近一次 run: 无");
+    const last = lastRunRecord(cwd);
+    if (last) {
+      out.push(
+        `最近一次 run: ${last.at} · task="${last.task}" · ` +
+        `driver=${last.driver} · ${last.outcome}(${last.attempts} 轮)`,
+      );
+    } else {
+      out.push("最近一次 run: 无");
+    }
   }
   return out;
 }

@@ -12,6 +12,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  loadTaskSeriesConfig,
+  taskHash,
+  writeSeriesLedger,
+} from "../src/harness/series.js";
+
 const cliPath = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 
 function write(path: string, content: string): void {
@@ -83,6 +89,7 @@ type RunRecordFixture = {
   attemptCount?: unknown;
   errorReason?: unknown;
   selectedContracts?: unknown;
+  logs?: unknown;
   children?: Array<{
     runId?: unknown;
     taskId?: unknown;
@@ -231,6 +238,65 @@ test("CLI run without task consumes configured task series", () => {
       },
     ],
   );
+});
+
+test("CLI series reports completed matching tasks skipped from the ledger", () => {
+  const harnessConfig = {
+    series: { id: "dependency-stabilization" },
+    autoCommit: { enabled: false },
+    tasks: [
+      {
+        id: "vue3-deps",
+        task: "Stabilize Vue 3 dependency lockfile.",
+        gate: { contracts: ["smoke.boot"] },
+      },
+    ],
+  };
+  const { cwd, contractsDir } = projectFixture({ config: harnessConfig });
+  const config = loadTaskSeriesConfig(harnessConfig)!;
+  const now = "2026-06-23T00:00:00.000Z";
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "completed",
+    configHash: "a".repeat(64),
+    createdAt: now,
+    updatedAt: now,
+    tasks: [
+      {
+        id: "vue3-deps",
+        taskHash: taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults),
+        status: "completed",
+        changedFiles: ["vue3-app/package.json", "vue3-app/package-lock.json"],
+        runRecord: ".harness/runs/old-child.json",
+        completedAt: now,
+      },
+    ],
+  });
+
+  const result = runCli(cwd, [
+    "run",
+    "--driver",
+    "scaffold",
+    "--dir",
+    contractsDir,
+  ]);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(
+    result.stdout,
+    /\[1\/1\] vue3-deps · skipped completed \(taskHash unchanged\)/,
+  );
+  assert.doesNotMatch(result.stdout, /harness run · task=/);
+
+  const records = runRecords(cwd);
+  const parent = records.find((record) => record.kind === "series");
+  assert.equal(parent?.outcome, "completed");
+  assert.deepEqual(parent?.logs, [
+    "series completed",
+    "skipped completed tasks: vue3-deps",
+  ]);
+  assert.equal(records.some((record) => record.kind === "series-task"), false);
 });
 
 test("CLI series parent record summarizes completed and blocked child outcomes", () => {

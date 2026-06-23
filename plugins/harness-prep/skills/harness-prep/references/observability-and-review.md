@@ -35,7 +35,11 @@ Important fields in current v3 records:
 
 Treat `.harness/runs` as sensitive operational data. It can include task prompts and raw event data.
 
-For configured series, inspect the parent `kind: "series"` record and the stopped `kind: "series-task"` child. Also inspect `.harness/series/<series-id>.json` for resume/commit state.
+For configured series, inspect the parent `kind: "series"` record and the
+stopped `kind: "series-task"` child when a child exists. Also inspect
+`.harness/series/<series-id>.json` for resume/commit state. A completed matching
+task can be skipped before child creation, so the absence of a new child run,
+Agent sandbox, Gate sandbox, or preflight is expected in that path.
 
 ## Human Review Gates
 
@@ -180,3 +184,8 @@ When reporting status to the user, separate:
 - Gate state: contract results, gate sandbox ids, blocked review items.
 - Publication state: whether gate-approved candidate bytes were published to the host workspace.
 - Git state: whether any commit was created. Single-task runs stop at `ready_for_mr`; configured serial runs can auto-commit if `autoCommit.enabled` is true.
+
+If `harness status` disagrees with `harness runs list/show` or the series
+ledger, trust the more specific surfaces first: RunStore for audit, series
+ledger for resume/skip/commit state. Treat `harness status` as a lightweight
+summary, not the authority for series progress.

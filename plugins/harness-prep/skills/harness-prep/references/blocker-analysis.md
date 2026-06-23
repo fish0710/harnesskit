@@ -21,11 +21,27 @@ Run these first:
 ```bash
 git status --short
 harness status --dir contracts
-harness preflight gate --dir contracts --config harness.config.json --json
+harness check --dir contracts --config harness.config.json --json
 harness review --dir contracts
 harness runs list --json
 harness runs show <runId> --json
 ```
+
+When the blocker is scoped to known changed files, use targeted checks instead
+of the full contract set:
+
+```bash
+harness check --dir contracts --config harness.config.json --changed fileA,fileB --json
+```
+
+Use manual Gate preflight only when diagnosing Gate sandbox readiness:
+
+```bash
+harness preflight gate --dir contracts --config harness.config.json --json
+```
+
+Daytona-backed `harness run` already executes this readiness barrier before
+Agent creation. A skipped completed series task will not reach that barrier.
 
 If `harness runs` is unavailable or the CLI cannot start, fall back to raw files:
 
@@ -41,7 +57,9 @@ harness runs list --series-id <series-id> --json
 find .harness/series -maxdepth 1 -type f -print
 ```
 
-Then inspect the relevant series JSON.
+Then inspect the relevant series JSON. Use RunStore for audit, but use the
+series ledger for skip/resume/commit state. Old `.harness/runs` errors or
+escalations can remain after the current ledger is completed.
 
 ## Timeline Reconstruction
 

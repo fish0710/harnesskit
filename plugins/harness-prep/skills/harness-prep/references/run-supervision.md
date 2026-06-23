@@ -10,20 +10,31 @@ Harness flow is host controlled: Agent attempt -> Gate attempt -> feedback/retry
 
 1. Confirm the spec, plan, contracts, config, and sandbox environment.
 2. Confirm `sandbox-snapshots.md` has been considered for setup commands and Gate tool availability.
-3. Run preflight validation:
+3. Run host validation:
 
 ```bash
 harness contract validate contracts
 harness check --dir contracts --config harness.config.json --json
-harness preflight gate --dir contracts --config harness.config.json --json
 harness status --dir contracts
 ```
 
-4. If preflight has `error`, fix config/setup. Do not start Agent.
-5. If preflight has expected `fail`, explain that the current implementation is red and the Agent will try to satisfy it.
-6. If preflight has `blocked`, resolve or intentionally keep the review gate for runtime.
-7. If `harness preflight gate` reports readiness errors, fix config/setup/toolchain assumptions. Daytona-backed `harness run` will enforce the same readiness barrier before Agent creation; do not treat the error as an implementation task.
-8. Start one of:
+Use `--changed fileA,fileB` when the task has a narrow file scope. Avoid a full
+`harness check` when it would run unrelated slow contracts.
+
+4. Optional: run `harness preflight gate --dir contracts --config harness.config.json --json` only when you need early Gate sandbox readiness feedback before the actual run. Daytona-backed `harness run` performs the same readiness barrier before Agent creation, so this manual command is deliberately duplicate work.
+5. If manual preflight reports readiness errors, fix config/setup/toolchain assumptions. Do not treat the error as an implementation task.
+6. If host check has expected `fail`, explain that the current implementation is red and the Agent will try to satisfy it.
+7. If host check has `blocked`, resolve or intentionally keep the review gate for runtime.
+8. For configured series, inspect the series ledger before expecting new work:
+
+```bash
+find .harness/series -maxdepth 1 -type f -print
+```
+
+If the relevant task is already `completed` with the same `taskHash`, a no-task
+`harness run` will skip it before creating a child run, Agent sandbox, Gate
+sandbox, or built-in preflight.
+9. Start one of:
 
 ```bash
 harness run --driver claude --max-attempts 3
@@ -148,11 +159,17 @@ Explain:
 
 - RunStore parent `kind=series`: audit summary and child run ids.
 - RunStore child `kind=series-task`: task-specific Gate report, logs, selected contracts, Agent/Gate ids.
-- Series ledger: resume, task hash, ready-to-commit, commit state.
+- Series ledger: resume, task hash, ready-to-commit, commit state. This is the authority for skip/resume/commit progress; RunStore is the historical audit log and can retain old error or escalated child runs.
 - `completed`: already done; rerun should skip matching completed tasks.
 - `running`: interrupted or active task; inspect latest run record.
 - `ready_to_commit`: gate passed but commit step needs completion.
 - `blocked`/`escalated`/`error`: stop and inspect that task before continuing.
+
+If a rerun prints `series completed` after skipping completed tasks, do not
+interpret the lack of a new child run or Gate preflight as a no-op bug. It means
+the ledger already satisfied the configured task hash. Check `autoCommit.enabled`
+before claiming a commit exists; `false` means Harness only published candidate
+bytes and updated the ledger.
 
 ## Do Not
 

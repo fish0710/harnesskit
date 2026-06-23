@@ -125,12 +125,20 @@ export interface SeriesTaskSetupErrorInput {
   error: unknown;
 }
 
+export interface SeriesTaskSkippedInput {
+  task: TaskSeriesTask;
+  index: number;
+  total: number;
+  ledgerTask: SeriesLedgerTask;
+}
+
 export interface RunTaskSeriesInput {
   cwd: string;
   config: TaskSeriesConfig;
   contracts: Contract[];
   fallbackStage?: string;
   executeTask(input: SeriesTaskExecutionInput): Promise<SeriesTaskExecutionResult>;
+  onTaskSkipped?(input: SeriesTaskSkippedInput): void;
   recordTaskSetupError?(input: SeriesTaskSetupErrorInput): Promise<string | undefined> | string | undefined;
 }
 
@@ -797,6 +805,12 @@ export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskS
     });
 
     if (decision.action === "skip") {
+      input.onTaskSkipped?.({
+        task,
+        index,
+        total,
+        ledgerTask: existingTask!,
+      });
       continue;
     }
 

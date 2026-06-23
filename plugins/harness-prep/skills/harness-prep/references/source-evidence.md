@@ -16,7 +16,7 @@ Claims supported:
 
 - A prep agent can run `harness create .` to generate `AGENTS.md`, `harness.config.json`, `contracts/`, `docs/`, `CODEOWNERS`, `.github/workflows/harness-gate.yml`, and `.harness/`.
 - Existing scaffold files are not overwritten unless the user explicitly approves `--force`.
-- Pre-run validation should use `harness contract validate`, `harness check`, and `harness status` before starting an implementation agent.
+- Pre-run validation should use `harness contract validate`, targeted `harness check` where possible, and `harness status` before starting an implementation agent.
 
 ## Contracts And Gate Semantics
 
@@ -74,6 +74,12 @@ Claims supported:
 - Configured series can auto-commit gate-approved publications, and `.harness` runtime records should remain separate from committed source changes.
 - `blocked`, `escalated`, and `error` need different explanations and next actions.
 - RunStore is the primary persisted audit/query layer for `harness run`; the series ledger remains the resume/commit progress layer.
+- Daytona-backed `harness run` performs Gate readiness preflight before Agent
+  creation. Manual `harness preflight gate` is an optional early diagnostic, not
+  a separate required step for every run.
+- A configured series task that is already `completed` with a matching
+  `taskHash` is skipped before child run creation, Agent creation, Gate sandbox
+  creation, or built-in preflight.
 
 ## Observability And Blocker Analysis
 

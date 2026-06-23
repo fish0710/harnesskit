@@ -739,6 +739,7 @@ async function cmdRun(args: string[]): Promise<void> {
   });
 
   let result;
+  const skippedTaskIds: string[] = [];
   try {
     const contracts = loadRunnableContracts(dir);
     console.log(
@@ -749,6 +750,12 @@ async function cmdRun(args: string[]): Promise<void> {
       config: seriesConfig,
       contracts,
       fallbackStage: values.stage as string | undefined,
+      onTaskSkipped: (input) => {
+        skippedTaskIds.push(input.task.id);
+        console.log(
+          `[${input.index}/${input.total}] ${input.task.id} · skipped completed (taskHash unchanged)`,
+        );
+      },
       executeTask: async (input) => {
         console.log(`\n[${input.index}/${input.total}] ${input.task.id}`);
         return runSingleTask(args, input.task.task, undefined, {
@@ -796,11 +803,15 @@ async function cmdRun(args: string[]): Promise<void> {
   const progress = seriesSummaryFromLedger(cwd, seriesConfig);
   attachSeriesChildren(cwd, seriesRunId, seriesRecorder);
   if (result.outcome === "completed") {
+    const logs = ["series completed"];
+    if (skippedTaskIds.length > 0) {
+      logs.push(`skipped completed tasks: ${skippedTaskIds.join(", ")}`);
+    }
     seriesRecorder.complete({
       outcome: "completed",
       attempts: progress.attempts,
       summary: progress.summary,
-      logs: ["series completed"],
+      logs,
     });
     console.log("\n✓ series completed");
     process.exitCode = 0;

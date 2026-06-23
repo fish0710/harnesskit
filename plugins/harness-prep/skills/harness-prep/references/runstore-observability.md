@@ -78,7 +78,11 @@ A configured series creates:
 - one `kind: "series-task"` child run per configured task that starts or fails during task setup;
 - a separate `.harness/series/<series-id>.json` ledger for resume/commit progress.
 
-Use RunStore for audit and diagnosis. Use the series ledger for resume, task hash, ready-to-commit, and auto-commit state.
+Use RunStore for audit and diagnosis. Use the series ledger for resume, task
+hash, ready-to-commit, and auto-commit state. Do not mix these surfaces:
+`.harness/runs` keeps historical error or escalated runs forever, while
+`.harness/series/*.json` decides whether a task is skipped, resumed, committed,
+or stopped.
 
 Find a series parent and children:
 
@@ -93,6 +97,10 @@ Interpret:
 - Child `parentRunId` links back to the parent.
 - Child `task.taskId`, `task.seriesId`, `task.index`, and `task.total` identify the configured task.
 - Parent `summary` is aggregated from series progress, not a replacement for each child Gate report.
+- If all configured tasks are already `completed` with matching hashes, a new
+  series parent can complete without creating any child run. In that path
+  Harness skips before Agent creation, Gate sandbox creation, and built-in Gate
+  preflight. Treat this as expected resume behavior.
 
 If a no-task `harness run` cannot parse config or cannot find a configured series, there may be no RunStore record because Harness does not know a valid series identity yet. Once a series parent exists, later parent or child setup failures should be recorded as `status: "error"`.
 
@@ -157,3 +165,7 @@ and read the copied `.claude` tree.
 - `outcome: "escalated"` means retry budget, repeated wall, context/budget, Agent failure, or publication conflict; inspect `action`, `report`, `logs`, and `events`.
 - `outcome: "ready_for_mr"` means gate-approved candidate bytes were published to the host workspace; it is not merge approval and does not imply a commit.
 - For series, inspect both the parent and the stopped child. The parent tells where the series stopped; the child has the specific Gate report/logs.
+- For completed series, inspect `.harness/series/<series-id>.json` and
+  `autoCommit.enabled` before saying source changes were committed. With
+  `autoCommit.enabled=false`, completed means the ledger reached completed
+  state; it does not imply a git commit.
