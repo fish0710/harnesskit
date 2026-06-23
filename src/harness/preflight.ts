@@ -69,6 +69,8 @@ export interface GatePreflightOptions {
 }
 
 const MISSING_DEFAULT_TOOLS = new Set(["git", "pnpm", "yarn", "bun"]);
+// Harness logical workspace root. Daytona resolves the SDK path
+// "workspace/candidate" under /home/daytona in an interactive shell.
 const REMOTE_ROOT = "/workspace/candidate";
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 

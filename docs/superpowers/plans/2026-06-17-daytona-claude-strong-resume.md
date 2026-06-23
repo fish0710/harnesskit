@@ -72,7 +72,10 @@ test("buildClaudeCommand rejects unsafe session ids before command selection", (
 test("parseClaudeSessionId extracts the first safe stream-json session id", () => {
   assert.equal(
     parseClaudeSessionId([
-      JSON.stringify({ type: "system", cwd: "/workspace/candidate" }),
+      JSON.stringify({
+        type: "system",
+        cwd: "/workspace/candidate", // Harness logical cwd.
+      }),
       JSON.stringify({ type: "result", session_id: "session-abc" }),
     ].join("\n")),
     "session-abc",

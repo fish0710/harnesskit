@@ -355,6 +355,15 @@ volume: harness-claude-observability
 mount: /harness-observability
 ```
 
+Agent 项目文件在交互 shell 中位于：
+
+```text
+/home/daytona/workspace/candidate
+```
+
+`/workspace/candidate` 只是 Harness 内部逻辑 root；经过 Daytona SDK 会变成
+相对路径 `workspace/candidate`，不要在 sandbox 根目录下找 `/workspace`。
+
 Claude 命令运行时先写 sandbox-local `/home/daytona/.claude`。命令结束后，
 Harness 会把该目录复制到 run volume：
 

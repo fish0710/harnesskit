@@ -569,6 +569,9 @@ git commit -m "feat: isolate Agent and Gate snapshots"
 Extend the fake PTY to record output callbacks and add:
 
 ```ts
+// "/workspace/candidate" is the Harness logical root; Daytona resolves it as
+// SDK path "workspace/candidate", visible in shell as
+// /home/daytona/workspace/candidate.
 test("SDK handle wraps PTY commands so lookup failure exits the shell", async () => {
   const sdkSandbox = fakeSdkSandbox({ ptyExitCode: 127 });
   const provider = createDaytonaSdkProviderFromClient(

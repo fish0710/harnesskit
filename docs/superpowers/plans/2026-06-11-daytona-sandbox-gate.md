@@ -226,6 +226,9 @@ test("command gate is classified by host from remote raw evidence", async () => 
     },
   };
 
+  // "/workspace/candidate" is the Harness logical cwd. In a Daytona
+  // interactive shell, the same workspace appears at
+  // /home/daytona/workspace/candidate.
   const report = await new GateCore().use(commandPlugin).run(
     [{ id: "trusted", type: "command", cmd: "node", args: ["trusted-test.js"] }],
     { cwd: "/workspace/candidate", execution },
@@ -910,6 +913,8 @@ are explicitly tracked.
 `collectCandidate` must:
 
 ```ts
+// "/workspace/candidate" is the Harness logical remote root, not a root-level
+// directory to inspect from an interactive Daytona shell.
 for (const entry of await remote.list("/workspace/candidate")) {
   const path = validateCandidatePath(entry.path, policy);
   if (entry.kind !== "file") {
@@ -1219,8 +1224,10 @@ Pass `HARNESS_PROMPT` and model variables through PTY environment, not command
 string interpolation. For later attempts, include sanitized host feedback in
 `HARNESS_PROMPT`.
 
-For `kind: "command"`, execute the configured host-supplied command in
-`/workspace/candidate` with `HARNESS_TASK` and `HARNESS_FEEDBACK`.
+For `kind: "command"`, execute the configured host-supplied command at the
+Harness logical root `/workspace/candidate` with `HARNESS_TASK` and
+`HARNESS_FEEDBACK`. Daytona receives SDK path `workspace/candidate`; in an
+interactive shell this appears as `/home/daytona/workspace/candidate`.
 
 - [ ] **Step 5: Implement one fresh gate attempt**
 
@@ -1234,7 +1241,10 @@ For `kind: "command"`, execute the configured host-supplied command in
 6. run configured gate setup;
 7. restore protected assets from the host baseline;
 8. construct an `ExecutionTarget` backed by the gate handle;
-9. call host `gate.run(contracts, { ...ctx, cwd: "/workspace/candidate", execution })`;
+9. call host `gate.run(contracts, { ...ctx, cwd: "/workspace/candidate", execution })`
+   using the Harness logical cwd; Daytona resolves it via SDK path
+   `workspace/candidate`, visible in shell as
+   `/home/daytona/workspace/candidate`;
 10. delete the gate sandbox in `finally`.
 
 If candidate policy validation fails, return a synthetic error report through
@@ -1325,6 +1335,8 @@ git commit -m "feat: run agent and gates in isolated Daytona environments"
 Add tests for quoting, evidence IDs, bounded output, and HTTP requests:
 
 ```ts
+// "/workspace/candidate" is the Harness logical cwd. Daytona SDK resolves it as
+// "workspace/candidate", visible in shell as /home/daytona/workspace/candidate.
 test("remote command preserves trusted argv and execution id", async () => {
   const handle = recordingSandbox({
     exitCode: 7,

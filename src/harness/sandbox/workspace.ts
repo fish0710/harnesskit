@@ -318,6 +318,8 @@ export async function collectCandidate(
   baseline: WorkspaceSnapshot,
   policy: SandboxPolicy,
 ): Promise<CandidateSnapshot> {
+  // This is the Harness logical workspace root, not necessarily a root-level
+  // directory in an interactive Daytona shell.
   const entries = await remote.list("/workspace/candidate");
   if (!Array.isArray(entries)) {
     throw new Error("候选文件列表格式无效");

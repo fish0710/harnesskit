@@ -82,6 +82,15 @@ The Agent sandbox sees only its run subpath mounted at:
 /harness-observability
 ```
 
+The project files uploaded for the Agent are not under root-level
+`/workspace` in an interactive shell. Harness's logical remote root is
+`/workspace/candidate`, but Daytona resolves the SDK path `workspace/candidate`
+under the sandbox user's home:
+
+```text
+/home/daytona/workspace/candidate
+```
+
 Claude writes native state to sandbox-local HOME while the command is running:
 
 ```text

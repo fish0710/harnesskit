@@ -294,6 +294,8 @@ export interface GateReadinessClassification {
   productFailures: string[];
 }
 
+// Harness logical root. Daytona SDK path is "workspace/candidate"; an
+// interactive shell sees /home/daytona/workspace/candidate.
 const REMOTE_ROOT = "/workspace/candidate";
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 const MISSING_DEFAULT_TOOLS = new Set(["git", "pnpm", "yarn", "bun"]);

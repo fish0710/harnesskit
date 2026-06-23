@@ -214,7 +214,9 @@ failures. A later flag can support `--allow-red-gates`.
 7. If remote contracts exist:
    - create a short-lived Gate sandbox from `HARNESS_DAYTONA_GATE_SNAPSHOT` or
      `harness-gate-runtime-latest`;
-   - upload the host workspace to `/workspace/candidate`;
+   - upload the host workspace to the Harness logical root
+     `/workspace/candidate` (Daytona SDK path `workspace/candidate`; interactive
+     shell path `/home/daytona/workspace/candidate`);
    - run `gateSetup`;
    - apply the same loopback-aware Gate network policy used by `run`;
    - execute remote contracts through `GateCore` with Daytona execution target;

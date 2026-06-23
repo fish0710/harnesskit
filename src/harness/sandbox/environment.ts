@@ -43,6 +43,9 @@ import {
   requireAgentSnapshot,
 } from "./toolchain.js";
 
+// Harness logical workspace root. Daytona SDK calls receive this as
+// "workspace/candidate", which appears in an interactive sandbox shell as
+// /home/daytona/workspace/candidate.
 const REMOTE_ROOT = "/workspace/candidate";
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 const AGENT_COMMAND_TIMEOUT_MS = 20 * 60 * 1000;

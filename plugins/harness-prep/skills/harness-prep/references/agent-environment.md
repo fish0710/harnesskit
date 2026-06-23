@@ -87,6 +87,27 @@ localhost,127.0.0.1,.localhost,proxy.localhost
 
 For remote Daytona with a closed local proxy, clear stale proxy vars before running.
 
+## Agent Workspace Paths
+
+Do not tell users to look for `/workspace/candidate` in an interactive Daytona
+shell. Harness uses `/workspace/candidate` as an internal logical remote root,
+but the Daytona SDK receives it as the relative SDK path `workspace/candidate`.
+In the Agent sandbox shell this resolves under the `daytona` user's home:
+
+```text
+/home/daytona/workspace/candidate
+```
+
+Use these names precisely:
+
+| Surface | Path |
+|---|---|
+| Harness logical remote root | `/workspace/candidate` |
+| Daytona SDK file/process path | `workspace/candidate` |
+| Interactive Agent shell cwd | `/home/daytona/workspace/candidate` |
+| Claude native state | `/home/daytona/.claude` |
+| Claude observability mount | `/harness-observability` |
+
 ## User-Facing Explanation
 
 Before asking for run confirmation, say:
