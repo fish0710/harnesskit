@@ -1,4 +1,5 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
+import { createConnection } from "node:net";
 import { isAbsolute, normalize, relative, resolve, sep } from "node:path";
 
 import {
@@ -30,6 +31,9 @@ interface MiniProgramContract extends Contract {
 
 const DEFAULT_DEVTOOLS_CLI = "/Applications/wechatwebdevtools.app/Contents/MacOS/cli";
 const DEFAULT_AUTO_PORT = 9420;
+const DEFAULT_DEVTOOLS_READY_TIMEOUT_MS = 30_000;
+const DEVTOOLS_READY_CONNECT_TIMEOUT_MS = 500;
+const DEVTOOLS_READY_POLL_MS = 100;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -157,6 +161,42 @@ function managedDevtoolsEnv(): Record<string, string> {
     : {};
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+function tryTcpConnect(host: string, port: number): Promise<boolean> {
+  return new Promise((resolveConnection) => {
+    const socket = createConnection({ host, port });
+    let settled = false;
+    const finish = (connected: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolveConnection(connected);
+    };
+    socket.setTimeout(DEVTOOLS_READY_CONNECT_TIMEOUT_MS);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
+}
+
+async function waitForManagedDevtoolsPort(
+  port: number,
+  timeoutMs: number | undefined,
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
+  const budgetMs = Math.min(timeoutMs ?? DEFAULT_DEVTOOLS_READY_TIMEOUT_MS, DEFAULT_DEVTOOLS_READY_TIMEOUT_MS);
+  const deadline = performance.now() + budgetMs;
+  while (performance.now() <= deadline) {
+    if (signal?.aborted) return false;
+    if (await tryTcpConnect("127.0.0.1", port)) return true;
+    await sleep(DEVTOOLS_READY_POLL_MS);
+  }
+  return false;
+}
+
 async function startManagedDevtools(
   contract: Contract,
   ctx: RunContext,
@@ -206,6 +246,19 @@ async function startManagedDevtools(
         boundedCommandOutput(evidence.stderr, evidence.stdout) ?? "(无输出)"
       }`,
     };
+  }
+  if (!ctx.execution) {
+    const ready = await waitForManagedDevtoolsPort(port, timeoutMs, ctx.signal);
+    if (!ready) {
+      return {
+        id: contract.id,
+        type: "miniprogram",
+        status: "error",
+        durationMs: evidence.durationMs,
+        violations: [],
+        errorReason: `微信开发者工具自动化 WebSocket 未就绪: ws://127.0.0.1:${port}`,
+      };
+    }
   }
   return undefined;
 }

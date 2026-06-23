@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { loadContracts } from "../src/contracts.js";
 
 const exampleRoot = join(process.cwd(), "examples/miniprogram");
+const harnessPrepRoot = join(process.cwd(), "plugins/harness-prep/skills/harness-prep");
 
 test("miniprogram examples provide representative runner templates", () => {
   const contractsDir = join(exampleRoot, "contracts");
@@ -43,4 +44,25 @@ test("miniprogram examples provide representative runner templates", () => {
   }
 
   assert.equal(existsSync(join(exampleRoot, "README.md")), true);
+});
+
+test("miniprogram prep skill documents host-local runner rules", () => {
+  const skill = readFileSync(join(harnessPrepRoot, "SKILL.md"), "utf8");
+  const referencePath = join(harnessPrepRoot, "references/miniprogram-gates.md");
+  const reference = readFileSync(referencePath, "utf8");
+  const readme = readFileSync(join(exampleRoot, "README.md"), "utf8");
+  const helpers = readFileSync(join(exampleRoot, "test/gates/miniprogram-template-helpers.js"), "utf8");
+
+  assert.match(skill, /references\/miniprogram-gates\.md/);
+  assert.match(reference, /host-local/);
+  assert.match(reference, /page\.callMethod\(\)/);
+  assert.match(reference, /page\.data/);
+  assert.match(reference, /uni-app/);
+  assert.match(reference, /trigger\("click"\)/);
+  assert.match(readme, /page\.callMethod\(\)/);
+  assert.match(readme, /page\.data/);
+  assert.match(readme, /uni-app\/Vue3/);
+  assert.match(helpers, /export async function inputText/);
+  assert.match(helpers, /export async function tapElement/);
+  assert.match(helpers, /export async function triggerElement/);
 });

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { relative, resolve } from "node:path";
 
@@ -45,6 +46,28 @@ function fakeExecution(
       request: unusedRequest,
     },
   };
+}
+
+function freeTcpPort(): Promise<number> {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("failed to allocate a TCP port"));
+        return;
+      }
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolvePort(address.port);
+      });
+    });
+  });
 }
 
 test("miniprogram plugin registers under a stable type", () => {
@@ -426,6 +449,68 @@ test("miniprogram plugin starts managed DevTools before runner", async () => {
   assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "19420");
 });
 
+test("miniprogram plugin waits for managed DevTools WebSocket before runner", async () => {
+  const port = await freeTcpPort();
+  const root = mkdtempSync(`${process.cwd()}/test/fixtures/mp-managed-ready-`);
+  try {
+    const cliPath = `${root}/cli.sh`;
+    const projectPath = `${root}/project`;
+    const runnerPath = `${root}/runner.cjs`;
+    mkdirSync(projectPath);
+    writeFileSync(`${projectPath}/project.config.json`, "{}\n");
+    writeFileSync(
+      cliPath,
+      [
+        "#!/bin/sh",
+        `\"${process.execPath}\" -e '`,
+        "const { createServer } = require(\"node:net\");",
+        "const port = Number(process.argv[1]);",
+        "setTimeout(() => {",
+        "  const server = createServer((socket) => socket.end());",
+        "  server.listen(port, \"127.0.0.1\", () => {",
+        "    setTimeout(() => server.close(() => process.exit(0)), 2000);",
+        "  });",
+        "}, 80);",
+        `' \"${port}\" >/dev/null 2>&1 &`,
+        "exit 0",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      runnerPath,
+      [
+        "const { createConnection } = require('node:net');",
+        "const port = Number(process.env.HARNESS_MINIPROGRAM_DEVTOOLS_PORT);",
+        "const socket = createConnection({ host: '127.0.0.1', port });",
+        "socket.once('connect', () => { socket.destroy(); process.exit(0); });",
+        "socket.once('error', () => { process.exit(1); });",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(cliPath, 0o755);
+
+    const result = await miniprogramPlugin.run(
+      {
+        id: "mp.managed.ready",
+        type: "miniprogram",
+        projectPath: relative(process.cwd(), projectPath),
+        runner: relative(process.cwd(), runnerPath),
+        timeoutMs: 2000,
+        devtools: {
+          mode: "managed",
+          cliPath,
+          autoPort: port,
+        },
+      },
+      { cwd: process.cwd() },
+    );
+
+    assert.equal(result.status, "pass");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("miniprogram plugin uses managed DevTools defaults intentionally when omitted", async () => {
   const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
   const result = await miniprogramPlugin.run(
@@ -593,6 +678,24 @@ test("miniprogram plugin does not forward ambient env to local managed DevTools 
         "if [ -n \"$HARNESS_LEAK_TEST_SECRET\" ]; then",
         "  echo 'ambient env leaked' >&2",
         "  exit 3",
+        "fi",
+        "PORT=\"\"",
+        "while [ $# -gt 0 ]; do",
+        "  if [ \"$1\" = \"--auto-port\" ]; then",
+        "    shift",
+        "    PORT=\"$1\"",
+        "  fi",
+        "  shift",
+        "done",
+        "if [ -n \"$PORT\" ]; then",
+        `  \"${process.execPath}\" -e '`,
+        "const { createServer } = require(\"node:net\");",
+        "const port = Number(process.argv[1]);",
+        "const server = createServer((socket) => socket.end());",
+        "server.listen(port, \"127.0.0.1\", () => {",
+        "  setTimeout(() => server.close(() => process.exit(0)), 2000);",
+        "});",
+        "' \"$PORT\" >/dev/null 2>&1 &",
         "fi",
         "exit 0",
         "",

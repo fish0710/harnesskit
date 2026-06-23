@@ -84,9 +84,20 @@ translated copy that changes frequently.
 
 ## Runner Guidance
 
-The helper retries `automator.connect()` because `cli auto` can return before the
-WebSocket endpoint is fully ready. Keep that retry in project runners unless the
-project has a stronger readiness signal.
+Harness waits for the managed DevTools TCP port before starting the runner. The
+helper still retries `automator.connect()` because connect-mode gates and some
+DevTools versions can need a short post-start handshake.
+
+Write runners as user-flow checks. Prefer visible routes, text, stable
+automation classes, and list/card state. Avoid direct framework internals:
+
+- Do not use `page.callMethod()` for uni-app, Vue, uView, or component methods.
+  It calls native Page methods and often misses methods that the UI can invoke.
+- Do not assert raw `page.data()` fields for uni-app/Vue3 output. Compiled Page
+  data can be renamed or reshaped.
+- Use `element.tap()` for native taps, `element.input(value)` for inputs, and
+  `element.trigger("click")` only when a framework component's real public
+  event is `click`.
 
 Each runner closes the automator session in `finally` so repeated gate runs do not
 leave stale sessions behind.

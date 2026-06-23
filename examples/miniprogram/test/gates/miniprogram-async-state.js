@@ -1,7 +1,7 @@
 import {
   connectMiniProgram,
-  expectElement,
   relaunchAndWait,
+  tapElement,
   waitForText,
 } from "./miniprogram-template-helpers.js";
 
@@ -16,8 +16,7 @@ try {
   });
 
   const page = await relaunchAndWait(miniProgram, "/pages/index/index", ".page-ready");
-  const loadButton = await expectElement(page, ".load-button");
-  await loadButton.tap();
+  await tapElement(page, ".load-button");
   await waitForText(page, ".async-result", "loaded from mock");
   console.log("async state passed");
 } finally {

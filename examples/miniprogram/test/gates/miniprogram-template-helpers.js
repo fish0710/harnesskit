@@ -41,6 +41,24 @@ export async function expectText(page, selector, expected) {
   return actual;
 }
 
+export async function inputText(page, selector, value) {
+  const element = await expectElement(page, selector);
+  await element.input(value);
+  return element;
+}
+
+export async function tapElement(page, selector) {
+  const element = await expectElement(page, selector);
+  await element.tap();
+  return element;
+}
+
+export async function triggerElement(page, selector, event = "click", detail = {}) {
+  const element = await expectElement(page, selector);
+  await element.trigger(event, detail);
+  return element;
+}
+
 export async function waitForText(page, selector, expected, { attempts = 20, intervalMs = 500 } = {}) {
   let lastActual = "";
   for (let attempt = 1; attempt <= attempts; attempt += 1) {

@@ -61,6 +61,37 @@ expectExit: 0
 timeoutMs: 120000
 ```
 
+## MiniProgram Contract
+
+Mini-program gates run on the host because WeChat DevTools is a local macOS
+tool. Read `miniprogram-gates.md` before writing the contract or runner.
+
+```yaml
+id: mp.behavior
+type: miniprogram
+scenario: 小程序关键用户路径应保持可用
+projectPath: dist/build/mp-weixin
+runner: test/gates/mp-behavior-runner.js
+devtools:
+  mode: managed
+  cliPath: /Applications/wechatwebdevtools.app/Contents/MacOS/cli
+  autoPort: 9420
+  trustProject: true
+timeoutMs: 240000
+expectExit: 0
+ref: docs/specs/<date>-<slug>.md
+```
+
+Rules:
+
+- `projectPath` must point at the compiled mini-program artifact that contains
+  `project.config.json`, not at source pages.
+- Use a unique `autoPort` per concurrently selected mini-program contract.
+- Keep `test/gates` protected. The runner is a trusted host-side judge.
+- In runners, avoid `page.callMethod()` and raw `page.data()` assertions for
+  uni-app/Vue outputs; assert routes, text, stable selectors, and user-visible
+  state instead.
+
 ## Review Contract
 
 Use `review` for decisions that require the user's judgment. This intentionally blocks `harness run` with exit code 2 until resolved.
@@ -105,7 +136,8 @@ Keep protected paths broad. Only put implementation-owned paths in `candidateRoo
   "sandbox": {
     "candidateRoots": [
       "src",
-      "test"
+      "test",
+      "dist/build/mp-weixin"
     ],
     "protectedPaths": [
       "contracts",
@@ -159,6 +191,9 @@ Rules:
 - Task ids and series ids must be safe path segments: no `/`, `\`, `.`, `..`, empty string, or NUL.
 - If using `tasks`, prefer explicit task gate contracts over changed-file selection.
 - Do not include `contracts`, `.harness`, or `harness.config.json` in mutable roots unless the user is explicitly doing Harness configuration work before the run.
+- Include compiled mini-program artifact roots such as `dist/build/mp-weixin`
+  or `vue3-app/dist/build/mp-weixin` in `candidateRoots` when later
+  host-local mini-program gates must consume agent-built artifacts.
 - Do not include root `package.json`, lockfiles, `.nvmrc`, or build config in
   mutable roots when they are only setup inputs or legacy baseline. Put them in
   `protectedPaths` so Gate setup cannot consume Agent-mutated dependency state

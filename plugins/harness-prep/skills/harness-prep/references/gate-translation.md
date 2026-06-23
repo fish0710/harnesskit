@@ -31,7 +31,7 @@ If evidence or setup is unclear, ask the user. Do not guess contract fields.
 - "Service starts quickly" -> `boot` only for simple startup checks; prefer `gateSetup` + `http` for readiness.
 - "No forbidden imports/layers/dependencies" -> `structure` with an existing analyzer, or `command` if the project already has a script.
 - "Property must hold for generated samples" -> `invariant` only if a host properties module exists and can be passed with `--properties`.
-- "WeChat mini-program user flow" -> `miniprogram` with project path, runner, DevTools mode, timeout.
+- "WeChat mini-program user flow" -> `miniprogram`; read `miniprogram-gates.md` and use a host-local DevTools contract against the compiled artifact.
 - "Product owner must approve", "UX feels right", "migration risk acceptable", "is this intentional behavior change?" -> `review`.
 - "Agent should decide if this is okay" -> usually `review`; do not encode subjective approval as `cmd: true`.
 
@@ -42,6 +42,7 @@ If evidence or setup is unclear, ask the user. Do not guess contract fields.
 - Include `ref` to the spec or decision doc when possible.
 - Use `timeoutMs` for commands or external tools that can hang.
 - Keep gate runner files protected if they are trusted judging assets.
+- For mini-program gates, keep runners host-owned and assert visible UI behavior instead of framework internals.
 - For HTTP gates, `trigger.baseUrl` points inside the Gate sandbox. Start the service there.
 - For review gates, include at least one pass option and one fail option.
 
