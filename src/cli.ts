@@ -12,9 +12,9 @@
  *   contract freeze <file>                     # 冻结契约(打 hash,写回)
  */
 import { parseArgs } from "node:util";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve, extname } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import * as yaml from "js-yaml";
 
 import { GateCore } from "./gate.js";
@@ -1001,9 +1001,11 @@ async function main(): Promise<void> {
   }
 }
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
-) {
+function isMainModule(): boolean {
+  if (!process.argv[1]) return false;
+  return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+}
+
+if (isMainModule()) {
   main().catch((e) => fail(e instanceof Error ? e.message : String(e)));
 }
