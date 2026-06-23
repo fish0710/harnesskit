@@ -160,6 +160,7 @@ export interface RunRecordV3 {
   events: RunRecordEvent[];
   children?: RunRecordChild[];
   logs?: string[];
+  diagnosticLogPath?: string;
   report?: GateReport;
   publication?: PublicationResult;
   outcome?: RunRecordOutcome;
@@ -536,6 +537,11 @@ export class RunRecorder {
     this.write();
   }
 
+  setDiagnosticLogPath(path: string): void {
+    this.record.diagnosticLogPath = path;
+    this.write();
+  }
+
   complete(input: CompleteRunRecordInput): void {
     this.record.status = "completed";
     this.record.outcome = input.outcome;
@@ -713,6 +719,7 @@ function toRunRecordV3(value: unknown): RunRecordV3 | undefined {
       !record.children.every(isRunRecordChild)
     )) ||
     (record.logs !== undefined && !isStringArray(record.logs)) ||
+    (record.diagnosticLogPath !== undefined && typeof record.diagnosticLogPath !== "string") ||
     (record.report !== undefined && !isGateReport(record.report)) ||
     (record.publication !== undefined && !isPublicationResult(record.publication)) ||
     (record.outcome !== undefined && !isRunRecordOutcome(record.outcome)) ||

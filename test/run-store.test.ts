@@ -130,10 +130,43 @@ test("RunStore rejects v3 records with invalid optional fields", () => {
 
   const record = JSON.parse(readFileSync(recorder.path, "utf8")) as Record<string, unknown>;
   record.logs = "not an array";
+  record.diagnosticLogPath = 42;
   writeFileSync(recorder.path, JSON.stringify(record, null, 2), "utf8");
 
   assert.equal(store.readRun("run-store-invalid"), undefined);
   assert.deepEqual(store.listRuns(), []);
+});
+
+test("RunStore persists and reads diagnostic log path", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-run-store-diagnostic-log-"));
+  const store = new RunStore(cwd, {
+    now: () => "2026-06-18T12:00:00.000Z",
+    makeRunId: () => "run-store-diagnostic-log",
+    repoInfo: () => ({ root: cwd }),
+  });
+  const recorder = store.startRun({
+    kind: "single",
+    task: { description: "verbose run" },
+    driver: "scaffold",
+    observability: disabledObservability,
+  });
+
+  const diagnosticLogPath = join(
+    cwd,
+    ".harness",
+    "runs",
+    "run-store-diagnostic-log.log.jsonl",
+  );
+  recorder.setDiagnosticLogPath(diagnosticLogPath);
+  recorder.complete({
+    outcome: "ready_for_mr",
+    attempts: 1,
+    summary: passReport().summary,
+    logs: ["ok"],
+  });
+
+  const completed = store.readRun("run-store-diagnostic-log");
+  assert.equal(completed?.diagnosticLogPath, diagnosticLogPath);
 });
 
 test("RunStore rejects malformed series v3 metadata", () => {
