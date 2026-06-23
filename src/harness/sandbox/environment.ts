@@ -48,7 +48,6 @@ import {
 // /home/daytona/workspace/candidate.
 const REMOTE_ROOT = "/workspace/candidate";
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
-const AGENT_COMMAND_TIMEOUT_MS = 20 * 60 * 1000;
 
 export type SandboxAgentSpec =
   | { kind: "claude" }
@@ -481,7 +480,6 @@ export function createDaytonaRunEnvironment(
               command,
               REMOTE_ROOT,
               commandEnv,
-              AGENT_COMMAND_TIMEOUT_MS,
             );
           const streamPath = claudeObservationEnv.HARNESS_CLAUDE_STREAM_PATH;
           const commandPromise = runWithCommandHeartbeat({

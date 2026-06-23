@@ -1425,7 +1425,7 @@ test("Claude agent setup executes after preflight without using a PTY", async ()
   assert.equal(
     agent.executeCalls.find((call) => call.command === CLAUDE_COMMAND)
       ?.timeoutMs,
-    20 * 60 * 1000,
+    undefined,
   );
 });
 
