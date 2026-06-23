@@ -55,6 +55,8 @@ test("miniprogram prep skill documents host-local runner rules", () => {
 
   assert.match(skill, /references\/miniprogram-gates\.md/);
   assert.match(reference, /host-local/);
+  assert.match(reference, /harness preflight gate/);
+  assert.match(reference, /hostLocal\.<id>\.devtools/);
   assert.match(reference, /page\.callMethod\(\)/);
   assert.match(reference, /page\.data/);
   assert.match(reference, /uni-app/);

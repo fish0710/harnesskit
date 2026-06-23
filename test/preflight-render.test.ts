@@ -70,7 +70,7 @@ test("renderGatePreflightPretty summarizes readiness, setup, product, and host-l
   assert.match(rendered, /\[setup\] gateSetup\.1 exit=0: npm ci/);
   assert.match(rendered, /\[readiness\] contract\.command\.smoke\.runtime: node: command not found/);
   assert.match(rendered, /\[product-red\] domain\.regression/);
-  assert.match(rendered, /host-local contracts are not covered by Gate sandbox preflight: ui\.local/);
+  assert.match(rendered, /host-local contracts use host readiness checks and do not run inside the Gate sandbox: ui\.local/);
 });
 
 test("gatePreflightRunBlocker blocks readiness errors with actionable details", () => {

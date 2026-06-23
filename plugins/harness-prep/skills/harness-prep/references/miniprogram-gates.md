@@ -50,7 +50,9 @@ devtools:
 
 ## Host Prerequisites
 
-Before claiming a mini-program gate is ready, verify these host facts:
+Before claiming a mini-program gate is ready, verify these host facts. Current
+Harness Gate preflight also runs a host-local DevTools doctor for selected
+mini-program contracts before creating an Agent sandbox:
 
 - WeChat DevTools is installed at the configured `cliPath`.
 - DevTools security settings allow automation and default trust for automation
@@ -127,7 +129,18 @@ await submit.trigger("click");
 
 ## Validation Workflow
 
-Build first, then run the specific host-local gate:
+Run preflight before starting an Agent. For mini-program contracts, this checks
+host DevTools automation readiness with a temporary doctor project:
+
+```bash
+harness preflight gate --dir contracts --config harness.config.json --stage miniprogram-old --json
+```
+
+If this reports `hostLocal.<id>.devtools`, fix the host DevTools environment
+first. Do not retry the implementation Agent; it cannot start macOS WeChat
+DevTools from a Daytona sandbox.
+
+Build first when you want to run the actual host-local UI gate:
 
 ```bash
 npm run build:mp-weixin
@@ -142,6 +155,9 @@ Classify common failures:
 - `Failed connecting to ws://127.0.0.1:<port>`: DevTools automation is not
   available on that port, the wrong project window is open, or login/trust
   prerequisites are not met.
+- `hostLocal.<id>.devtools`: host DevTools automation readiness failed during
+  preflight. Inspect the included `islogin` and `auto` output before involving
+  the Agent.
 - `page.<method> not exists`, `Page data.orders must be an array`, or similar:
   the runner is coupled to framework internals instead of visible behavior.
 

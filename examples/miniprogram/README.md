@@ -40,6 +40,16 @@ Run managed mode through Harness:
 harness check --dir contracts --json
 ```
 
+Before starting a Daytona-backed Agent run, use preflight to verify that the
+host can start or reach WeChat DevTools automation:
+
+```bash
+harness preflight gate --dir contracts --json
+```
+
+If preflight reports `hostLocal.<id>.devtools`, fix the local DevTools login,
+security settings, trust prompt, or automation port before retrying the Agent.
+
 Managed mode starts the local WeChat DevTools automation endpoint:
 
 ```yaml

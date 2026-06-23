@@ -119,3 +119,111 @@ git diff --check
 ```text
 exit 0
 ```
+
+## Follow-up Verification: Host Preflight Doctor
+
+命令：
+
+```bash
+npm run check
+```
+
+结果：
+
+```text
+@harness/gate-core@0.2.0 check
+npm run build && npm run test
+
+tsc -p tsconfig.json
+tests 568
+pass 568
+fail 0
+exit 0
+```
+
+覆盖重点：
+
+- managed DevTools 启动前先执行 `cli islogin` 预热；
+- `cli auto` 使用短 DevTools readiness timeout，避免冷启动卡住时消耗完整契约
+  timeout；
+- Gate preflight 会对 host-local miniprogram 契约运行 DevTools doctor；
+- `hostLocal.<id>.devtools` readiness error 会在创建 Agent sandbox 前阻断；
+- pretty/json preflight 输出区分 host-local readiness 与 remote Gate sandbox；
+- `harness-prep` 小程序指南要求先跑 `harness preflight gate` 并解释
+  `hostLocal.<id>.devtools`。
+
+目标项目实测目录：
+
+```text
+/Users/zhongyy40/dev/miniprogram
+```
+
+命令：
+
+```bash
+harness preflight gate --dir contracts --config harness.config.json --stage mp-auto --json
+```
+
+结果：
+
+```json
+{
+  "outcome": "ready",
+  "selectedContracts": ["mp.behavior"],
+  "remoteContracts": [],
+  "hostLocalContracts": ["mp.behavior"],
+  "readinessErrors": [],
+  "productFailures": []
+}
+```
+
+实际 gate check 命令：
+
+```bash
+harness check --dir contracts --config harness.config.json --stage mp-auto --json
+```
+
+结果：
+
+```text
+outcome: fail
+id: mp.behavior
+status: error
+errorReason: 小程序项目目录不存在: dist/build/mp-weixin
+```
+
+该实测确认当前 Harness 侧不再卡在 `ws://127.0.0.1:9420` automation readiness；
+后续失败属于业务工作区缺少构建产物。
+
+插件校验与刷新：
+
+```bash
+python3 /Users/zhongyy40/.codex/skills/.system/skill-creator/scripts/quick_validate.py \
+  plugins/harness-prep/skills/harness-prep
+
+python3 /Users/zhongyy40/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py \
+  plugins/harness-prep
+
+codex plugin add harness-prep@harnesskit --json
+codex plugin list
+```
+
+结果：
+
+```text
+Skill is valid!
+Plugin validation passed: /Users/zhongyy40/workspace/harnesscli/harness/plugins/harness-prep
+harness-prep@harnesskit installed, enabled 0.1.0+codex.20260623082128
+```
+
+格式检查：
+
+```bash
+git diff --check
+```
+
+结果：
+
+```text
+exit 0
+```

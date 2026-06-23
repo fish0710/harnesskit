@@ -434,9 +434,11 @@ test("miniprogram plugin starts managed DevTools before runner", async () => {
   );
 
   assert.equal(result.status, "pass");
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.equal(calls[0]!.command, "/Applications/WeChatDevTools/cli");
-  assert.deepEqual(calls[0]!.args, [
+  assert.deepEqual(calls[0]!.args, ["islogin"]);
+  assert.deepEqual(calls[0]!.env, process.env.HOME ? { HOME: process.env.HOME } : {});
+  assert.deepEqual(calls[1]!.args, [
     "auto",
     "--project",
     resolve(process.cwd(), "test/fixtures/mp-project"),
@@ -444,9 +446,8 @@ test("miniprogram plugin starts managed DevTools before runner", async () => {
     "19420",
     "--trust-project",
   ]);
-  assert.deepEqual(calls[0]!.env, process.env.HOME ? { HOME: process.env.HOME } : {});
-  assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_WS_ENDPOINT, "ws://127.0.0.1:19420");
-  assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "19420");
+  assert.equal(calls[2]!.env?.HARNESS_MINIPROGRAM_WS_ENDPOINT, "ws://127.0.0.1:19420");
+  assert.equal(calls[2]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "19420");
 });
 
 test("miniprogram plugin waits for managed DevTools WebSocket before runner", async () => {
@@ -528,8 +529,9 @@ test("miniprogram plugin uses managed DevTools defaults intentionally when omitt
   );
 
   assert.equal(result.status, "pass");
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0]!.args, [
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[0]!.args, ["islogin"]);
+  assert.deepEqual(calls[1]!.args, [
     "auto",
     "--project",
     resolve(process.cwd(), "test/fixtures/mp-project"),
@@ -537,8 +539,8 @@ test("miniprogram plugin uses managed DevTools defaults intentionally when omitt
     "9420",
     "--trust-project",
   ]);
-  assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_WS_ENDPOINT, "ws://127.0.0.1:9420");
-  assert.equal(calls[1]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "9420");
+  assert.equal(calls[2]!.env?.HARNESS_MINIPROGRAM_WS_ENDPOINT, "ws://127.0.0.1:9420");
+  assert.equal(calls[2]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "9420");
 });
 
 test("miniprogram plugin defaults omitted devtools to managed mode", async () => {
@@ -554,9 +556,10 @@ test("miniprogram plugin defaults omitted devtools to managed mode", async () =>
   );
 
   assert.equal(result.status, "pass");
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.equal(calls[0]!.command, "/Applications/wechatwebdevtools.app/Contents/MacOS/cli");
-  assert.deepEqual(calls[0]!.args, [
+  assert.deepEqual(calls[0]!.args, ["islogin"]);
+  assert.deepEqual(calls[1]!.args, [
     "auto",
     "--project",
     resolve(process.cwd(), "test/fixtures/mp-project"),
@@ -585,8 +588,9 @@ test("miniprogram plugin honors managed trustProject false", async () => {
   );
 
   assert.equal(result.status, "pass");
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0]!.args, [
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[0]!.args, ["islogin"]);
+  assert.deepEqual(calls[1]!.args, [
     "auto",
     "--project",
     resolve(process.cwd(), "test/fixtures/mp-project"),
@@ -620,8 +624,9 @@ test("miniprogram plugin starts managed DevTools with real project path for syml
     );
 
     assert.equal(result.status, "pass");
-    assert.equal(calls.length, 2);
-    assert.deepEqual(calls[0]!.args, [
+    assert.equal(calls.length, 3);
+    assert.deepEqual(calls[0]!.args, ["islogin"]);
+    assert.deepEqual(calls[1]!.args, [
       "auto",
       "--project",
       projectReal,

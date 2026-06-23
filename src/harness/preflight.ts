@@ -1,4 +1,5 @@
 import type { GateCore } from "../gate.js";
+import { checkMiniProgramHostReadiness } from "../plugins/miniprogram.js";
 import type { GateReport, Contract, RunContext } from "../types.js";
 import { isHostLocalContract } from "./host-gate.js";
 import { createDaytonaExecutionTarget } from "./sandbox/daytona.js";
@@ -860,6 +861,27 @@ function cleanupFailure(error: unknown): PreflightFinding {
   );
 }
 
+async function runHostLocalPreflight(
+  contracts: Contract[],
+  ctx: RunContext,
+): Promise<PreflightFinding[]> {
+  const readinessErrors: PreflightFinding[] = [];
+  for (const contract of contracts) {
+    if (contract.type !== "miniprogram") continue;
+    const errorReason = await checkMiniProgramHostReadiness(contract, ctx);
+    if (errorReason) {
+      readinessErrors.push(finding(
+        `hostLocal.${contract.id}.devtools`,
+        "error",
+        errorReason,
+        "contract",
+        contract.id,
+      ));
+    }
+  }
+  return readinessErrors;
+}
+
 function finalOutcome(
   readinessErrors: PreflightFinding[],
   productFailures: string[],
@@ -900,6 +922,20 @@ export async function runGatePreflight(
       remoteContracts: remoteContracts.map((contract) => contract.id),
       hostLocalContracts: hostLocalContracts.map((contract) => contract.id),
       readinessErrors: staticErrors,
+      productFailures: [],
+    };
+  }
+
+  const hostLocalReadinessErrors = await runHostLocalPreflight(hostLocalContracts, options.ctx);
+  if (hostLocalReadinessErrors.length > 0) {
+    return {
+      outcome: "not_ready",
+      staticFindings,
+      setup: [],
+      selectedContracts,
+      remoteContracts: remoteContracts.map((contract) => contract.id),
+      hostLocalContracts: hostLocalContracts.map((contract) => contract.id),
+      readinessErrors: hostLocalReadinessErrors,
       productFailures: [],
     };
   }
@@ -1050,7 +1086,7 @@ export function renderGatePreflightPretty(report: GatePreflightReport): string {
   }
   if (report.hostLocalContracts.length > 0) {
     lines.push(
-      "[info] host-local contracts are not covered by Gate sandbox preflight: " +
+      "[info] host-local contracts use host readiness checks and do not run inside the Gate sandbox: " +
         report.hostLocalContracts.join(", "),
     );
   }

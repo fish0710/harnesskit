@@ -1,6 +1,6 @@
 {
   "name": "harness-prep",
-  "version": "0.1.0+codex.20260623081235",
+  "version": "0.1.0+codex.20260623082128",
   "description": "Prepare Harness requirements, gates, config, and run workflows from natural-language tasks.",
   "author": {
     "name": "Harness"

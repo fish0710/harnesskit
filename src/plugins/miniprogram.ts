@@ -1,6 +1,7 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
-import { isAbsolute, normalize, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 import {
   commandEvidenceError,
@@ -21,7 +22,7 @@ type DevtoolsParseResult =
   | { ok: true; config: DevtoolsConfig }
   | { ok: false; errorReason: string };
 
-interface MiniProgramContract extends Contract {
+export interface MiniProgramContract extends Contract {
   projectPath?: unknown;
   runner?: unknown;
   devtools?: unknown;
@@ -161,6 +162,24 @@ function managedDevtoolsEnv(): Record<string, string> {
     : {};
 }
 
+function devtoolsCommandTimeoutMs(timeoutMs: number | undefined): number {
+  return Math.min(timeoutMs ?? DEFAULT_DEVTOOLS_READY_TIMEOUT_MS, DEFAULT_DEVTOOLS_READY_TIMEOUT_MS);
+}
+
+function commandEvidenceOutput(evidence: { stderr: string; stdout: string }): string {
+  return boundedCommandOutput(evidence.stderr, evidence.stdout) ?? "(无输出)";
+}
+
+function managedDevtoolsDiagnostics(
+  warmup: { stderr: string; stdout: string } | undefined,
+  auto: { stderr: string; stdout: string } | undefined,
+): string {
+  const sections: string[] = [];
+  if (warmup) sections.push(`islogin ${commandEvidenceOutput(warmup)}`);
+  if (auto) sections.push(`auto ${commandEvidenceOutput(auto)}`);
+  return sections.join("\n");
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
@@ -186,12 +205,13 @@ async function waitForManagedDevtoolsPort(
   port: number,
   timeoutMs: number | undefined,
   signal: AbortSignal | undefined,
+  host = "127.0.0.1",
 ): Promise<boolean> {
   const budgetMs = Math.min(timeoutMs ?? DEFAULT_DEVTOOLS_READY_TIMEOUT_MS, DEFAULT_DEVTOOLS_READY_TIMEOUT_MS);
   const deadline = performance.now() + budgetMs;
   while (performance.now() <= deadline) {
     if (signal?.aborted) return false;
-    if (await tryTcpConnect("127.0.0.1", port)) return true;
+    if (await tryTcpConnect(host, port)) return true;
     await sleep(DEVTOOLS_READY_POLL_MS);
   }
   return false;
@@ -206,6 +226,41 @@ async function startManagedDevtools(
   trustProject: boolean,
   timeoutMs: number | undefined,
 ): Promise<CheckResult | undefined> {
+  const startedAt = performance.now();
+  const commandTimeoutMs = devtoolsCommandTimeoutMs(timeoutMs);
+  const warmupId = executionId();
+  const warmupEvidence = await (ctx.execution ?? localExecutionTarget).execute({
+    executionId: warmupId,
+    command: cliPath,
+    args: ["islogin"],
+    cwd: ctx.cwd,
+    timeoutMs: commandTimeoutMs,
+    signal: ctx.signal,
+    env: managedDevtoolsEnv(),
+  });
+  const warmupEvidenceError = commandEvidenceError(warmupId, warmupEvidence);
+  if (warmupEvidenceError) {
+    return {
+      id: contract.id,
+      type: "miniprogram",
+      status: "error",
+      durationMs: performance.now() - startedAt,
+      violations: [],
+      errorReason: `微信开发者工具预热失败或证据不可信: ${warmupEvidenceError}\n` +
+        managedDevtoolsDiagnostics(warmupEvidence, undefined),
+    };
+  }
+  if (warmupEvidence.exitCode !== 0) {
+    return {
+      id: contract.id,
+      type: "miniprogram",
+      status: "error",
+      durationMs: performance.now() - startedAt,
+      violations: [],
+      errorReason: `微信开发者工具预热退出码 ${warmupEvidence.exitCode}: ${commandEvidenceOutput(warmupEvidence)}`,
+    };
+  }
+
   const args = [
     "auto",
     "--project",
@@ -220,7 +275,7 @@ async function startManagedDevtools(
     command: cliPath,
     args,
     cwd: ctx.cwd,
-    timeoutMs,
+    timeoutMs: commandTimeoutMs,
     signal: ctx.signal,
     env: managedDevtoolsEnv(),
   });
@@ -230,9 +285,10 @@ async function startManagedDevtools(
       id: contract.id,
       type: "miniprogram",
       status: "error",
-      durationMs: evidence.durationMs,
+      durationMs: performance.now() - startedAt,
       violations: [],
-      errorReason: `微信开发者工具启动失败或证据不可信: ${evidenceError}`,
+      errorReason: `微信开发者工具启动失败或证据不可信: ${evidenceError}\n` +
+        managedDevtoolsDiagnostics(warmupEvidence, evidence),
     };
   }
   if (evidence.exitCode !== 0) {
@@ -240,11 +296,10 @@ async function startManagedDevtools(
       id: contract.id,
       type: "miniprogram",
       status: "error",
-      durationMs: evidence.durationMs,
+      durationMs: performance.now() - startedAt,
       violations: [],
-      errorReason: `微信开发者工具启动退出码 ${evidence.exitCode}: ${
-        boundedCommandOutput(evidence.stderr, evidence.stdout) ?? "(无输出)"
-      }`,
+      errorReason: `微信开发者工具启动退出码 ${evidence.exitCode}: ${commandEvidenceOutput(evidence)}\n` +
+        managedDevtoolsDiagnostics(warmupEvidence, evidence),
     };
   }
   if (!ctx.execution) {
@@ -254,13 +309,79 @@ async function startManagedDevtools(
         id: contract.id,
         type: "miniprogram",
         status: "error",
-        durationMs: evidence.durationMs,
+        durationMs: performance.now() - startedAt,
         violations: [],
-        errorReason: `微信开发者工具自动化 WebSocket 未就绪: ws://127.0.0.1:${port}`,
+        errorReason: `微信开发者工具自动化 WebSocket 未就绪: ws://127.0.0.1:${port}\n` +
+          `project: ${projectAbs}\n` +
+          managedDevtoolsDiagnostics(warmupEvidence, evidence),
       };
     }
   }
   return undefined;
+}
+
+function writeDoctorProject(root: string): void {
+  writeFileSync(
+    join(root, "project.config.json"),
+    JSON.stringify({ appid: "touristappid", projectname: "harness-miniprogram-doctor", miniprogramRoot: "./" }) + "\n",
+  );
+  writeFileSync(join(root, "app.json"), JSON.stringify({ pages: ["pages/index/index"] }) + "\n");
+  writeFileSync(join(root, "app.js"), "App({})\n");
+  mkdirSync(join(root, "pages/index"), { recursive: true });
+  writeFileSync(join(root, "pages/index/index.wxml"), "<view class=\"page-ready\">ok</view>\n");
+  writeFileSync(join(root, "pages/index/index.js"), "Page({})\n");
+  writeFileSync(join(root, "pages/index/index.json"), "{}\n");
+}
+
+function tcpPortFromWsEndpoint(wsEndpoint: string): { host: string; port: number } | undefined {
+  try {
+    const url = new URL(wsEndpoint);
+    if (url.protocol !== "ws:" && url.protocol !== "wss:") return undefined;
+    const port = Number(url.port || (url.protocol === "wss:" ? 443 : 80));
+    if (!isValidTcpPort(port)) return undefined;
+    return { host: url.hostname || "127.0.0.1", port };
+  } catch {
+    return undefined;
+  }
+}
+
+export async function checkMiniProgramHostReadiness(
+  contract: MiniProgramContract,
+  ctx: RunContext,
+): Promise<string | undefined> {
+  const devtoolsParse = parseDevtools(contract.devtools);
+  if (!devtoolsParse.ok) return devtoolsParse.errorReason;
+  const devtools = devtoolsParse.config;
+  const timeoutMs = typeof contract.timeoutMs === "number" ? contract.timeoutMs : undefined;
+  if (devtools.mode === "connect") {
+    if (!devtools.wsEndpoint) return "miniprogram devtools requires a WebSocket endpoint";
+    if (ctx.execution) return undefined;
+    const target = tcpPortFromWsEndpoint(devtools.wsEndpoint);
+    if (!target) return `miniprogram devtools.wsEndpoint 无法解析: ${devtools.wsEndpoint}`;
+    const ready = await waitForManagedDevtoolsPort(target.port, timeoutMs, ctx.signal, target.host);
+    return ready ? undefined : `微信开发者工具自动化 WebSocket 未就绪: ${devtools.wsEndpoint}`;
+  }
+
+  const cliPath = devtools.cliPath ?? DEFAULT_DEVTOOLS_CLI;
+  if (!existsSync(cliPath) && !ctx.execution) {
+    return `微信开发者工具 CLI 不存在: ${cliPath}`;
+  }
+  const root = mkdtempSync(join(tmpdir(), "harness-miniprogram-doctor-"));
+  try {
+    writeDoctorProject(root);
+    const result = await startManagedDevtools(
+      contract,
+      ctx,
+      cliPath,
+      root,
+      devtools.autoPort ?? DEFAULT_AUTO_PORT,
+      devtools.trustProject !== false,
+      timeoutMs,
+    );
+    return result?.errorReason;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 export const miniprogramPlugin: Plugin = {

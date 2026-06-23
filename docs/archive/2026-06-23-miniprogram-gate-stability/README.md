@@ -71,3 +71,38 @@ Harness commit。
 Harness 现在对 managed 小程序门禁的本机 DevTools 连接竞态更稳；`harness-prep`
 也会把 agent 引导到 host-local 小程序门禁模型和 UI-level runner 写法，避免把
 业务 runner 绑定到 uni-app/Vue 编译内部。
+
+## Follow-up: Host Preflight Doctor
+
+同日追加的优化来自 `/Users/zhongyy40/dev/miniprogram` 的一次真实 Harness
+任务复盘。该任务的 host-local 小程序门禁在 Agent 生成候选文件后失败于：
+
+```text
+微信开发者工具自动化 WebSocket 未就绪: ws://127.0.0.1:9420
+```
+
+复盘结论是：这类失败属于宿主机 DevTools 自动化环境 readiness，而不是 Agent
+能通过修改业务源码解决的问题。因此本次追加：
+
+- `harness preflight gate` 会对选中的 host-local `type: miniprogram` 契约先跑
+  DevTools doctor；
+- managed mode doctor 使用临时小程序项目执行 `cli islogin`、`cli auto` 并等待
+  automation TCP port 就绪；
+- readiness 失败会以 `hostLocal.<contract-id>.devtools` 阻断，不再创建 Agent
+  sandbox 或消耗多轮实现尝试；
+- `cli auto` 冷启动卡住时使用较短 DevTools 命令超时，并在错误中带上
+  `islogin` 和 `auto` 的 stdout/stderr 证据；
+- `connect` mode preflight 会校验 `wsEndpoint` 并在本地执行路径下检查 TCP 端口；
+- `harness-prep` 指南要求先跑 preflight，再启动 Agent，并明确
+  `hostLocal.<id>.devtools` 应先修宿主机 DevTools 环境。
+
+在 `/Users/zhongyy40/dev/miniprogram` 的当前实测中，`mp-auto` 预检已返回
+`ready`。随后实际 `harness check` 的失败点转移为：
+
+```text
+小程序项目目录不存在: dist/build/mp-weixin
+```
+
+这说明 Harness 已经能提前证明 DevTools automation readiness；当前业务项目剩余
+问题是候选构建产物未发布回 host workspace，而不是 `ws://127.0.0.1:9420`
+自动化端口不可达。
