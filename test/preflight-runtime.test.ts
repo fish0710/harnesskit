@@ -432,7 +432,7 @@ test("host-local miniprogram preflight warms and verifies DevTools before agent 
   assert.equal(report.outcome, "ready");
   assert.deepEqual(report.readinessErrors, []);
   assert.deepEqual(provider.requests, []);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.equal(calls[0]!.command, "/Applications/WeChatDevTools/cli");
   assert.deepEqual(calls[0]!.args, ["islogin"]);
   assert.equal(calls[1]!.command, "/Applications/WeChatDevTools/cli");
@@ -443,6 +443,8 @@ test("host-local miniprogram preflight warms and verifies DevTools before agent 
     "--auto-port",
     "19420",
   ]);
+  assert.equal(calls[2]!.command, "/Applications/WeChatDevTools/cli");
+  assert.deepEqual(calls[2]!.args, ["quit"]);
 });
 
 test("host-local miniprogram preflight blocks when DevTools readiness fails", async () => {

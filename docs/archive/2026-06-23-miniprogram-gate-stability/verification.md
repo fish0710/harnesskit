@@ -23,7 +23,8 @@ exit 0
 
 覆盖重点：
 
-- `miniprogram` managed DevTools 启动后等待 automation TCP port ready；
+- `miniprogram` managed DevTools 启动后等待 automation WebSocket 返回
+  `Tool.getInfo.SDKVersion`；
 - host-local miniprogram gates 仍与 Daytona remote gate 流程兼容；
 - 小程序失败会反馈给 agent，重复失败会升级到 `human_review_contract`；
 - `examples/miniprogram` runner 模板语法可通过 Node syntax check；
@@ -50,13 +51,14 @@ fail 0
 
 重点测试：
 
-- `miniprogram plugin waits for managed DevTools WebSocket before runner`
-  - fake DevTools CLI 先返回 0，再延迟监听 `autoPort`；
-  - runner 只有在端口可连接后才退出 0；
-  - 无 readiness wait 时该用例会失败。
+- `miniprogram plugin waits for managed DevTools automation protocol before runner`
+  - fake DevTools CLI 先返回 0；
+  - runner 只有在 automation 协议返回 `SDKVersion` 后才启动；
+  - 无 protocol readiness wait 时该用例会失败。
 - `miniprogram plugin does not forward ambient env to local managed DevTools startup`
   - 保持最小环境传递策略；
-  - 测试 CLI 在隔离环境里自己启动临时 TCP listener，避免 readiness wait 误判。
+  - 测试 CLI 在隔离环境里自己启动临时 readiness endpoint，避免 startup wait
+    误判。
 - `miniprogram prep skill documents host-local runner rules`
   - 锁住 skill/README 对 host-local、uni-app/Vue、`page.callMethod()`、
     `page.data`、`trigger("click")` 和 helper exports 的说明。
@@ -118,6 +120,105 @@ git diff --check
 
 ```text
 exit 0
+```
+
+## Follow-up Verification: Protocol Readiness And Doctor Cleanup
+
+Review 发现的问题：
+
+```text
+npx -y node@20 -e "console.log(process.version, typeof WebSocket)"
+v20.20.2 undefined
+```
+
+因此不能只依赖 Node 全局 `WebSocket`；Harness 需要在 Node 20 下也能探测
+DevTools automation WebSocket。
+
+RED 命令：
+
+```bash
+npm run build && node --test dist/test/miniprogram-plugin.test.js
+```
+
+RED 结果：
+
+```text
+miniprogram plugin probes automation protocol when global WebSocket is unavailable
+actual: error
+expected: pass
+```
+
+GREEN 命令：
+
+```bash
+npm run build && node --test \
+  dist/test/miniprogram-plugin.test.js \
+  dist/test/preflight-runtime.test.js \
+  dist/test/miniprogram-templates.test.js
+```
+
+GREEN 结果：
+
+```text
+tests 70
+pass 70
+fail 0
+```
+
+全量验证：
+
+```bash
+npm run check
+```
+
+结果：
+
+```text
+tests 571
+pass 571
+fail 0
+```
+
+最小真实小程序验证目录：
+
+```text
+/Users/zhongyy40/workspace/miniprogram-doctor-lab
+```
+
+串行命令：
+
+```bash
+harness preflight gate --dir contracts --json
+harness check --dir contracts --json
+lsof -nP -iTCP:9420 -sTCP:LISTEN || true
+```
+
+结果：
+
+```text
+preflight outcome: ready
+check outcome: pass, mp.behavior pass
+9420 listener after preflight: none
+```
+
+插件和格式校验：
+
+```bash
+python3 /Users/zhongyy40/.codex/skills/.system/skill-creator/scripts/quick_validate.py \
+  plugins/harness-prep/skills/harness-prep
+
+python3 /Users/zhongyy40/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py \
+  plugins/harness-prep
+
+git diff --check
+```
+
+结果：
+
+```text
+Skill is valid!
+Plugin validation passed
+git diff --check exit 0
 ```
 
 ## Follow-up Verification: Host Preflight Doctor

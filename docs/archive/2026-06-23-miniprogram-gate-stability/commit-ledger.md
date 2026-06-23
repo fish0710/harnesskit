@@ -144,3 +144,82 @@ The doctor validates host DevTools automation readiness before Agent work. It
 does not reconstruct unpublished candidate artifacts from failed Harness runs;
 business workspaces still need their `projectPath` build output present before
 the actual miniprogram UI gate can run.
+
+## Follow-up Commit: Protocol Readiness And Doctor Cleanup
+
+Base commit before this follow-up:
+
+```text
+e86ab5c
+```
+
+Follow-up archive commit: the commit containing this section.
+
+### Review Findings
+
+Local review found one important issue before commit: the implementation used
+Node's global `WebSocket`, but the package supports Node `>=20` and
+`npx -y node@20 -e "console.log(process.version, typeof WebSocket)"` returned
+`v20.20.2 undefined`. The final implementation includes a raw TCP WebSocket
+handshake fallback for Node 20.
+
+### Scope
+
+This follow-up covers the DevTools root-path regression shown by the real UI:
+
+- wait for automation protocol readiness via `Tool.getInfo.SDKVersion`, not
+  plain TCP port readiness;
+- close the doctor DevTools session with `cli quit` after preflight;
+- wait for `autoPort` release before removing the temporary doctor project;
+- keep the doctor project directory if cleanup fails, avoiding a DevTools window
+  pointing at a deleted path;
+- add Node 20-compatible raw WebSocket handshake probing;
+- document that preflight and actual mini-program gate must not race on the
+  same `autoPort`.
+
+### Key Files
+
+```text
+src/plugins/miniprogram.ts
+test/miniprogram-plugin.test.ts
+test/preflight-runtime.test.ts
+examples/miniprogram/README.md
+plugins/harness-prep/.codex-plugin/plugin.json
+plugins/harness-prep/skills/harness-prep/references/miniprogram-gates.md
+docs/archive/2026-06-23-miniprogram-gate-stability/
+```
+
+### Verification Before Commit
+
+```text
+npm run build && node --test dist/test/miniprogram-plugin.test.js
+npm run build && node --test dist/test/miniprogram-plugin.test.js dist/test/preflight-runtime.test.js dist/test/miniprogram-templates.test.js
+npm run check
+npx -y node@20 -e "console.log(process.version, typeof WebSocket)"
+harness preflight gate --dir contracts --json
+harness check --dir contracts --json
+python3 .../quick_validate.py plugins/harness-prep/skills/harness-prep
+python3 .../validate_plugin.py plugins/harness-prep
+git diff --check
+```
+
+Observed result:
+
+```text
+miniprogram-plugin targeted: tests 54, pass 54, fail 0
+targeted miniprogram/preflight/templates: tests 70, pass 70, fail 0
+full suite: tests 571, pass 571, fail 0
+Node 20 WebSocket check: v20.20.2 undefined
+/Users/zhongyy40/workspace/miniprogram-doctor-lab preflight: outcome ready
+/Users/zhongyy40/workspace/miniprogram-doctor-lab check: outcome pass
+post-preflight 9420 listener: none
+Skill is valid!
+Plugin validation passed
+git diff --check exit 0
+```
+
+### Residual Risk
+
+The doctor still necessarily launches local WeChat DevTools during host-local
+preflight. Users should avoid running preflight and an actual mini-program gate
+concurrently on the same `autoPort`.

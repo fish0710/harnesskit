@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -68,6 +69,100 @@ function freeTcpPort(): Promise<number> {
       });
     });
   });
+}
+
+function installFakeAutomationWebSocket(options: {
+  endpoint?: string;
+  readyAfterSends?: number;
+} = {}): { restore: () => void; sends: () => number } {
+  const globalWithWebSocket = globalThis as Record<string, unknown>;
+  const originalWebSocket = globalWithWebSocket.WebSocket;
+  const readyAfterSends = options.readyAfterSends ?? 1;
+  let sends = 0;
+
+  class FakeAutomationWebSocket {
+    onopen: (() => void) | undefined;
+    onmessage: ((event: { data: string }) => void) | undefined;
+    onerror: ((event: unknown) => void) | undefined;
+    onclose: (() => void) | undefined;
+
+    constructor(readonly url: string) {
+      if (options.endpoint) assert.equal(url, options.endpoint);
+      setTimeout(() => this.onopen?.(), 0);
+    }
+
+    send(payload: string): void {
+      sends += 1;
+      const request = JSON.parse(payload) as { id: unknown };
+      const result = sends < readyAfterSends
+        ? { version: "2.01.2510290" }
+        : { version: "2.01.2510290", SDKVersion: "3.15.2" };
+      setTimeout(() => {
+        this.onmessage?.({ data: JSON.stringify({ id: request.id, result }) });
+      }, 0);
+    }
+
+    close(): void {
+      this.onclose?.();
+    }
+  }
+
+  globalWithWebSocket.WebSocket = FakeAutomationWebSocket;
+  return {
+    restore() {
+      if (originalWebSocket === undefined) {
+        Reflect.deleteProperty(globalWithWebSocket, "WebSocket");
+      } else {
+        globalWithWebSocket.WebSocket = originalWebSocket;
+      }
+    },
+    sends: () => sends,
+  };
+}
+
+function websocketAcceptKey(key: string): string {
+  return createHash("sha1")
+    .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+    .digest("base64");
+}
+
+function decodeWebSocketTextFrame(buffer: Buffer): string | undefined {
+  if (buffer.length < 2) return undefined;
+  const masked = (buffer[1]! & 0x80) !== 0;
+  let length = buffer[1]! & 0x7f;
+  let offset = 2;
+  if (length === 126) {
+    if (buffer.length < 4) return undefined;
+    length = buffer.readUInt16BE(2);
+    offset = 4;
+  }
+  if (length === 127) return undefined;
+  let mask: Buffer | undefined;
+  if (masked) {
+    if (buffer.length < offset + 4) return undefined;
+    mask = buffer.subarray(offset, offset + 4);
+    offset += 4;
+  }
+  if (buffer.length < offset + length) return undefined;
+  const payload = Buffer.from(buffer.subarray(offset, offset + length));
+  if (mask) {
+    for (let index = 0; index < payload.length; index += 1) {
+      payload[index] = payload[index]! ^ mask[index % 4]!;
+    }
+  }
+  return payload.toString("utf8");
+}
+
+function encodeWebSocketTextFrame(text: string): Buffer {
+  const payload = Buffer.from(text);
+  if (payload.length < 126) {
+    return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
+  }
+  const header = Buffer.alloc(4);
+  header[0] = 0x81;
+  header[1] = 126;
+  header.writeUInt16BE(payload.length, 2);
+  return Buffer.concat([header, payload]);
 }
 
 test("miniprogram plugin registers under a stable type", () => {
@@ -450,44 +545,18 @@ test("miniprogram plugin starts managed DevTools before runner", async () => {
   assert.equal(calls[2]!.env?.HARNESS_MINIPROGRAM_DEVTOOLS_PORT, "19420");
 });
 
-test("miniprogram plugin waits for managed DevTools WebSocket before runner", async () => {
+test("miniprogram plugin waits for managed DevTools automation protocol before runner", async () => {
   const port = await freeTcpPort();
   const root = mkdtempSync(`${process.cwd()}/test/fixtures/mp-managed-ready-`);
+  const fakeWebSocket = installFakeAutomationWebSocket({ endpoint: `ws://127.0.0.1:${port}` });
   try {
     const cliPath = `${root}/cli.sh`;
     const projectPath = `${root}/project`;
     const runnerPath = `${root}/runner.cjs`;
     mkdirSync(projectPath);
     writeFileSync(`${projectPath}/project.config.json`, "{}\n");
-    writeFileSync(
-      cliPath,
-      [
-        "#!/bin/sh",
-        `\"${process.execPath}\" -e '`,
-        "const { createServer } = require(\"node:net\");",
-        "const port = Number(process.argv[1]);",
-        "setTimeout(() => {",
-        "  const server = createServer((socket) => socket.end());",
-        "  server.listen(port, \"127.0.0.1\", () => {",
-        "    setTimeout(() => server.close(() => process.exit(0)), 2000);",
-        "  });",
-        "}, 80);",
-        `' \"${port}\" >/dev/null 2>&1 &`,
-        "exit 0",
-        "",
-      ].join("\n"),
-    );
-    writeFileSync(
-      runnerPath,
-      [
-        "const { createConnection } = require('node:net');",
-        "const port = Number(process.env.HARNESS_MINIPROGRAM_DEVTOOLS_PORT);",
-        "const socket = createConnection({ host: '127.0.0.1', port });",
-        "socket.once('connect', () => { socket.destroy(); process.exit(0); });",
-        "socket.once('error', () => { process.exit(1); });",
-        "",
-      ].join("\n"),
-    );
+    writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+    writeFileSync(runnerPath, "process.exit(0)\n");
     chmodSync(cliPath, 0o755);
 
     const result = await miniprogramPlugin.run(
@@ -507,7 +576,134 @@ test("miniprogram plugin waits for managed DevTools WebSocket before runner", as
     );
 
     assert.equal(result.status, "pass");
+    assert.equal(fakeWebSocket.sends(), 1);
   } finally {
+    fakeWebSocket.restore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("miniprogram plugin retries until managed DevTools automation protocol reports SDKVersion", async () => {
+  const root = mkdtempSync(`${process.cwd()}/test/fixtures/mp-managed-protocol-`);
+  const fakeWebSocket = installFakeAutomationWebSocket({
+    endpoint: "ws://127.0.0.1:19420",
+    readyAfterSends: 3,
+  });
+  try {
+    const cliPath = `${root}/cli.sh`;
+    const projectPath = `${root}/project`;
+    const runnerPath = `${root}/runner.cjs`;
+    mkdirSync(projectPath);
+    writeFileSync(`${projectPath}/project.config.json`, "{}\n");
+    writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+    writeFileSync(runnerPath, "process.exit(0)\n");
+    chmodSync(cliPath, 0o755);
+
+    const result = await miniprogramPlugin.run(
+      {
+        id: "mp.managed.protocol",
+        type: "miniprogram",
+        projectPath: relative(process.cwd(), projectPath),
+        runner: relative(process.cwd(), runnerPath),
+        timeoutMs: 1000,
+        devtools: {
+          mode: "managed",
+          cliPath,
+          autoPort: 19420,
+        },
+      },
+      { cwd: process.cwd() },
+    );
+
+    assert.equal(result.status, "pass");
+    assert.equal(fakeWebSocket.sends(), 3);
+  } finally {
+    fakeWebSocket.restore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("miniprogram plugin probes automation protocol when global WebSocket is unavailable", async () => {
+  const port = await freeTcpPort();
+  const root = mkdtempSync(`${process.cwd()}/test/fixtures/mp-managed-raw-ws-`);
+  const globalWithWebSocket = globalThis as Record<string, unknown>;
+  const originalWebSocket = globalWithWebSocket.WebSocket;
+  let protocolRequests = 0;
+  const server = createServer((socket) => {
+    let handshook = false;
+    let pending = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      pending = Buffer.concat([pending, chunk]);
+      if (!handshook) {
+        const request = pending.toString("utf8");
+        const headerEnd = request.indexOf("\r\n\r\n");
+        if (headerEnd === -1) return;
+        const key = request.match(/^Sec-WebSocket-Key: (.+)$/im)?.[1]?.trim();
+        assert.ok(key);
+        socket.write([
+          "HTTP/1.1 101 Switching Protocols",
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Accept: ${websocketAcceptKey(key)}`,
+          "",
+          "",
+        ].join("\r\n"));
+        pending = pending.subarray(headerEnd + 4);
+        handshook = true;
+      }
+
+      const text = decodeWebSocketTextFrame(pending);
+      if (!text) return;
+      protocolRequests += 1;
+      const request = JSON.parse(text) as { id: unknown };
+      socket.write(encodeWebSocketTextFrame(JSON.stringify({
+        id: request.id,
+        result: { version: "2.01.2510290", SDKVersion: "3.15.2" },
+      })));
+    });
+  });
+
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(port, "127.0.0.1", () => resolveListen());
+  });
+
+  Reflect.deleteProperty(globalWithWebSocket, "WebSocket");
+  try {
+    const cliPath = `${root}/cli.sh`;
+    const projectPath = `${root}/project`;
+    const runnerPath = `${root}/runner.cjs`;
+    mkdirSync(projectPath);
+    writeFileSync(`${projectPath}/project.config.json`, "{}\n");
+    writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+    writeFileSync(runnerPath, "process.exit(0)\n");
+    chmodSync(cliPath, 0o755);
+
+    const result = await miniprogramPlugin.run(
+      {
+        id: "mp.managed.raw-ws",
+        type: "miniprogram",
+        projectPath: relative(process.cwd(), projectPath),
+        runner: relative(process.cwd(), runnerPath),
+        timeoutMs: 2000,
+        devtools: {
+          mode: "managed",
+          cliPath,
+          autoPort: port,
+        },
+      },
+      { cwd: process.cwd() },
+    );
+
+    assert.equal(result.status, "pass");
+    assert.equal(protocolRequests, 1);
+  } finally {
+    if (originalWebSocket === undefined) {
+      Reflect.deleteProperty(globalWithWebSocket, "WebSocket");
+    } else {
+      globalWithWebSocket.WebSocket = originalWebSocket;
+    }
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -675,6 +871,7 @@ test("miniprogram plugin does not forward ambient env to local managed DevTools 
   const cliDir = mkdtempSync(`${process.cwd()}/test/fixtures/mp-devtools-cli-`);
   const cliPath = `${cliDir}/cli.js`;
   const originalSecret = process.env.HARNESS_LEAK_TEST_SECRET;
+  const fakeWebSocket = installFakeAutomationWebSocket({ endpoint: "ws://127.0.0.1:19420" });
   try {
     writeFileSync(
       cliPath,
@@ -726,7 +923,9 @@ test("miniprogram plugin does not forward ambient env to local managed DevTools 
 
     assert.equal(result.status, "pass");
     assert.doesNotMatch(result.errorReason ?? "", /ambient env leaked/);
+    assert.equal(fakeWebSocket.sends(), 1);
   } finally {
+    fakeWebSocket.restore();
     if (originalSecret === undefined) {
       delete process.env.HARNESS_LEAK_TEST_SECRET;
     } else {

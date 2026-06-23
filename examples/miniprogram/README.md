@@ -94,9 +94,10 @@ translated copy that changes frequently.
 
 ## Runner Guidance
 
-Harness waits for the managed DevTools TCP port before starting the runner. The
-helper still retries `automator.connect()` because connect-mode gates and some
-DevTools versions can need a short post-start handshake.
+Harness waits for the managed DevTools automation WebSocket to answer
+`Tool.getInfo` with `SDKVersion` before starting the runner. The helper still
+retries `automator.connect()` because connect-mode gates and some DevTools
+versions can need a short post-start handshake.
 
 Write runners as user-flow checks. Prefer visible routes, text, stable
 automation classes, and list/card state. Avoid direct framework internals:

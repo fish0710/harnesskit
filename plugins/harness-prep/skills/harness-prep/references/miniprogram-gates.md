@@ -130,7 +130,9 @@ await submit.trigger("click");
 ## Validation Workflow
 
 Run preflight before starting an Agent. For mini-program contracts, this checks
-host DevTools automation readiness with a temporary doctor project:
+host DevTools automation readiness with a temporary doctor project. Readiness
+means the automation WebSocket answers `Tool.getInfo` with `SDKVersion`, not
+just that the TCP port is listening:
 
 ```bash
 harness preflight gate --dir contracts --config harness.config.json --stage miniprogram-old --json
@@ -139,6 +141,10 @@ harness preflight gate --dir contracts --config harness.config.json --stage mini
 If this reports `hostLocal.<id>.devtools`, fix the host DevTools environment
 first. Do not retry the implementation Agent; it cannot start macOS WeChat
 DevTools from a Daytona sandbox.
+
+Do not run preflight and the actual mini-program gate concurrently on the same
+`autoPort`; WeChat DevTools exposes one automation project per port and the two
+commands will race.
 
 Build first when you want to run the actual host-local UI gate:
 
