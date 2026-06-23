@@ -68,6 +68,7 @@ import { createProject } from "./harness/scaffold.js";
 import { writePlan } from "./harness/plan.js";
 import { gatherStatus } from "./harness/status.js";
 import { isHostLocalContract } from "./harness/host-gate.js";
+import { redactObservationData } from "./harness/redaction.js";
 import {
   gatePreflightRunBlocker,
   lintGateReadiness,
@@ -84,6 +85,8 @@ import type {
 const argv = process.argv.slice(2);
 const command = argv[0] ?? "help";
 const rest = argv.slice(1);
+
+export { redactObservationData } from "./harness/redaction.js";
 
 const OPTIONS = {
   dir: { type: "string" as const, default: "contracts" },
@@ -146,52 +149,6 @@ function createLazyDaytonaProvider(environment: NodeJS.ProcessEnv): SandboxProvi
 function fail(msg: string): never {
   console.error(`错误: ${msg}`);
   process.exit(1);
-}
-
-const SECRET_OBSERVATION_KEY =
-  /(?:api[_-]?key|key|token|secret|password|authorization|auth|cookie)/i;
-
-function isSecretObservationKey(key: string): boolean {
-  return SECRET_OBSERVATION_KEY.test(key);
-}
-
-export function redactObservationData(
-  value: unknown,
-  seen = new WeakSet<object>(),
-): unknown {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return value;
-  }
-  if (typeof value === "bigint") return value.toString();
-  if (typeof value === "undefined") return null;
-  if (typeof value === "symbol" || typeof value === "function") {
-    return "[unserializable]";
-  }
-  if (seen.has(value)) return "[circular]";
-  seen.add(value);
-
-  if (Array.isArray(value)) {
-    return value.map((item) => redactObservationData(item, seen));
-  }
-
-  const output: Record<string, unknown> = {};
-  let entries: Array<[string, unknown]>;
-  try {
-    entries = Object.entries(value);
-  } catch {
-    return "[unserializable]";
-  }
-  for (const [key, item] of entries) {
-    output[key] = isSecretObservationKey(key)
-      ? "[redacted]"
-      : redactObservationData(item, seen);
-  }
-  return output;
 }
 
 function selectContractsForValues(
