@@ -656,6 +656,7 @@ async function runSingleTask(
     );
     console.log(
       `sandbox roots=[${policy.candidateRoots.join(", ")}]` +
+      ` readOnly=[${policy.readOnlyPaths.join(", ")}]` +
       ` protected=[${policy.protectedPaths.join(", ")}]\n`,
     );
     const outcome = await runLoop({

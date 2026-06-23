@@ -77,6 +77,7 @@ And ensure:
 ```json
 {
   "sandbox": {
+    "readOnlyPaths": ["AGENTS.md", "docs/specs", "docs/plans"],
     "gateSetup": ["npm ci", "npm run start:test -- --port 3000"]
   }
 }

@@ -32,7 +32,8 @@ During execution, keep the user oriented around the real Harness state: host man
 
 - Prefer `harness` on PATH. If working inside the Harness source repo, build first and use `node dist/src/cli.js`.
 - Run `harness create .` only in the target project root. Do not use `--force` unless the user explicitly approves overwriting existing Harness files.
-- Keep `contracts/`, `harness.config.json`, `.github/workflows/`, `CODEOWNERS`, and `.harness/` host-owned. The implementation agent must not edit them during `harness run`.
+- Keep `contracts/`, `test/gates/`, `harness.config.json`, `.github/workflows/`, `CODEOWNERS`, and `.harness/` host-owned and hidden from the implementation agent during `harness run`.
+- Put `AGENTS.md`, `docs/specs/`, and `docs/plans/` in `sandbox.readOnlyPaths` so the implementation agent can read task context without publishing changes to it.
 - Never write API keys, model tokens, or Daytona credentials into repo files. Ask the user to export environment variables or pass them through the shell.
 - If the user wants Claude Code execution, use `--driver claude`. If the user wants Codex execution, use `--driver command --agent-cmd <runner>` only when a real Codex runner command exists; do not invent a `--driver codex` flag.
 - Explain generated config in natural language before asking for confirmation.
@@ -51,7 +52,7 @@ Before execution, produce or update:
 ## User Interaction Pattern
 
 1. Inspect the repo and existing Harness files.
-2. Inventory the Agent/Gate environment and decide mutable versus protected paths.
+2. Inventory the Agent/Gate environment and decide candidate, read-only, and protected paths.
 3. Ask one missing-requirement question at a time.
 4. Convert answers into files, not chat-only notes.
 5. Translate each acceptance criterion into an automatic contract or a `review` contract.
@@ -63,7 +64,7 @@ Before execution, produce or update:
    - task list
    - gates that will block automatically
    - gates that require human review
-   - mutable candidate roots and protected paths
+   - mutable candidate roots, read-only context paths, and protected paths
    - exact command that will run
 7. After confirmation, validate contracts/config and only then start the requested run.
 

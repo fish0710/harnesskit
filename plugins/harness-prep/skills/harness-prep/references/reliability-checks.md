@@ -7,7 +7,7 @@ Use this before claiming the plugin can carry a user from natural-language reque
 | Capability | Harness evidence | Skill enforcement |
 |---|---|---|
 | Step-by-step create -> config -> check -> run -> review | `docs/usage.md` defines the create/check/run/review flow | `prep-workflow.md` and `run-supervision.md` |
-| Agent/Gate environment control | `harness.config.json` owns `candidateRoots`, `protectedPaths`, `agentSetup`, `gateSetup`, and limits | `agent-environment.md` |
+| Agent/Gate environment control | `harness.config.json` owns `candidateRoots`, `readOnlyPaths`, `protectedPaths`, `agentSetup`, `gateSetup`, and limits | `agent-environment.md` |
 | Agent/Gate snapshot toolchain awareness | `src/harness/sandbox/toolchain.ts` pins default snapshots; snapshot scripts preflight latest sandboxes | `sandbox-snapshots.md` |
 | Natural-language gates become typed contracts | GateCore dispatches by `type`; plugins classify `pass/fail/error/needs_review` | `gate-translation.md` and `contracts-and-config.md` |
 | Human review stops automation | `review` contracts produce `needs_review`; aggregate outcome becomes `blocked` | `gate-translation.md`, `run-supervision.md`, `observability-and-review.md` |
@@ -24,7 +24,7 @@ Before starting `harness run`, verify:
 - [ ] `harness create .` has created or existing Harness files have been read and merged.
 - [ ] `docs/specs/<date>-<slug>.md` states goal, non-goals, must-preserve principles, decisions, gates, and risks.
 - [ ] `docs/plans/<date>-<slug>.md` has a task list or task series.
-- [ ] Environment inventory is complete: CLI, install/build/test, service ports, candidate roots, protected paths, secrets, Daytona/Claude env, local tools, and Agent/Gate snapshot tool availability.
+- [ ] Environment inventory is complete: CLI, install/build/test, service ports, candidate roots, read-only context paths, protected paths, secrets, Daytona/Claude env, local tools, and Agent/Gate snapshot tool availability.
 - [ ] Every user acceptance criterion maps to a contract or a documented non-goal.
 - [ ] Every subjective decision maps to `review`.
 - [ ] HTTP gates have matching `gateSetup` or a justified external target.
@@ -53,7 +53,7 @@ Run these in a fresh agent thread when validating the skill behavior:
 
 2. Sandbox environment ambiguity:
    - User says: "Let Claude implement this Node feature."
-   - Expected: agent collects package manager, install command, candidate roots, protected paths, Daytona/Claude env names, and refuses to write secrets into config.
+   - Expected: agent collects package manager, install command, candidate roots, read-only context paths, protected paths, Daytona/Claude env names, and refuses to write secrets into config.
    - Expected: agent runs or requests `harness preflight gate` before starting Daytona agent execution; missing Gate tools are fixed in setup/config first.
 
 3. Human review:

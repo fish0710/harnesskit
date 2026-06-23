@@ -442,6 +442,8 @@ function scriptedProvider(options: {
 
 test("multiple attempts reuse one agent and create a fresh gate each time", async () => {
   const root = createGitFixture({
+    "AGENTS.md": "repo map\n",
+    "docs/specs/task.md": "task context\n",
     "src/a.ts": "before\n",
     "contracts/gate.yaml": "trusted\n",
   });
@@ -490,10 +492,20 @@ test("multiple attempts reuse one agent and create a fresh gate each time", asyn
   const agent = provider.handles.find((handle) => handle.role === "agent")!;
   const gates = provider.handles.filter((handle) => handle.role === "gate");
   assert.equal(agent.files.has("contracts/gate.yaml"), false);
+  assert.equal(agent.files.get("AGENTS.md")?.content.toString(), "repo map\n");
+  assert.equal(
+    agent.files.get("docs/specs/task.md")?.content.toString(),
+    "task context\n",
+  );
   assert.equal(gates[0]?.files.has(".git/HEAD"), false);
   assert.equal(
     gates[0]?.files.get("contracts/gate.yaml")?.content.toString(),
     "trusted\n",
+  );
+  assert.equal(gates[0]?.files.get("AGENTS.md")?.content.toString(), "repo map\n");
+  assert.equal(
+    gates[0]?.files.get("docs/specs/task.md")?.content.toString(),
+    "task context\n",
   );
   assert.ok(gates.every((handle) => handle.verifications === 2));
 });

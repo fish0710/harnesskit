@@ -239,6 +239,8 @@ test("static lint error returns not_ready and does not create sandbox", async ()
 
 test("creates Gate sandbox, uploads baseline, runs setup and remote command, then cleans up", async () => {
   const root = createGitFixture({
+    "AGENTS.md": "repo map\n",
+    "docs/specs/task.md": "task context\n",
     "src/a.ts": "before\n",
     "contracts/test.yaml": "trusted\n",
   });
@@ -270,12 +272,23 @@ test("creates Gate sandbox, uploads baseline, runs setup and remote command, the
   assert.ok(gate.files.has("src/a.ts"));
   assert.ok(gate.files.has("contracts/test.yaml"));
   assert.deepEqual(gate.uploads[0], {
-    files: ["contracts/test.yaml", "src/a.ts"],
+    files: [
+      "AGENTS.md",
+      "contracts/test.yaml",
+      "docs/specs/task.md",
+      "src/a.ts",
+    ],
     remoteRoot: REMOTE_ROOT,
   });
   assert.deepEqual(gate.verifies, [
-    { files: ["contracts/test.yaml"], remoteRoot: REMOTE_ROOT },
-    { files: ["contracts/test.yaml"], remoteRoot: REMOTE_ROOT },
+    {
+      files: ["AGENTS.md", "contracts/test.yaml", "docs/specs/task.md"],
+      remoteRoot: REMOTE_ROOT,
+    },
+    {
+      files: ["AGENTS.md", "contracts/test.yaml", "docs/specs/task.md"],
+      remoteRoot: REMOTE_ROOT,
+    },
   ]);
   assert.deepEqual(gate.commands, ["npm ci", COMMAND_TEST]);
   assert.deepEqual(gate.executeCalls.map(({ cwd }) => cwd), [REMOTE_ROOT, REMOTE_ROOT]);

@@ -39,8 +39,8 @@ Claims supported:
 
 Evidence anchors:
 
-- `docs/usage.md`: explains `candidateRoots`, `protectedPaths`, `agentSetup`, `gateSetup`, and limits.
-- `src/harness/sandbox/policy.ts`: defines defaults and validates candidate paths, protected paths, setup fields, and limits.
+- `docs/usage.md`: explains `candidateRoots`, `readOnlyPaths`, `protectedPaths`, `agentSetup`, `gateSetup`, and limits.
+- `src/harness/sandbox/policy.ts`: defines defaults and validates candidate paths, read-only paths, protected paths, setup fields, and limits.
 - `src/harness/sandbox/environment.ts`: builds agent and gate sandbox execution.
 - `src/harness/sandbox/toolchain.ts`: pins Node.js, Claude Code, Agent/Gate image names, latest snapshot names, and Claude preflight checks.
 - `src/tools/daytona-agent-snapshot.ts` and `src/tools/daytona-gate-snapshot.ts`: verify or create latest Agent/Gate snapshots and run toolchain preflight in short-lived Daytona sandboxes.
@@ -48,7 +48,7 @@ Evidence anchors:
 
 Claims supported:
 
-- The implementation agent can only publish configured candidate paths and must not overwrite protected paths.
+- The implementation agent can only publish configured candidate paths, can read but not publish `readOnlyPaths`, and cannot see or overwrite protected paths.
 - Agent setup and Gate setup are separate because the Agent edits while Gate validates in a fresh environment.
 - HTTP contracts against `127.0.0.1` in Daytona Gate mode need the service started inside the Gate sandbox.
 - Environment ambiguity should be resolved before `harness run`; otherwise failures are likely config/runtime `error`, not product failures.

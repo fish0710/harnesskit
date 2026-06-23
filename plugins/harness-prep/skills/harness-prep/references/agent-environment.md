@@ -4,7 +4,7 @@ Use this before writing `harness.config.json` or explaining how the implementati
 
 ## Reliability Basis
 
-Harness reads candidate roots, protected paths, setup commands, and byte limits from `harness.config.json`. Mutating `claude` and `command` agents run in Daytona isolation; each gate attempt runs in a fresh agent-free Gate sandbox. A passing gate publishes only the exact candidate bytes evaluated by that gate.
+Harness reads candidate roots, read-only context paths, protected paths, setup commands, and byte limits from `harness.config.json`. Mutating `claude` and `command` agents run in Daytona isolation; each gate attempt runs in a fresh agent-free Gate sandbox. A passing gate publishes only the exact candidate bytes evaluated by that gate.
 
 Therefore the environment must be explicit before execution. Hidden assumptions become gate `error`, repeated retries, or unsafe mutation scope.
 
@@ -23,7 +23,8 @@ Create or update the spec with this table. Do not start `harness run` while any 
 | Service start command | e.g. `npm run dev -- --port 3000` | `sandbox.gateSetup` |
 | Loopback ports | Gate sandbox ports, not host ports | `http` contracts |
 | Mutable paths | implementation-owned files only | `sandbox.candidateRoots` |
-| Protected paths | contracts, config, CI, trusted gates, setup dependency manifests | `sandbox.protectedPaths` |
+| Read-only context paths | task docs, repo map, setup manifests the agent needs but must not change | `sandbox.readOnlyPaths` |
+| Protected paths | contracts, config, CI, trusted gates, Harness state | `sandbox.protectedPaths` |
 | Secrets needed by agent | names only, never values in repo | shell env / secret manager |
 | Secrets needed by gate | usually none; justify if needed | host environment |
 | Daytona API | `DAYTONA_API_KEY`, optional `DAYTONA_API_URL` | shell env |
@@ -36,16 +37,19 @@ Create or update the spec with this table. Do not start `harness run` while any 
 
 - Start narrow: only include paths the implementation agent must change.
 - Keep these protected by default: `contracts`, `.harness`, `harness.config.json`, `.github/workflows`, `CODEOWNERS`, and trusted gate runners such as `test/gates`.
-- Treat setup inputs as protected environment assets unless the task explicitly
-  requires changing them: `.nvmrc`, root `package.json`, package-manager
-  lockfiles, `tsconfig.json`, `babel.config.js`, and `postcss.config.js`.
+- Put these in `readOnlyPaths` by default when they exist: `AGENTS.md`,
+  `docs/specs`, and `docs/plans`.
+- Treat setup inputs as read-only environment assets when Agent or Gate setup
+  needs them but the task must not change them: `.nvmrc`, root `package.json`,
+  package-manager lockfiles, `tsconfig.json`, `babel.config.js`, and
+  `postcss.config.js`.
 - Do not put root dependency files in `candidateRoots` just because setup runs
-  `npm ci`. If root setup is legacy baseline, protect those files and let both
-  Agent and Gate install from the same baseline manifest.
+  `npm ci`. If root setup is legacy baseline, put those files in
+  `readOnlyPaths` so Agent and Gate install from the same baseline manifest.
 - If the task intentionally changes dependencies, include the package manifest
   and lockfile together in `candidateRoots`, explain the risk to the user, and
   make Agent/Gate setup install from that same project root.
-- If every candidate root is covered by protection, stop and revise the policy.
+- If every candidate root is covered by protection or read-only paths, stop and revise the policy.
 - Put dependency installation in `agentSetup` when the agent needs tools to edit or test.
 - Put service startup or gate-only preparation in `gateSetup`.
 - The default Daytona snapshots already include Node.js 22.14.0, npm/npx 10.9.2, Python 3.11, curl, make, gcc, and bash. They do not include `git`, `pnpm`, `yarn`, or `bun`.
@@ -89,7 +93,8 @@ Before asking for run confirmation, say:
 
 ```text
 The agent may edit: <candidateRoots>.
-Harness will restore/protect: <protectedPaths>.
+The agent may read but not publish: <readOnlyPaths>.
+Harness hides and protects: <protectedPaths>.
 Agent setup will run: <agentSetup>.
 Gate setup will run: <gateSetup>.
 Secrets stay in shell/env and are not written to the repository.

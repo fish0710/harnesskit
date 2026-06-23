@@ -107,6 +107,7 @@ harness create . --force
   "sandbox": {
     "candidateRoots": ["src", "test/generated", "package.json", "package-lock.json", "tsconfig.json"],
     "protectedPaths": ["contracts", ".harness", "harness.config.json", ".github/workflows", "CODEOWNERS", "test/gates"],
+    "readOnlyPaths": ["AGENTS.md", "docs/specs", "docs/plans"],
     "agentSetup": [],
     "gateSetup": [],
     "limits": {
@@ -124,11 +125,12 @@ harness create . --force
 - `baseline`：默认必跑的契约。
 - `rules`：按 changed files 额外选择契约。
 - `candidateRoots`：agent 产出的文件必须落在这些路径下。
-- `protectedPaths`：即使落在候选根里，也不能被 agent 覆盖。
+- `readOnlyPaths`：上传给 agent 作为上下文，但 agent 改动会被拒绝，也不会发布。
+- `protectedPaths`：host-owned/隐藏资产，不上传给 agent，也不能被 agent 覆盖。
 - `agentSetup`：agent 沙箱启动后先跑的命令，例如 `npm ci`。
 - `gateSetup`：gate 沙箱组装候选后先跑的命令，例如启动测试服务。
 
-如果所有候选根都被保护，Harness 会直接报错，因为 agent 没有可发布区域。
+如果所有候选根都被保护或只读，Harness 会直接报错，因为 agent 没有可发布区域。
 
 ## 4. 只跑验证，不启动 agent
 
@@ -551,7 +553,7 @@ Daytona 相关命令报 `DAYTONA_API_KEY`：
 gate 通过后没有发布某些文件：
 
 ```text
-原因：文件不在 candidateRoots 内，或命中了 protectedPaths。
+原因：文件不在 candidateRoots 内，命中了 readOnlyPaths，或命中了 protectedPaths。
 处理：调整 harness.config.json，但 contracts/.harness/CI 这类裁决资产不应开放给 agent。
 ```
 

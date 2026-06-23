@@ -24,6 +24,7 @@ test("create writes explicit sandbox trust policy", () => {
     sandbox: {
       candidateRoots: string[];
       protectedPaths: string[];
+      readOnlyPaths: string[];
     };
   };
 
@@ -36,6 +37,11 @@ test("create writes explicit sandbox trust policy", () => {
   ]);
   assert.ok(config.sandbox.protectedPaths.includes("contracts"));
   assert.ok(config.sandbox.protectedPaths.includes("test/gates"));
+  assert.deepEqual(config.sandbox.readOnlyPaths, [
+    "AGENTS.md",
+    "docs/specs",
+    "docs/plans",
+  ]);
 });
 
 test("create documents Gate sandbox preflight in AGENTS", () => {

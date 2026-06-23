@@ -9,7 +9,10 @@ import type {
   SandboxPolicy,
   SandboxProvider,
 } from "./sandbox/types.js";
-import { agentVisibleFiles, captureWorkspace } from "./sandbox/workspace.js";
+import {
+  captureWorkspace,
+  mutableCandidateFiles,
+} from "./sandbox/workspace.js";
 
 export type PreflightSeverity = "warning" | "error";
 
@@ -933,7 +936,7 @@ export async function runGatePreflight(
     });
     await handle.upload([...baseline.files.values()], REMOTE_ROOT);
     const mutablePaths = new Set(
-      agentVisibleFiles(baseline, options.policy).map((file) => file.path),
+      mutableCandidateFiles(baseline, options.policy).map((file) => file.path),
     );
     const protectedFiles = [...baseline.files.values()].filter((file) =>
       !mutablePaths.has(file.path)

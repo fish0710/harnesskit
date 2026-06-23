@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  classifyWorkspacePath,
   loadSandboxPolicy,
   normalizeWorkspacePath,
   protectedFilesystemPathKey,
@@ -19,6 +20,7 @@ test("candidate path must be relative and inside an allowed root", () => {
         "tsconfig.json",
       ],
       protectedPaths: ["src/gates", "contracts"],
+      readOnlyPaths: ["src/specs"],
     },
   });
 
@@ -29,6 +31,10 @@ test("candidate path must be relative and inside an allowed root", () => {
   assert.throws(
     () => validateCandidatePath("src/gates/judge.ts", policy),
     /受保护/,
+  );
+  assert.throws(
+    () => validateCandidatePath("src/specs/task.md", policy),
+    /只读/,
   );
 });
 
@@ -202,6 +208,26 @@ test("protected prefix checks are path-boundary aware", () => {
   );
 });
 
+test("read-only prefix checks are path-boundary aware and override candidate roots", () => {
+  const policy = loadSandboxPolicy({
+    sandbox: {
+      candidateRoots: ["src"],
+      protectedPaths: [],
+      readOnlyPaths: ["src/specs"],
+    },
+  });
+
+  assert.equal(
+    classifyWorkspacePath("src/specs/task.md", policy),
+    "read-only",
+  );
+  assert.equal(classifyWorkspacePath("src/specs2/task.md", policy), "candidate");
+  assert.throws(
+    () => validateCandidatePath("src/specs/task.md", policy),
+    /只读/,
+  );
+});
+
 test("darwin blocks protected filesystem aliases", () => {
   for (const [protectedPath, candidatePath] of [
     ["src/Gates", "src/gates/file.ts"],
@@ -223,6 +249,25 @@ test("darwin blocks protected filesystem aliases", () => {
       /受保护/,
     );
   }
+});
+
+test("darwin blocks read-only filesystem aliases", () => {
+  const policy = loadSandboxPolicy({
+    sandbox: {
+      candidateRoots: ["src"],
+      protectedPaths: [],
+      readOnlyPaths: ["src/Specs"],
+    },
+  }, "darwin");
+
+  assert.equal(
+    classifyWorkspacePath("src/specs/task.md", policy, "darwin"),
+    "read-only",
+  );
+  assert.throws(
+    () => validateCandidatePath("src/specs/task.md", policy, "darwin"),
+    /只读/,
+  );
 });
 
 test("candidate allowlists stay exact and volume-independent on every platform", () => {
@@ -328,6 +373,11 @@ test("loadSandboxPolicy returns conservative defaults", () => {
       ".github/workflows",
       "CODEOWNERS",
     ],
+    readOnlyPaths: [
+      "AGENTS.md",
+      "docs/specs",
+      "docs/plans",
+    ],
     agentSetup: [],
     gateSetup: [],
     limits: {
@@ -345,6 +395,7 @@ test("loadSandboxPolicy merges known sandbox fields and nested limits", () => {
     rules: [],
     sandbox: {
       candidateRoots: ["app"],
+      readOnlyPaths: ["AGENTS.md", "docs/specs"],
       agentSetup: ["npm ci"],
       limits: { maxFiles: 25 },
       retainOnFailure: true,
@@ -352,6 +403,7 @@ test("loadSandboxPolicy merges known sandbox fields and nested limits", () => {
   });
 
   assert.deepEqual(policy.candidateRoots, ["app"]);
+  assert.deepEqual(policy.readOnlyPaths, ["AGENTS.md", "docs/specs"]);
   assert.deepEqual(policy.agentSetup, ["npm ci"]);
   assert.deepEqual(policy.gateSetup, []);
   assert.deepEqual(policy.limits, {
@@ -368,10 +420,11 @@ test("loadSandboxPolicy normalizes every configured path strictly", () => {
       () =>
         loadSandboxPolicy({
           sandbox: {
-            candidateRoots: [path],
-            protectedPaths: [],
-          },
-        }),
+          candidateRoots: [path],
+          protectedPaths: [],
+          readOnlyPaths: [],
+        },
+      }),
       /绝对路径|非法路径|越界/,
     );
   }
@@ -382,6 +435,7 @@ test("loadSandboxPolicy normalizes every configured path strictly", () => {
         sandbox: {
           candidateRoots: ["src"],
           protectedPaths: ["contracts/"],
+          readOnlyPaths: [],
         },
       }),
     /非法路径/,
@@ -417,6 +471,8 @@ test("loadSandboxPolicy rejects wrong field types", () => {
     { sandbox: { candidateRoots: [1] } },
     { sandbox: { protectedPaths: "contracts" } },
     { sandbox: { protectedPaths: [false] } },
+    { sandbox: { readOnlyPaths: "docs/specs" } },
+    { sandbox: { readOnlyPaths: [false] } },
     { sandbox: { agentSetup: "npm ci" } },
     { sandbox: { agentSetup: [1] } },
     { sandbox: { gateSetup: {} } },
@@ -477,6 +533,7 @@ test("loadSandboxPolicy requires plain or null-prototype records", () => {
   nullPrototypeLimits.maxFiles = 5;
   nullPrototypeSandbox.candidateRoots = ["src"];
   nullPrototypeSandbox.protectedPaths = [];
+  nullPrototypeSandbox.readOnlyPaths = ["AGENTS.md"];
   nullPrototypeSandbox.limits = nullPrototypeLimits;
   nullPrototypeConfig.sandbox = nullPrototypeSandbox;
 
@@ -543,6 +600,20 @@ test("loadSandboxPolicy rejects candidate roots fully covered by protection", ()
   );
 });
 
+test("loadSandboxPolicy rejects candidate roots fully covered by read-only paths", () => {
+  assert.throws(
+    () =>
+      loadSandboxPolicy({
+        sandbox: {
+          candidateRoots: ["src", "lib/generated"],
+          protectedPaths: [],
+          readOnlyPaths: ["src", "lib"],
+        },
+      }),
+    /所有 candidateRoots.*只读/,
+  );
+});
+
 test("overlap checks use case and Unicode comparison keys", () => {
   assert.throws(
     () =>
@@ -564,6 +635,20 @@ test("overlap checks use case and Unicode comparison keys", () => {
         },
       }, "darwin"),
     /所有 candidateRoots.*受保护/,
+  );
+});
+
+test("read-only overlap checks use case and Unicode comparison keys", () => {
+  assert.throws(
+    () =>
+      loadSandboxPolicy({
+        sandbox: {
+          candidateRoots: ["SRC/Specs"],
+          protectedPaths: [],
+          readOnlyPaths: ["src/specs"],
+        },
+      }, "darwin"),
+    /所有 candidateRoots.*只读/,
   );
 });
 
@@ -597,10 +682,32 @@ test("loadSandboxPolicy allows protected subtrees and partial root coverage", ()
   );
 });
 
+test("loadSandboxPolicy allows read-only subtrees and partial root coverage", () => {
+  assert.doesNotThrow(() =>
+    loadSandboxPolicy({
+      sandbox: {
+        candidateRoots: ["src"],
+        protectedPaths: [],
+        readOnlyPaths: ["src/specs"],
+      },
+    }),
+  );
+  assert.doesNotThrow(() =>
+    loadSandboxPolicy({
+      sandbox: {
+        candidateRoots: ["src", "lib"],
+        protectedPaths: [],
+        readOnlyPaths: ["src", "lib/specs"],
+      },
+    }),
+  );
+});
+
 test("loadSandboxPolicy returns fresh defaults that cannot be mutated globally", () => {
   const first = loadSandboxPolicy({});
   first.candidateRoots.push("unsafe");
   first.protectedPaths.length = 0;
+  first.readOnlyPaths.length = 0;
   first.agentSetup.push("mutated");
   first.gateSetup.push("mutated");
   first.limits.maxFiles = 1;
@@ -614,6 +721,11 @@ test("loadSandboxPolicy returns fresh defaults that cannot be mutated globally",
     ".github/workflows",
     "CODEOWNERS",
   ]);
+  assert.deepEqual(second.readOnlyPaths, [
+    "AGENTS.md",
+    "docs/specs",
+    "docs/plans",
+  ]);
   assert.deepEqual(second.agentSetup, []);
   assert.deepEqual(second.gateSetup, []);
   assert.equal(second.limits.maxFiles, 10_000);
@@ -623,6 +735,7 @@ test("loadSandboxPolicy copies caller-owned arrays and objects", () => {
   const sandbox = {
     candidateRoots: ["src"],
     protectedPaths: ["src/gates"],
+    readOnlyPaths: ["AGENTS.md"],
     agentSetup: ["npm ci"],
     gateSetup: ["npm test"],
     limits: {
@@ -635,12 +748,14 @@ test("loadSandboxPolicy copies caller-owned arrays and objects", () => {
 
   sandbox.candidateRoots.push("lib");
   sandbox.protectedPaths.length = 0;
+  sandbox.readOnlyPaths.length = 0;
   sandbox.agentSetup[0] = "changed";
   sandbox.gateSetup[0] = "changed";
   sandbox.limits.maxFiles = 99;
 
   assert.deepEqual(policy.candidateRoots, ["src"]);
   assert.deepEqual(policy.protectedPaths, ["src/gates"]);
+  assert.deepEqual(policy.readOnlyPaths, ["AGENTS.md"]);
   assert.deepEqual(policy.agentSetup, ["npm ci"]);
   assert.deepEqual(policy.gateSetup, ["npm test"]);
   assert.equal(policy.limits.maxFiles, 5);

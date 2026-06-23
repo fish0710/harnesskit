@@ -61,9 +61,9 @@ full assistant/tool stream is recorded in `claude-stream.jsonl`.
 There is no silent fallback to host execution. `--driver scaffold` is the only
 local mode and performs no mutations.
 
-Candidate roots, protected paths, setup commands, and byte limits are read
-from `harness.config.json`. A passing gate publishes only the exact candidate
-bytes evaluated by the fresh gate sandbox.
+Candidate roots, read-only context paths, protected paths, setup commands, and
+byte limits are read from `harness.config.json`. A passing gate publishes only
+the exact candidate bytes evaluated by the fresh gate sandbox.
 
 Large work can be split into a configured task series:
 

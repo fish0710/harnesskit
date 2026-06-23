@@ -16,6 +16,11 @@ const DEFAULT_POLICY: SandboxPolicy = {
     ".github/workflows",
     "CODEOWNERS",
   ],
+  readOnlyPaths: [
+    "AGENTS.md",
+    "docs/specs",
+    "docs/plans",
+  ],
   agentSetup: [],
   gateSetup: [],
   limits: {
@@ -29,6 +34,7 @@ const DEFAULT_POLICY: SandboxPolicy = {
 const SANDBOX_FIELDS = new Set([
   "candidateRoots",
   "protectedPaths",
+  "readOnlyPaths",
   "agentSetup",
   "gateSetup",
   "limits",
@@ -187,6 +193,13 @@ export function validateCandidatePath(
   ) {
     throw new Error(`候选路径属于受保护资产: ${path}`);
   }
+  if (
+    policy.readOnlyPaths.some((root) =>
+      isProtectedWithin(path, root, platform)
+    )
+  ) {
+    throw new Error(`候选路径属于只读资产: ${path}`);
+  }
   return path;
 }
 
@@ -194,7 +207,7 @@ export function classifyWorkspacePath(
   value: string,
   policy: SandboxPolicy,
   platform: NodeJS.Platform = process.platform,
-): "candidate" | "protected" | "ignored" {
+): "candidate" | "read-only" | "protected" | "ignored" {
   const path = normalizeWorkspacePath(value);
   if (
     policy.protectedPaths.some((root) =>
@@ -202,6 +215,13 @@ export function classifyWorkspacePath(
     )
   ) {
     return "protected";
+  }
+  if (
+    policy.readOnlyPaths.some((root) =>
+      isProtectedWithin(path, root, platform)
+    )
+  ) {
+    return "read-only";
   }
   return policy.candidateRoots.some((root) => isCandidateWithin(path, root))
     ? "candidate"
@@ -239,6 +259,7 @@ export function loadSandboxPolicy(
     return {
       candidateRoots: [...DEFAULT_POLICY.candidateRoots],
       protectedPaths: [...DEFAULT_POLICY.protectedPaths],
+      readOnlyPaths: [...DEFAULT_POLICY.readOnlyPaths],
       agentSetup: [...DEFAULT_POLICY.agentSetup],
       gateSetup: [...DEFAULT_POLICY.gateSetup],
       limits: { ...DEFAULT_POLICY.limits },
@@ -263,6 +284,10 @@ export function loadSandboxPolicy(
     ? [...DEFAULT_POLICY.protectedPaths]
     : stringArray(sandboxValue.protectedPaths, "protectedPaths")
       .map(normalizeWorkspacePath);
+  const readOnlyPaths = !hasOwn(sandboxValue, "readOnlyPaths")
+    ? [...DEFAULT_POLICY.readOnlyPaths]
+    : stringArray(sandboxValue.readOnlyPaths, "readOnlyPaths")
+      .map(normalizeWorkspacePath);
   const agentSetup = !hasOwn(sandboxValue, "agentSetup")
     ? [...DEFAULT_POLICY.agentSetup]
     : stringArray(sandboxValue.agentSetup, "agentSetup");
@@ -286,17 +311,21 @@ export function loadSandboxPolicy(
 
   if (
     candidateRoots.every((candidateRoot) =>
-      protectedPaths.some((protectedPath) =>
-        isProtectedWithin(candidateRoot, protectedPath, platform),
+      [
+        ...protectedPaths,
+        ...readOnlyPaths,
+      ].some((lockedPath) =>
+        isProtectedWithin(candidateRoot, lockedPath, platform)
       ),
     )
   ) {
-    throw new Error("所有 candidateRoots 都完全受保护，候选区不可写");
+    throw new Error("所有 candidateRoots 都完全受保护或只读，候选区不可写");
   }
 
   return {
     candidateRoots,
     protectedPaths,
+    readOnlyPaths,
     agentSetup,
     gateSetup,
     limits,

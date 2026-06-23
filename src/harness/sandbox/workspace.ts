@@ -242,6 +242,18 @@ export function agentVisibleFiles(
 ): WorkspaceFile[] {
   return [...snapshot.files.values()]
     .filter((file) => {
+      const disposition = classifyWorkspacePath(file.path, policy);
+      return disposition === "candidate" || disposition === "read-only";
+    })
+    .sort((left, right) => comparePaths(left.path, right.path));
+}
+
+export function mutableCandidateFiles(
+  snapshot: WorkspaceSnapshot,
+  policy: SandboxPolicy,
+): WorkspaceFile[] {
+  return [...snapshot.files.values()]
+    .filter((file) => {
       try {
         validateCandidatePath(file.path, policy);
         return true;
@@ -252,13 +264,22 @@ export function agentVisibleFiles(
     .sort((left, right) => comparePaths(left.path, right.path));
 }
 
+function readOnlyContextFiles(
+  snapshot: WorkspaceSnapshot,
+  policy: SandboxPolicy,
+): WorkspaceFile[] {
+  return [...snapshot.files.values()]
+    .filter((file) => classifyWorkspacePath(file.path, policy) === "read-only")
+    .sort((left, right) => comparePaths(left.path, right.path));
+}
+
 export function deriveCandidateOperations(
   baseline: WorkspaceSnapshot,
   files: Map<string, WorkspaceFile>,
   policy: SandboxPolicy,
 ): CandidateOperation[] {
   const baselineFiles = new Map(
-    agentVisibleFiles(baseline, policy).map((file) => [file.path, file]),
+    mutableCandidateFiles(baseline, policy).map((file) => [file.path, file]),
   );
   const paths = new Set([...baselineFiles.keys(), ...files.keys()]);
   const operations: CandidateOperation[] = [];
@@ -303,6 +324,11 @@ export async function collectCandidate(
   }
 
   const files = new Map<string, WorkspaceFile>();
+  const readOnlyBaseline = new Map(
+    readOnlyContextFiles(baseline, policy).map((file) => [file.path, file]),
+  );
+  const verifiedReadOnlyPaths = new Set<string>();
+  const readOnlyPathKeys = new Set<string>();
   const pathKeys = new Set<string>();
   let totalBytes = 0;
 
@@ -316,6 +342,43 @@ export async function collectCandidate(
       throw new Error(`候选路径属于受保护资产: ${path}`);
     }
     if (disposition === "ignored") continue;
+
+    if (disposition === "read-only") {
+      validateRemoteMetadata(entry);
+      if (entry.kind === "directory") {
+        continue;
+      }
+      if (entry.kind !== "file") {
+        throw new Error(`只读路径包含不支持的文件类型: ${path} (${entry.kind})`);
+      }
+      const pathKey = protectedFilesystemPathKey(path);
+      if (verifiedReadOnlyPaths.has(path) || readOnlyPathKeys.has(pathKey)) {
+        throw new Error(`只读路径包含重复或别名文件: ${path}`);
+      }
+      verifiedReadOnlyPaths.add(path);
+      readOnlyPathKeys.add(pathKey);
+
+      const expected = readOnlyBaseline.get(path);
+      if (!expected) {
+        throw new Error(`只读路径不能新增文件: ${path}`);
+      }
+      if (
+        entry.size !== expected.content.byteLength ||
+        entry.executable !== expected.executable
+      ) {
+        throw new Error(`只读文件元数据已改变: ${path}`);
+      }
+      const content = await remote.read(path);
+      if (!Buffer.isBuffer(content)) {
+        throw new Error(`只读文件读取结果不是 Buffer: ${path}`);
+      }
+      const hash = createHash("sha256").update(content).digest("hex");
+      if (hash !== expected.sha256 || !content.equals(expected.content)) {
+        throw new Error(`只读文件内容已改变: ${path}`);
+      }
+      continue;
+    }
+
     validateRemoteMetadata(entry);
 
     const pathKey = protectedFilesystemPathKey(path);
@@ -348,6 +411,12 @@ export async function collectCandidate(
       throw new Error(`候选文件读取大小不一致: ${path}`);
     }
     files.set(path, workspaceFile(path, content, entry.executable));
+  }
+
+  for (const expected of readOnlyBaseline.values()) {
+    if (!verifiedReadOnlyPaths.has(expected.path)) {
+      throw new Error(`只读文件缺失: ${expected.path}`);
+    }
   }
 
   const operations = deriveCandidateOperations(baseline, files, policy);

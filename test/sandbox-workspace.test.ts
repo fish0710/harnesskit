@@ -21,6 +21,7 @@ import {
   captureWorkspace,
   collectCandidate,
   deriveCandidateOperations,
+  mutableCandidateFiles,
   workspaceFile,
   type RemoteFileEntry,
   type RemoteWorkspace,
@@ -363,9 +364,12 @@ test("workspaceFile owns bytes and computes the full SHA-256", () => {
   );
 });
 
-test("agentVisibleFiles returns sorted mutable files only", () => {
+test("agentVisibleFiles returns sorted mutable and read-only context files", () => {
   const root = createGitFixture({
+    "AGENTS.md": "repo map\n",
     "README.md": "outside\n",
+    "docs/specs/task.md": "task\n",
+    "docs/plans/plan.md": "plan\n",
     "src/z.ts": "z\n",
     "src/a.ts": "a\n",
     "src/protected/gate.ts": "protected\n",
@@ -375,7 +379,28 @@ test("agentVisibleFiles returns sorted mutable files only", () => {
   assert.deepEqual(
     agentVisibleFiles(captureWorkspace(root, policy()), policy())
       .map((file) => file.path),
-    ["src/a.ts", "src/z.ts"],
+    [
+      "AGENTS.md",
+      "docs/plans/plan.md",
+      "docs/specs/task.md",
+      "src/a.ts",
+      "src/z.ts",
+    ],
+  );
+});
+
+test("mutableCandidateFiles returns sorted publishable candidate files only", () => {
+  const root = createGitFixture({
+    "AGENTS.md": "repo map\n",
+    "docs/specs/task.md": "task\n",
+    "src/a.ts": "a\n",
+    "src/protected/gate.ts": "protected\n",
+  });
+
+  assert.deepEqual(
+    mutableCandidateFiles(captureWorkspace(root, policy()), policy())
+      .map((file) => file.path),
+    ["src/a.ts"],
   );
 });
 
@@ -408,6 +433,95 @@ test("collector computes deterministic add, modify, and delete operations", asyn
   assert.equal(
     candidate.files.get("src/a.ts")?.content.toString(),
     "after\n",
+  );
+});
+
+test("collector ignores unchanged read-only context files in candidate snapshots", async () => {
+  const root = createGitFixture({
+    "AGENTS.md": "repo map\n",
+    "docs/specs/task.md": "task\n",
+    "src/a.ts": "before\n",
+  });
+  const baseline = captureWorkspace(root, policy());
+
+  const candidate = await collectCandidate(
+    fakeRemoteFiles({
+      "AGENTS.md": "repo map\n",
+      "docs/specs/task.md": "task\n",
+      "src/a.ts": "after\n",
+    }),
+    baseline,
+    policy(),
+  );
+
+  assert.deepEqual(operationPaths(candidate), [["modify", "src/a.ts"]]);
+  assert.deepEqual([...candidate.files.keys()], ["src/a.ts"]);
+});
+
+test("collector rejects read-only context modifications", async () => {
+  const root = createGitFixture({
+    "AGENTS.md": "repo map\n",
+    "docs/specs/task.md": "task\n",
+    "src/a.ts": "a\n",
+  });
+  const baseline = captureWorkspace(root, policy());
+
+  await assert.rejects(
+    () =>
+      collectCandidate(
+        fakeRemoteFiles({
+          "AGENTS.md": "changed\n",
+          "docs/specs/task.md": "task\n",
+          "src/a.ts": "a\n",
+        }),
+        baseline,
+        policy(),
+      ),
+    /只读|read-only/i,
+  );
+});
+
+test("collector rejects read-only context deletions", async () => {
+  const root = createGitFixture({
+    "AGENTS.md": "repo map\n",
+    "docs/specs/task.md": "task\n",
+    "src/a.ts": "a\n",
+  });
+  const baseline = captureWorkspace(root, policy());
+
+  await assert.rejects(
+    () =>
+      collectCandidate(
+        fakeRemoteFiles({
+          "AGENTS.md": "repo map\n",
+          "src/a.ts": "a\n",
+        }),
+        baseline,
+        policy(),
+      ),
+    /只读|read-only|缺失/i,
+  );
+});
+
+test("collector rejects read-only context additions", async () => {
+  const root = createGitFixture({
+    "docs/specs/task.md": "task\n",
+    "src/a.ts": "a\n",
+  });
+  const baseline = captureWorkspace(root, policy());
+
+  await assert.rejects(
+    () =>
+      collectCandidate(
+        fakeRemoteFiles({
+          "docs/specs/task.md": "task\n",
+          "docs/specs/new.md": "new\n",
+          "src/a.ts": "a\n",
+        }),
+        baseline,
+        policy(),
+      ),
+    /只读|read-only|新增/i,
   );
 });
 

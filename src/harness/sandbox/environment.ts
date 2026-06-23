@@ -34,6 +34,7 @@ import {
   agentVisibleFiles,
   captureWorkspace,
   collectCandidate,
+  mutableCandidateFiles,
 } from "./workspace.js";
 import {
   assertClaudeToolchain,
@@ -603,6 +604,7 @@ export function createDaytonaRunEnvironment(
             ),
             [
               ...options.policy.candidateRoots,
+              ...options.policy.readOnlyPaths,
               ...options.policy.protectedPaths,
             ],
           ),
@@ -657,7 +659,7 @@ export function createDaytonaRunEnvironment(
             files: baseline.files.size,
             durationMs: durationSince(initialUploadStartedAt),
           });
-          const mutableFiles = agentVisibleFiles(
+          const mutableFiles = mutableCandidateFiles(
             baseline,
             options.policy,
           );

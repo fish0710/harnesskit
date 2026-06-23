@@ -311,6 +311,7 @@ Daytona/bash 在 stdout 前写入 locale warning，宿主也只解析 marker 后
 {
   "sandbox": {
     "candidateRoots": ["src", "test/generated", "package.json"],
+    "readOnlyPaths": ["AGENTS.md", "docs/specs", "docs/plans"],
     "protectedPaths": [
       "contracts",
       ".harness",
@@ -335,8 +336,9 @@ Daytona/bash 在 stdout 前写入 locale warning，宿主也只解析 marker 后
 }
 ```
 
-`candidateRoots` 是 allowlist，`protectedPaths` 是额外保护层。新项目由 scaffold
-写入显式策略；现有项目缺少配置时使用保守默认值。
+`candidateRoots` 是可发布 allowlist，`readOnlyPaths` 会上传给 Agent 作为
+只读上下文并在候选收集时校验不变，`protectedPaths` 是 host-only/隐藏保护层。
+新项目由 scaffold 写入显式策略；现有项目缺少配置时使用保守默认值。
 
 `gateSetup` 在 gate 沙箱完成候选覆盖和保护文件恢复后、关闭出站网络前执行。
 因此它适合安装 gate 侧依赖、清理测试状态、启动候选 HTTP 服务并轮询 ready。

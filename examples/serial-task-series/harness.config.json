@@ -2,7 +2,8 @@
   "series": { "id": "order-refactor-example" },
   "sandbox": {
     "candidateRoots": ["src", "scripts"],
-    "protectedPaths": ["contracts", ".harness", "harness.config.json"]
+    "protectedPaths": ["contracts", ".harness", "harness.config.json"],
+    "readOnlyPaths": ["AGENTS.md", "docs/specs", "docs/plans"]
   },
   "taskDefaults": {
     "gate": { "contracts": ["domain.model-file"] }

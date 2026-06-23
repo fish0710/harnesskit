@@ -25,7 +25,7 @@ import type {
   WorkspaceFile,
   WorkspaceSnapshot,
 } from "./sandbox/types.js";
-import { agentVisibleFiles } from "./sandbox/workspace.js";
+import { mutableCandidateFiles } from "./sandbox/workspace.js";
 
 export interface HostLocalGateOptions {
   contracts: Contract[];
@@ -173,7 +173,7 @@ export function materializeCandidateWorkspace(
   candidate: CandidateSnapshot,
   policy: SandboxPolicy,
 ): void {
-  const mutableBaselineFiles = agentVisibleFiles(baseline, policy);
+  const mutableBaselineFiles = mutableCandidateFiles(baseline, policy);
   const candidateFiles = [...candidate.files.values()];
 
   // Candidate snapshots are expected to come from collectCandidate(); keep this

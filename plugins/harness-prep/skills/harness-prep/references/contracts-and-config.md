@@ -125,7 +125,7 @@ harness review --resolve product.behavior-review --option approve --by "<name>" 
 
 ## harness.config.json Template
 
-Keep protected paths broad. Only put implementation-owned paths in `candidateRoots`.
+Only put implementation-owned paths in `candidateRoots`. Put task context and setup manifests in `readOnlyPaths` when the implementation agent needs to read them but must not publish changes. Keep contracts, trusted gate runners, config, CI, and Harness state in `protectedPaths`.
 
 ```json
 {
@@ -145,7 +145,12 @@ Keep protected paths broad. Only put implementation-owned paths in `candidateRoo
       "harness.config.json",
       ".github/workflows",
       "CODEOWNERS",
-      "test/gates",
+      "test/gates"
+    ],
+    "readOnlyPaths": [
+      "AGENTS.md",
+      "docs/specs",
+      "docs/plans",
       ".nvmrc",
       "package.json",
       "package-lock.json",
@@ -191,13 +196,14 @@ Rules:
 - Task ids and series ids must be safe path segments: no `/`, `\`, `.`, `..`, empty string, or NUL.
 - If using `tasks`, prefer explicit task gate contracts over changed-file selection.
 - Do not include `contracts`, `.harness`, or `harness.config.json` in mutable roots unless the user is explicitly doing Harness configuration work before the run.
+- Do not include `AGENTS.md`, `docs/specs`, or `docs/plans` in mutable roots. Put them in `readOnlyPaths` so the implementation agent can read task context without changing it.
 - Include compiled mini-program artifact roots such as `dist/build/mp-weixin`
   or `vue3-app/dist/build/mp-weixin` in `candidateRoots` when later
   host-local mini-program gates must consume agent-built artifacts.
 - Do not include root `package.json`, lockfiles, `.nvmrc`, or build config in
   mutable roots when they are only setup inputs or legacy baseline. Put them in
-  `protectedPaths` so Gate setup cannot consume Agent-mutated dependency state
-  before contracts run.
+  `readOnlyPaths` if Agent setup must read them, or `protectedPaths` only when
+  the Agent does not need them.
 - If a task intentionally changes dependencies, include the package manifest and
   lockfile together in `candidateRoots`, scope setup commands to that project
   root, and tell the user this makes dependency changes part of the candidate.

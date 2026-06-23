@@ -92,6 +92,42 @@ test("materializeCandidateWorkspace writes candidate bytes and restores protecte
   }
 });
 
+test("materializeCandidateWorkspace preserves read-only context from baseline", () => {
+  const root = mkdtempSync(join(tmpdir(), "harness-host-gate-"));
+  try {
+    const policy = loadSandboxPolicy({
+      sandbox: {
+        candidateRoots: ["src"],
+        protectedPaths: ["contracts"],
+        readOnlyPaths: ["AGENTS.md", "docs/specs"],
+      },
+    });
+    const baseline = snapshot(root, {
+      "AGENTS.md": "repo instructions\n",
+      "docs/specs/task.md": "task context\n",
+      "src/a.ts": "before\n",
+      "src/deleted.ts": "delete me\n",
+      "contracts/mp.yaml": "trusted contract\n",
+    });
+    const next = candidate({ "src/a.ts": "after\n" });
+
+    materializeCandidateWorkspace(root, baseline, next, policy);
+
+    assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "after\n");
+    assert.equal(existsSync(join(root, "src/deleted.ts")), false);
+    assert.equal(
+      readFileSync(join(root, "AGENTS.md"), "utf8"),
+      "repo instructions\n",
+    );
+    assert.equal(
+      readFileSync(join(root, "docs/specs/task.md"), "utf8"),
+      "task context\n",
+    );
+  } finally {
+    cleanup(root);
+  }
+});
+
 test("materializeCandidateWorkspace rejects symlink parents without writing outside root", () => {
   const root = mkdtempSync(join(tmpdir(), "harness-host-gate-"));
   const outside = mkdtempSync(join(tmpdir(), "harness-host-gate-outside-"));

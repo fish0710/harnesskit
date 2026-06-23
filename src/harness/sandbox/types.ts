@@ -9,6 +9,7 @@ export interface SandboxLimits {
 export interface SandboxPolicy {
   candidateRoots: string[];
   protectedPaths: string[];
+  readOnlyPaths: string[];
   agentSetup: string[];
   gateSetup: string[];
   limits: SandboxLimits;

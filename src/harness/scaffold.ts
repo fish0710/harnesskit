@@ -54,6 +54,11 @@ function projectFiles(): FileSpec[] {
               "CODEOWNERS",
               "test/gates",
             ],
+            readOnlyPaths: [
+              "AGENTS.md",
+              "docs/specs",
+              "docs/plans",
+            ],
             agentSetup: [],
             gateSetup: [],
             limits: {
