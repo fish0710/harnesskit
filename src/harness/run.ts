@@ -16,6 +16,13 @@ export interface GenerationBudget {
   repeatWallThreshold: number;
 }
 
+export interface RunDiagnosticLog {
+  debug(phase: string, message: string, data?: unknown): void;
+  info(phase: string, message: string, data?: unknown): void;
+  warn(phase: string, message: string, data?: unknown): void;
+  error(phase: string, message: string, data?: unknown): void;
+}
+
 export interface RunOptions {
   task: string;
   contracts: Contract[];
@@ -26,6 +33,7 @@ export interface RunOptions {
   initialFeedback?: string;
   contextUsedRatio?: () => number;
   onLog?: (line: string) => void;
+  diagnosticLog?: RunDiagnosticLog;
 }
 
 export type EnvironmentTaskInput = Omit<AgentTaskInput, "cwd">;
@@ -133,19 +141,48 @@ export async function runLoop(o: RunOptions): Promise<RunOutcome> {
   try {
     while (true) {
       state.attempts++;
+      o.diagnosticLog?.info("loop", "attempt start", {
+        attempt: state.attempts,
+        environment: o.environment.name,
+        feedbackBytes: Buffer.byteLength(feedback),
+      });
       log(`第 ${state.attempts} 轮 · environment=${o.environment.name}`);
+      o.diagnosticLog?.debug("loop", "agent run start", {
+        attempt: state.attempts,
+      });
       const act = await o.environment.runTask({ task: o.task, feedback });
+      o.diagnosticLog?.debug("loop", "agent run end", {
+        attempt: state.attempts,
+        summary: act.summary,
+        changedFiles: act.changedFiles,
+      });
       log(`  driver: ${act.summary}`);
 
+      o.diagnosticLog?.debug("loop", "gate run start", {
+        attempt: state.attempts,
+        contracts: o.contracts.map((contract) => contract.id),
+      });
       const report = await o.environment.runGate({
         contracts: o.contracts,
         gate: o.gate,
         ctx: o.ctx,
       });
+      o.diagnosticLog?.debug("loop", "gate run end", {
+        attempt: state.attempts,
+        outcome: report.outcome,
+        summary: report.summary,
+      });
       log(`  门禁: ${report.outcome}(pass ${report.summary.pass}/${report.summary.total}, fail ${report.summary.fail}, error ${report.summary.error}, review ${report.summary.needsReview})`);
 
       if (report.outcome === "pass") {
+        o.diagnosticLog?.debug("loop", "publish start", {
+          attempt: state.attempts,
+        });
         const publication = await o.environment.publish();
+        o.diagnosticLog?.debug("loop", "publish end", {
+          attempt: state.attempts,
+          publication,
+        });
         if (!publication.ok) {
           const action = {
             kind: "stop_for_human" as const,
@@ -181,18 +218,36 @@ export async function runLoop(o: RunOptions): Promise<RunOutcome> {
       state.contextUsedRatio = o.contextUsedRatio?.() ?? 0;
       const action = decideEscalation(state);
       if (action.kind !== "continue") {
+        o.diagnosticLog?.warn("loop", "escalation selected", {
+          attempt: state.attempts,
+          action,
+        });
         log(`  升级: ${action.kind} — ${action.reason}`);
         return { outcome: "escalated", attempts: state.attempts, report, action, logs };
       }
       if (state.attempts >= hardCap) {
+        o.diagnosticLog?.warn("loop", "hard cap reached", {
+          attempt: state.attempts,
+          hardCap,
+        });
         log(`  达到硬上限 ${hardCap} 轮,停下交人`);
         return { outcome: "escalated", attempts: state.attempts, report, action: { kind: "stop_for_human", reason: `达到硬上限 ${hardCap} 轮` }, logs };
       }
 
       feedback = diagnostics(report);
+      o.diagnosticLog?.debug("loop", "diagnostics feedback generated", {
+        attempt: state.attempts,
+        feedbackBytes: Buffer.byteLength(feedback),
+      });
       log("  未通过 → 把诊断反馈给 driver,重试");
     }
   } finally {
+    o.diagnosticLog?.info("loop", "environment close start", {
+      environment: o.environment.name,
+    });
     await o.environment.close();
+    o.diagnosticLog?.info("loop", "environment close end", {
+      environment: o.environment.name,
+    });
   }
 }

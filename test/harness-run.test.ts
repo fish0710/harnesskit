@@ -192,6 +192,62 @@ test("runLoop: returns the successful publication result", async () => {
   assert.deepEqual(out.publication, published);
 });
 
+test("runLoop emits diagnostic events for attempts, gates, publish, and close", async () => {
+  const events: Array<{ level: string; phase: string; message: string; data?: unknown }> = [];
+  const environment: RunEnvironment = {
+    name: "diagnostic",
+    async runTask() {
+      return { summary: "done", changedFiles: ["src/a.ts"] };
+    },
+    async runGate({ contracts, gate, ctx }) {
+      return gate.run(contracts, ctx);
+    },
+    async publish() {
+      return { ok: true, changedFiles: ["src/a.ts"] };
+    },
+    async close() {},
+  };
+
+  const out = await runLoop({
+    task: "t",
+    contracts: [{ id: "c1", type: "flaky" }],
+    gate: new GateCore().use(flakyPlugin({ fixed: true })),
+    ctx,
+    environment,
+    budget: budget(),
+    diagnosticLog: {
+      debug(phase, message, data) {
+        events.push({ level: "debug", phase, message, data });
+      },
+      info(phase, message, data) {
+        events.push({ level: "info", phase, message, data });
+      },
+      warn(phase, message, data) {
+        events.push({ level: "warn", phase, message, data });
+      },
+      error(phase, message, data) {
+        events.push({ level: "error", phase, message, data });
+      },
+    },
+  });
+
+  assert.equal(out.outcome, "ready_for_mr");
+  assert.deepEqual(
+    events.map((event) => `${event.level}:${event.phase}:${event.message}`),
+    [
+      "info:loop:attempt start",
+      "debug:loop:agent run start",
+      "debug:loop:agent run end",
+      "debug:loop:gate run start",
+      "debug:loop:gate run end",
+      "debug:loop:publish start",
+      "debug:loop:publish end",
+      "info:loop:environment close start",
+      "info:loop:environment close end",
+    ],
+  );
+});
+
 // ---------- 裁决存储 ----------
 test("verdicts: 记录后可读回", () => {
   const cwd = mkdtempSync(join(tmpdir(), "hv-"));
