@@ -81,6 +81,33 @@ Use this if a project really needs `nvm`:
 Because Node 22.14.0 is already active in the default snapshots, prefer a plain
 `npm ci` unless the project explicitly requires a different Node version.
 
+## Dependency Manifest Boundaries
+
+Keep Agent and Gate dependency setup pointed at the same intended manifests.
+`agentSetup` prepares the mutating Agent sandbox; `gateSetup` prepares a fresh
+Gate sandbox from host baseline plus candidate bytes. If the Agent can publish a
+setup manifest, Gate setup will consume that candidate manifest before contracts
+run.
+
+Default to treating root setup files as protected environment inputs:
+`.nvmrc`, `package.json`, package-manager lockfiles, `tsconfig.json`,
+`babel.config.js`, and `postcss.config.js`. Put them in `candidateRoots` only
+when the current task intentionally changes root dependencies or build
+configuration, and include manifest plus lockfile together.
+
+For isolated apps or subprojects, scope setup and contracts to that directory
+instead of running root installs by accident:
+
+```json
+"agentSetup": ["bash -lc 'cd vue3-app && npm ci'"],
+"gateSetup": ["bash -lc 'cd vue3-app && npm ci'"]
+```
+
+If Gate setup fails before any contract runs, inspect whether the Agent was
+allowed to mutate the files used by that setup command. Fix `candidateRoots` and
+`protectedPaths`, then resume the original series id rather than starting a new
+ledger.
+
 The default Gate snapshot keeps Node 22.14.0 active at `/usr/local/bin/node`.
 It also preinstalls Node 14.21.3 with npm 6.14.18 for older projects. A Vue 2
 or other old `.nvmrc` project can install dependencies in `gateSetup` with:

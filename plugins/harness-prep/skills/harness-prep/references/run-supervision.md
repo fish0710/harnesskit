@@ -34,6 +34,10 @@ find .harness/series -maxdepth 1 -type f -print
 If the relevant task is already `completed` with the same `taskHash`, a no-task
 `harness run` will skip it before creating a child run, Agent sandbox, Gate
 sandbox, or built-in preflight.
+
+If a previous series stopped mid-run, recover the original series. Do not
+change `series.id` or delete `.harness` unless the user explicitly asks for a
+full rerun; a new id creates a new ledger and reruns completed tasks.
 9. Start one of:
 
 ```bash
@@ -160,10 +164,39 @@ Explain:
 - RunStore parent `kind=series`: audit summary and child run ids.
 - RunStore child `kind=series-task`: task-specific Gate report, logs, selected contracts, Agent/Gate ids.
 - Series ledger: resume, task hash, ready-to-commit, commit state. This is the authority for skip/resume/commit progress; RunStore is the historical audit log and can retain old error or escalated child runs.
-- `completed`: already done; rerun should skip matching completed tasks.
-- `running`: interrupted or active task; inspect latest run record.
+- `completed`: already done; rerun should skip only when the current `taskHash` matches.
+- `pending`/`running`: interrupted or active task; inspect latest run record before rerunning.
 - `ready_to_commit`: gate passed but commit step needs completion.
 - `blocked`/`escalated`/`error`: stop and inspect that task before continuing.
+
+### Interrupted Series Recovery
+
+When a configured serial task fails partway through, restore the original series
+instead of bypassing the stop state with a new `series.id`.
+
+Recovery flow:
+
+1. Read `.harness/series/<series-id>.json`.
+2. Confirm the current `harness.config.json` still uses the same `series.id`.
+3. Preserve completed task entries exactly, including `status: "completed"`,
+   original `taskHash`, `commit`, `runRecord`, and timestamps. Do not rewrite a
+   completed task hash to make it match new config.
+4. Diagnose and fix the root cause in config, setup, contracts, environment, or
+   implementation scope.
+5. For only the stopped task, remember that `blocked`, `escalated`, and `error`
+   stop immediately on rerun. After fixing the root cause, a host operator may
+   restore that task to `pending` or `running` to rerun it under the same series.
+6. Rerun with the original `series.id` and confirm stdout shows:
+
+```text
+[n/m] <task> · skipped completed (taskHash unchanged)
+```
+
+Only after the completed tasks skip should Harness enter the failed task.
+
+If the user explicitly asks for a full rerun, say first that completed tasks will
+execute again and may add time, token, sandbox, and CI cost. Then use a new
+series id or clear the ledger only with that explicit approval.
 
 If a rerun prints `series completed` after skipping completed tasks, do not
 interpret the lack of a new child run or Gate preflight as a no-op bug. It means
@@ -177,3 +210,4 @@ bytes and updated the ledger.
 - Do not say "merged" when only `ready_for_mr` happened.
 - Do not say "committed" for single-task runs unless git history confirms it.
 - Do not keep retrying after repeated escalation without inspecting root cause.
+- Do not change `series.id` to get past a stopped serial task.

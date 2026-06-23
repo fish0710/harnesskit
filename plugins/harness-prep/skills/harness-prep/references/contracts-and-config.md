@@ -105,10 +105,7 @@ Keep protected paths broad. Only put implementation-owned paths in `candidateRoo
   "sandbox": {
     "candidateRoots": [
       "src",
-      "test",
-      "package.json",
-      "package-lock.json",
-      "tsconfig.json"
+      "test"
     ],
     "protectedPaths": [
       "contracts",
@@ -116,7 +113,13 @@ Keep protected paths broad. Only put implementation-owned paths in `candidateRoo
       "harness.config.json",
       ".github/workflows",
       "CODEOWNERS",
-      "test/gates"
+      "test/gates",
+      ".nvmrc",
+      "package.json",
+      "package-lock.json",
+      "babel.config.js",
+      "postcss.config.js",
+      "tsconfig.json"
     ],
     "agentSetup": ["npm ci"],
     "gateSetup": [],
@@ -156,6 +159,13 @@ Rules:
 - Task ids and series ids must be safe path segments: no `/`, `\`, `.`, `..`, empty string, or NUL.
 - If using `tasks`, prefer explicit task gate contracts over changed-file selection.
 - Do not include `contracts`, `.harness`, or `harness.config.json` in mutable roots unless the user is explicitly doing Harness configuration work before the run.
+- Do not include root `package.json`, lockfiles, `.nvmrc`, or build config in
+  mutable roots when they are only setup inputs or legacy baseline. Put them in
+  `protectedPaths` so Gate setup cannot consume Agent-mutated dependency state
+  before contracts run.
+- If a task intentionally changes dependencies, include the package manifest and
+  lockfile together in `candidateRoots`, scope setup commands to that project
+  root, and tell the user this makes dependency changes part of the candidate.
 - If `agentSetup` or `gateSetup` requires credentials, stop and ask for a safer env-based setup.
 - If setup uses `nvm`, write `bash -lc 'source /usr/local/nvm/nvm.sh && nvm use <version> && ...'`. Plain `nvm use` is invalid in these sandboxes.
 - If a command/http contract needs tools absent from the Gate snapshot, install them in `gateSetup` before Gate network policy is applied.

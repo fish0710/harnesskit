@@ -23,7 +23,7 @@ Create or update the spec with this table. Do not start `harness run` while any 
 | Service start command | e.g. `npm run dev -- --port 3000` | `sandbox.gateSetup` |
 | Loopback ports | Gate sandbox ports, not host ports | `http` contracts |
 | Mutable paths | implementation-owned files only | `sandbox.candidateRoots` |
-| Protected paths | contracts, config, CI, trusted gates | `sandbox.protectedPaths` |
+| Protected paths | contracts, config, CI, trusted gates, setup dependency manifests | `sandbox.protectedPaths` |
 | Secrets needed by agent | names only, never values in repo | shell env / secret manager |
 | Secrets needed by gate | usually none; justify if needed | host environment |
 | Daytona API | `DAYTONA_API_KEY`, optional `DAYTONA_API_URL` | shell env |
@@ -36,6 +36,15 @@ Create or update the spec with this table. Do not start `harness run` while any 
 
 - Start narrow: only include paths the implementation agent must change.
 - Keep these protected by default: `contracts`, `.harness`, `harness.config.json`, `.github/workflows`, `CODEOWNERS`, and trusted gate runners such as `test/gates`.
+- Treat setup inputs as protected environment assets unless the task explicitly
+  requires changing them: `.nvmrc`, root `package.json`, package-manager
+  lockfiles, `tsconfig.json`, `babel.config.js`, and `postcss.config.js`.
+- Do not put root dependency files in `candidateRoots` just because setup runs
+  `npm ci`. If root setup is legacy baseline, protect those files and let both
+  Agent and Gate install from the same baseline manifest.
+- If the task intentionally changes dependencies, include the package manifest
+  and lockfile together in `candidateRoots`, explain the risk to the user, and
+  make Agent/Gate setup install from that same project root.
 - If every candidate root is covered by protection, stop and revise the policy.
 - Put dependency installation in `agentSetup` when the agent needs tools to edit or test.
 - Put service startup or gate-only preparation in `gateSetup`.
