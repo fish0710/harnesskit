@@ -14,7 +14,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); for (const p of ['dist/src/cli.js','dist/demo/run-demo.js']) if (fs.existsSync(p)) fs.chmodSync(p, 0o755)\"",
     "demo": "node dist/demo/run-demo.js",
     "test": "node --test \"dist/test/**/*.test.js\"",
     "test:daytona": "npm run build && RUN_DAYTONA_INTEGRATION=1 node dist/test/daytona-claude.js",
