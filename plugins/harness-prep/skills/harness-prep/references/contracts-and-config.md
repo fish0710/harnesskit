@@ -86,6 +86,12 @@ Rules:
 
 - `projectPath` must point at the compiled mini-program artifact that contains
   `project.config.json`, not at source pages.
+- For mini-program behavior tasks, default to Agent-built artifacts and
+  `gateSetup: []`; do not make dependency install or rebuild commands the
+  default Gate path.
+- Framework-specific rebuilds, including uni-app, Taro, or native mini-program
+  build commands, belong in optional `type: command` contracts for source
+  reproducibility. They are not part of the `miniprogram` plugin contract.
 - Use a unique `autoPort` per concurrently selected mini-program contract.
 - Keep `test/gates` protected. The runner is a trusted host-side judge.
 - In runners, avoid `page.callMethod()` and raw `page.data()` assertions for
@@ -200,6 +206,9 @@ Rules:
 - Include compiled mini-program artifact roots such as `dist/build/mp-weixin`
   or `vue3-app/dist/build/mp-weixin` in `candidateRoots` when later
   host-local mini-program gates must consume agent-built artifacts.
+- For default mini-program behavior gates, let the implementation Agent produce
+  the compiled artifact and keep `gateSetup` empty. Add Gate-side install/build
+  commands only for explicit source reproducibility requirements.
 - Do not include root `package.json`, lockfiles, `.nvmrc`, or build config in
   mutable roots when they are only setup inputs or legacy baseline. Put them in
   `readOnlyPaths` if Agent setup must read them, or `protectedPaths` only when
