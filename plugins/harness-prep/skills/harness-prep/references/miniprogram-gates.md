@@ -61,8 +61,8 @@ mini-program contracts before creating an Agent sandbox:
   acceptable for DOM-only smoke tests, but APIs such as account or security
   calls may emit DevTools runtime warnings.
 - The compiled `projectPath` exists and contains `project.config.json`.
-- The target project installs `miniprogram-automator`, commonly
-  `miniprogram-automator@0.12.1`.
+- The Harness installation provides `miniprogram-automator@0.12.1` to trusted
+  runners through `NODE_PATH`; do not make runners install it during a gate.
 
 ## Runner Rules
 
@@ -92,7 +92,9 @@ Avoid these anti-patterns:
 ## Runner Skeleton
 
 ```js
-import automator from "miniprogram-automator";
+import { createRequire } from "node:module";
+
+const automator = createRequire(import.meta.url)("miniprogram-automator");
 
 const wsEndpoint = process.env.HARNESS_MINIPROGRAM_WS_ENDPOINT;
 if (!wsEndpoint) throw new Error("HARNESS_MINIPROGRAM_WS_ENDPOINT is required");

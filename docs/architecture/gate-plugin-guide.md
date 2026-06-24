@@ -198,10 +198,14 @@ runner 启动时只接收插件显式注入的环境变量：
 
 | 环境变量 | 说明 |
 |---|---|
+| `NODE_PATH` | 指向 Harness 自带依赖所在的 `node_modules`，使 runner 可加载 `miniprogram-automator` |
 | `HARNESS_MINIPROGRAM_PROJECT` | 契约中的相对 `projectPath` |
 | `HARNESS_MINIPROGRAM_PROJECT_ABS` | 真实解析后的项目绝对路径 |
 | `HARNESS_MINIPROGRAM_WS_ENDPOINT` | 开发者工具 WebSocket endpoint |
 | `HARNESS_MINIPROGRAM_DEVTOOLS_PORT` | `managed` 模式的自动化端口 |
+
+ESM runner 需要通过 `createRequire(import.meta.url)("miniprogram-automator")`
+加载该依赖；裸 `import "miniprogram-automator"` 不读取 `NODE_PATH`。
 
 安全边界：
 
@@ -209,8 +213,9 @@ runner 启动时只接收插件显式注入的环境变量：
   路径、`..` 和 symlink escape。
 - 插件使用 realpath 后的项目目录与 runner 文件执行，`project.config.json` 也必须
   位于工作区内。
-- runner 不继承宿主 ambient environment。managed DevTools CLI 只接收 `HOME`，
-  用于读取微信开发者工具本机配置目录，不透传其它 ambient 变量。
+- runner 不继承宿主 ambient environment，只接收上表变量。managed DevTools
+  CLI 只接收 `HOME`，用于读取微信开发者工具本机配置目录，不透传其它
+  ambient 变量。
 - Daytona `harness run` 中，小程序契约不进入远端 gate 沙箱。宿主会把本轮
   `CandidateSnapshot` materialize 到临时目录，在该目录运行 miniprogram 契约，
   然后删除临时目录。

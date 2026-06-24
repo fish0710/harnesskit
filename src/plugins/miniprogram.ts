@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 import {
   commandEvidenceError,
@@ -37,6 +38,7 @@ const DEFAULT_DEVTOOLS_READY_TIMEOUT_MS = 30_000;
 const DEVTOOLS_READY_CONNECT_TIMEOUT_MS = 500;
 const DEVTOOLS_READY_PROTOCOL_TIMEOUT_MS = 1_000;
 const DEVTOOLS_READY_POLL_MS = 100;
+const requireFromPlugin = createRequire(import.meta.url);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -67,6 +69,15 @@ function boundedCommandOutput(stderr: string, stdout: string): string | undefine
   add("stderr", stderr);
   add("stdout", stdout);
   return sections.length ? sections.join("\n") : undefined;
+}
+
+function harnessMiniprogramNodePath(): string | undefined {
+  try {
+    const automatorPackageJson = requireFromPlugin.resolve("miniprogram-automator/package.json");
+    return dirname(dirname(automatorPackageJson));
+  } catch {
+    return undefined;
+  }
 }
 
 function realPath(path: string): string | undefined {
@@ -915,6 +926,7 @@ export const miniprogramPlugin: Plugin = {
     }
 
     const id = executionId();
+    const runnerNodePath = harnessMiniprogramNodePath();
     const evidence = await (ctx.execution ?? localExecutionTarget).execute({
       executionId: id,
       command: process.execPath,
@@ -923,6 +935,7 @@ export const miniprogramPlugin: Plugin = {
       timeoutMs,
       signal: ctx.signal,
       env: {
+        ...(runnerNodePath ? { NODE_PATH: runnerNodePath } : {}),
         HARNESS_MINIPROGRAM_PROJECT: projectPath,
         HARNESS_MINIPROGRAM_PROJECT_ABS: projectReal,
         HARNESS_MINIPROGRAM_WS_ENDPOINT: wsEndpoint,

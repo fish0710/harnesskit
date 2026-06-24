@@ -57,6 +57,9 @@ test("miniprogram prep skill documents host-local runner rules", () => {
   assert.match(reference, /host-local/);
   assert.match(reference, /harness preflight gate/);
   assert.match(reference, /hostLocal\.<id>\.devtools/);
+  assert.match(reference, /NODE_PATH/);
+  assert.match(reference, /miniprogram-automator@0\.12\.1/);
+  assert.match(reference, /createRequire/);
   assert.match(reference, /page\.callMethod\(\)/);
   assert.match(reference, /page\.data/);
   assert.match(reference, /uni-app/);
@@ -64,6 +67,8 @@ test("miniprogram prep skill documents host-local runner rules", () => {
   assert.match(readme, /page\.callMethod\(\)/);
   assert.match(readme, /page\.data/);
   assert.match(readme, /uni-app\/Vue3/);
+  assert.match(readme, /NODE_PATH/);
+  assert.match(helpers, /createRequire\(import\.meta\.url\)\("miniprogram-automator"\)/);
   assert.match(helpers, /export async function inputText/);
   assert.match(helpers, /export async function tapElement/);
   assert.match(helpers, /export async function triggerElement/);

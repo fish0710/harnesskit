@@ -1,4 +1,6 @@
-import automator from "miniprogram-automator";
+import { createRequire } from "node:module";
+
+const automator = createRequire(import.meta.url)("miniprogram-automator");
 
 export function requireEnv(name) {
   const value = process.env[name];

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { relative, resolve } from "node:path";
+import { delimiter, relative, resolve } from "node:path";
 
 import { GateCore } from "../src/gate.js";
 import type {
@@ -263,6 +263,7 @@ test("miniprogram plugin classifies runner exit 0 as pass", async () => {
     "HARNESS_MINIPROGRAM_PROJECT",
     "HARNESS_MINIPROGRAM_PROJECT_ABS",
     "HARNESS_MINIPROGRAM_WS_ENDPOINT",
+    "NODE_PATH",
   ]);
   assert.equal(calls[0]!.env?.HARNESS_MINIPROGRAM_PROJECT, "test/fixtures/mp-project");
   assert.equal(
@@ -270,6 +271,29 @@ test("miniprogram plugin classifies runner exit 0 as pass", async () => {
     resolve(process.cwd(), "test/fixtures/mp-project"),
   );
   assert.equal(calls[0]!.env?.HARNESS_MINIPROGRAM_WS_ENDPOINT, "ws://127.0.0.1:9420");
+});
+
+test("miniprogram plugin exposes Harness-owned automator dependency to runner", async () => {
+  const { execution, calls } = fakeExecution(() => ({ exitCode: 0 }));
+  const result = await miniprogramPlugin.run(
+    {
+      id: "mp.automator.path",
+      type: "miniprogram",
+      projectPath: "test/fixtures/mp-project",
+      runner: "test/fixtures/miniprogram-runner.js",
+      devtools: { mode: "connect", wsEndpoint: "ws://127.0.0.1:9420" },
+    },
+    { cwd: process.cwd(), execution },
+  );
+
+  assert.equal(result.status, "pass");
+  assert.equal(calls.length, 1);
+  const nodePath = calls[0]!.env?.NODE_PATH;
+  assert.ok(nodePath, "runner should receive NODE_PATH");
+  assert.ok(
+    nodePath.split(delimiter).some((entry) => entry.endsWith("node_modules")),
+    `NODE_PATH should include a node_modules directory: ${nodePath}`,
+  );
 });
 
 test("miniprogram plugin executes accepted in-workspace symlinks by real path", async () => {

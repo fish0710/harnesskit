@@ -28,11 +28,8 @@ Adjust `projectPath` if your artifact path is different.
 
 ## Run
 
-Install the automator dependency in the target project:
-
-```bash
-npm install --save-dev miniprogram-automator
-```
+Harness provides the `miniprogram-automator` dependency to trusted runners
+through `NODE_PATH`; target projects do not need to install it only for gates.
 
 Run managed mode through Harness:
 
