@@ -19,6 +19,7 @@ function projectFiles(): FileSpec[] {
 ## 工作循环
 读意图(docs/specs, docs/plans) → 改代码 → 跑 \`harness check\` 看宿主门禁反馈 → 跑 \`harness preflight gate\` 确认 Daytona Gate sandbox 能执行远端门禁 → 修到全绿 → 才算完成。
 \`harness check\` 是 host/宿主本地验证；\`harness preflight gate\` 才会创建 Gate sandbox 演练 gateSetup/远端契约。
+涉及依赖、构建、\`agentSetup\`、\`gateSetup\` 或远端 command/http 门禁时,先读 \`docs/reference/harness-runtime.md\`。
 你只能 push / 开 MR,不能合并;冻结契约(contracts/frozen/)不可改。
 
 ## 结构
@@ -58,6 +59,7 @@ function projectFiles(): FileSpec[] {
               "AGENTS.md",
               "docs/specs",
               "docs/plans",
+              "docs/reference",
             ],
             agentSetup: [],
             gateSetup: [],
@@ -102,6 +104,63 @@ expect:
     },
     { path: "docs/specs/.gitkeep", content: "" },
     { path: "docs/plans/.gitkeep", content: "" },
+    {
+      path: "docs/reference/harness-runtime.md",
+      content: `# Harness Runtime Reference
+
+Implementation agents can read this file as project context. Treat it as a
+runtime contract for Harness sandboxes, not as a file to edit during feature
+work.
+
+## Default Sandboxes
+
+- Agent sandbox: \`harness-agent-claude-latest\`, used for mutating
+  implementation work.
+- Gate runtime: \`harness-gate-runtime-latest\`, used for fresh validation
+  without model credentials.
+
+The default snapshots pin Node.js 22.14.0 and npm/npx 10.9.2. Gate also has
+Python 3.11, bash, curl, make, gcc, and a preinstalled legacy Node 14.21.3/npm
+6.14.18 under nvm for old projects.
+
+Gate has no Claude, no model credentials, and no Agent state. The Gate sandbox
+is recreated for each remote validation attempt. git, pnpm, yarn, and bun are not installed by default; install or enable them in \`gateSetup\` only when a
+contract truly needs them.
+
+## Shell And nvm
+
+\`nvm\` is a shell function, not an executable. Source it before use:
+
+\`\`\`bash
+source /usr/local/nvm/nvm.sh
+nvm use 14.21.3
+\`\`\`
+
+Prefer plain \`npm ci\` when Node.js 22.14.0 is acceptable.
+
+## Gate Setup And Network
+
+Harness assembles the evaluated candidate in a fresh Gate sandbox, then runs
+\`sandbox.gateSetup\`. Gate network is blocked after \`gateSetup\` for ordinary
+remote contracts, so install dependencies and prepare services in setup rather
+than inside command contracts.
+
+If a selected remote HTTP contract targets loopback, Harness leaves network open
+so the sandbox-local service can be checked. 127.0.0.1 means the Gate sandbox,
+not the developer host.
+
+## Mini-program Artifacts
+
+WeChat DevTools runs on the macOS host. Mini-program behavior gates should
+consume an already-built artifact such as \`dist/build/mp-weixin\`; they should
+not reinstall dependencies or rebuild framework output by default.
+
+Clean rebuilds are source-reproducibility gates. Configure them explicitly,
+usually as the final task in a series, when the requirement is that a fresh Gate
+runtime can run commands such as \`npm ci && npm run build:mp-weixin\` from the
+published source and lockfiles.
+`,
+    },
     {
       path: "docs/reference/principles.md",
       content: `# 核心原则(被 structure 契约机械检查)\n\n在此登记可机械检查的原则,并在 contracts/ 里加对应 structure 契约。\n`,

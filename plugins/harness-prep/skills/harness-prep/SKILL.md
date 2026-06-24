@@ -33,7 +33,7 @@ During execution, keep the user oriented around the real Harness state: host man
 - Prefer `harness` on PATH. If working inside the Harness source repo, build first and use `node dist/src/cli.js`.
 - Run `harness create .` only in the target project root. Do not use `--force` unless the user explicitly approves overwriting existing Harness files.
 - Keep `contracts/`, `test/gates/`, `harness.config.json`, `.github/workflows/`, `CODEOWNERS`, and `.harness/` host-owned and hidden from the implementation agent during `harness run`.
-- Put `AGENTS.md`, `docs/specs/`, and `docs/plans/` in `sandbox.readOnlyPaths` so the implementation agent can read task context without publishing changes to it.
+- Put `AGENTS.md`, `docs/specs/`, `docs/plans/`, and `docs/reference/` in `sandbox.readOnlyPaths` so the implementation agent can read task and runtime context without publishing changes to it.
 - Never write API keys, model tokens, or Daytona credentials into repo files. Ask the user to export environment variables or pass them through the shell.
 - If the user wants Claude Code execution, use `--driver claude`. If the user wants Codex execution, use `--driver command --agent-cmd <runner>` only when a real Codex runner command exists; do not invent a `--driver codex` flag.
 - Explain generated config in natural language before asking for confirmation.
@@ -42,7 +42,7 @@ During execution, keep the user oriented around the real Harness state: host man
 
 Before execution, produce or update:
 
-- `AGENTS.md` from `harness create`, plus any repo-specific notes it points to.
+- `AGENTS.md` and `docs/reference/harness-runtime.md` from `harness create`, plus any repo-specific notes they point to.
 - `docs/specs/<date>-<slug>.md`: current requirement, non-goals, must-preserve principles, decisions, risks, acceptance mapping.
 - `docs/plans/<date>-<slug>.md`: task checklist that can be translated into `harness.config.json` tasks.
 - `contracts/*.yaml|json`: executable gates where possible and `review` gates for human-only decisions.

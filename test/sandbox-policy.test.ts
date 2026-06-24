@@ -377,6 +377,7 @@ test("loadSandboxPolicy returns conservative defaults", () => {
       "AGENTS.md",
       "docs/specs",
       "docs/plans",
+      "docs/reference",
     ],
     agentSetup: [],
     gateSetup: [],
@@ -725,6 +726,7 @@ test("loadSandboxPolicy returns fresh defaults that cannot be mutated globally",
     "AGENTS.md",
     "docs/specs",
     "docs/plans",
+    "docs/reference",
   ]);
   assert.deepEqual(second.agentSetup, []);
   assert.deepEqual(second.gateSetup, []);

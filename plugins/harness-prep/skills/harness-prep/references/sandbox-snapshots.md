@@ -36,30 +36,91 @@ Those scripts create short-lived Daytona sandboxes, run toolchain preflight, and
 delete the sandboxes. They require `DAYTONA_API_KEY` and optional
 `DAYTONA_API_URL`; do not print the key.
 
+## Scaffolded Runtime Context
+
+`harness create` writes `docs/reference/harness-runtime.md` and default config
+should expose `docs/reference` through `sandbox.readOnlyPaths`. Agents can read
+that file before changing dependencies, build scripts, `agentSetup`,
+`gateSetup`, or remote command/http contracts, but they must not publish edits
+to it during implementation tasks.
+
+Keep that project-local reference aligned with these Gate facts:
+
+- Gate has no Claude, model credentials, or Agent state.
+- Gate has Node.js 22.14.0 and npm/npx 10.9.2 by default.
+- `git`, `pnpm`, `yarn`, and `bun` are not installed by default.
+- `nvm` requires `source /usr/local/nvm/nvm.sh` before `nvm use`.
+- Gate network is blocked after `gateSetup` for ordinary remote contracts.
+- 127.0.0.1 means the Gate sandbox, not the developer host.
+
+## Enhanced Agent Latest Snapshot
+
+Live probe on 2026-06-24 rebuilt and verified `harness-agent-claude-latest`
+from this enhanced snapshot source:
+
+```text
+harness-agent-claude-toolchain-20260624-071637-r5
+```
+
+The default Claude Agent snapshot now includes the enhanced toolchain. Pin the
+source snapshot only when diagnosing latest drift:
+
+```bash
+export HARNESS_DAYTONA_AGENT_SNAPSHOT=harness-agent-claude-toolchain-20260624-071637-r5
+```
+
+The latest snapshot keeps the pinned Claude toolchain (`node` 22.14.0, `npm`/`npx`
+10.9.2, Claude Code 2.1.145) and adds common implementation tools: `git`,
+`git-lfs`, `jq`, `wget`, `unzip`, `zip`, `rsync`, `ssh`/`scp`, Docker CLI and
+Compose, `pnpm`, `yarn`, `bun`, Go, Rust/Cargo, Java/Javac, Maven, Gradle,
+PHP, Ruby/Gem, SQLite, PostgreSQL/MySQL/Redis clients, `zsh`, `vim`, and
+`nano`.
+
+It also fixes common shell and language-environment friction:
+
+- `en_US.UTF-8` locale is generated.
+- `/etc/profile.d/harness-toolchain.sh` sources nvm, selects Node 22.14.0,
+  prepends `/home/daytona/.local/bin`, and de-duplicates `PATH`.
+- `.profile`, `.bashrc`, `.zshrc`, `.zprofile`, and `.zshenv` load that profile
+  script, so bash and zsh shells both expose `nvm`.
+- `python` and `python3` resolve to Python 3.11.14 from `/usr/local/bin`.
+- `python3-venv`, `pipx`, `uv`, and `uvx` are available, but no virtual
+  environment is activated by default.
+- Corepack is enabled. Project `packageManager` fields should pin package
+  manager versions; otherwise Corepack may select its current Known Good
+  default.
+
+Known boundary: Docker CLI is present, but a Docker daemon/socket is not
+guaranteed in ordinary Daytona Agent sandboxes. Treat `docker build` or Compose
+workflows as requiring a daemon-capable sandbox or project-specific setup.
+
 ## Observed Runtime Inventory
 
-Live probe on 2026-06-18 against both default latest snapshots showed:
+Live probes on 2026-06-24 against the rebuilt Agent latest and earlier Gate
+latest showed:
 
 | Capability | Agent latest | Gate latest | Setup impact |
 |---|---|---|---|
 | OS/user | Debian 13, user `daytona`, home `/home/daytona` | same | Avoid host-specific paths. |
-| Shell | `$SHELL=/bin/sh`, `/usr/bin/bash` exists | same | Use `bash -lc` only when needed. |
+| Shell | `$SHELL=/bin/sh`; `/usr/bin/bash` and `/usr/bin/zsh`; bash/zsh profile load the Harness toolchain profile | `$SHELL=/bin/sh`, `/usr/bin/bash` exists | Use `bash -lc` only when needed; Agent interactive shells expose `nvm`. |
 | Node | `/usr/local/bin/node` v22.14.0 | same; Node 14.21.3/npm 6.14.18 also preinstalled under nvm | Default Node gates can run without install; old `.nvmrc` projects can `nvm use` the preinstalled Node 14. |
 | npm/npx | `/usr/local/bin/npm`, `/usr/local/bin/npx` 10.9.2 | same | Prefer `npm ci`/`npm test` for JS projects. |
-| nvm | `NVM_DIR=/usr/local/nvm`, `nvm.sh` exists, no `nvm` binary | same | Source nvm before `nvm use`. |
-| corepack | direct `corepack --version` works; `bash -lc corepack` did not | same | Prefer direct `corepack` or explicit path. |
-| pnpm/yarn/bun | missing | missing | Install/enable explicitly if required. |
-| Python | Python 3.11.14, pip 24.0 | same | Python gates can use `python3`/`pip3`. |
-| git | missing | missing | Do not put `git` commands in setup/gates unless installed. |
+| nvm | `nvm` available in bash/zsh after profile load; current Node v22.14.0 | `NVM_DIR=/usr/local/nvm`, `nvm.sh` exists, no `nvm` binary | Gate setup must still source nvm before `nvm use`. |
+| corepack | enabled, `corepack --version` 0.31.0 | direct `corepack --version` works; `bash -lc corepack` did not in earlier probe | Use `packageManager` in `package.json` to pin pnpm/yarn versions. |
+| pnpm/yarn/bun | present; pnpm follows Corepack Known Good default without project pin | missing | Gate setup must install/enable these if Gate contracts need them. |
+| Python | Python 3.11.14, pip 24.0, `python3-venv`, `pipx`, `uv`, `uvx`; no venv active by default | Python 3.11.14, pip 24.0 | Python gates can use `python3`/`pip3`; Agent projects should use `.venv` or `uv`. |
+| git | present, including `git-lfs` | missing | Do not put `git` in Gate setup/contracts unless Gate installs it. |
 | curl/make/gcc | present | present | Native builds may work, but verify project deps. |
 | Claude | `/usr/local/bin/claude` 2.1.145 | missing | Gate must not run Claude commands. |
-| Writable paths | `/home/daytona`, `/tmp`; `/usr/local` not writable | same | Install project deps in workspace/home, not `/usr/local`. |
+| Docker | Docker CLI and Compose present; daemon/socket not guaranteed | missing | `docker build` or Compose workflows need daemon-capable setup. |
+| Writable paths | `/home/daytona`, `/tmp`; `/usr/local` not writable without sudo | same | Install project deps in workspace/home, not `/usr/local`. |
 | sudo | passwordless in probe | passwordless in probe | Prefer non-sudo setup; use sudo only if justified. |
 | Network | raw snapshot could reach `https://example.com` | raw snapshot could reach it | Harness may block Gate network after setup. |
 
-Locale warnings such as `setlocale: LC_ALL: cannot change locale
-(en_US.UTF-8)` may appear before command output. Contracts should rely on exit
-codes or structured evidence markers, not exact first-line stdout.
+The rebuilt Agent latest generates `en_US.UTF-8`. Gate snapshots may still emit
+locale warnings such as `setlocale: LC_ALL: cannot change locale
+(en_US.UTF-8)`. Contracts should rely on exit codes or structured evidence
+markers, not exact first-line stdout.
 
 ## nvm And Shell Rules
 
@@ -80,6 +141,32 @@ Use this if a project really needs `nvm`:
 
 Because Node 22.14.0 is already active in the default snapshots, prefer a plain
 `npm ci` unless the project explicitly requires a different Node version.
+
+For enhanced Agent snapshots that load `/etc/profile.d/harness-toolchain.sh`,
+plain `bash -lc` or `zsh -lc` should expose `nvm` and a de-duplicated `PATH`.
+Still prefer project-local commands (`npm ci`, `pnpm install`,
+`corepack pnpm install`) over global package installation.
+
+If a Node project uses `pnpm` or `yarn`, prefer a `packageManager` field in
+`package.json` so Corepack selects the intended version. Without that field,
+Corepack may use its current Known Good default instead of the version a human
+expects from memory.
+
+## Python Environment Rules
+
+Do not activate a global virtual environment in the Agent snapshot. The base
+environment should stay neutral so each project can create its own `.venv` or
+use `uv`.
+
+- Prefer `uv sync`, `uv run`, or `python -m venv .venv` inside the project.
+- Use `pipx` for Python CLI tools such as `ruff`, `httpie`, or `pre-commit`
+  when the tool should not become a project dependency.
+- Do not rely on globally installed Python packages for project behavior. The
+  Daytona SDK or other global packages can exist in site-packages, but project
+  commands should use `.venv`, `uv`, or explicit project dependency manifests.
+- If a project requires Python versions other than the snapshot default
+  Python 3.11.14, prefer `uv python install` in `agentSetup` or a dedicated
+  snapshot. Do not assume `pyenv` or Conda exists.
 
 ## Dependency Manifest Boundaries
 
@@ -151,10 +238,10 @@ remote contracts.
 
 - Use `npm ci`, `npm test`, `npm run build`, `python3`, `pip3`, or explicit
   project-local scripts in contracts.
-- Do not use `git` in Agent/Gate setup or contracts unless setup installs it.
+- Do not use `git` in Gate setup or contracts unless Gate setup installs it.
 - Do not use `claude` in Gate setup/contracts; Gate is intentionally agent-free.
-- If using `pnpm`, `yarn`, or `bun`, add an explicit setup step and validate it
-  before `harness run`.
+- If Gate contracts use `pnpm`, `yarn`, or `bun`, add an explicit Gate setup
+  step and validate it before `harness run`.
 - Keep setup commands deterministic and non-secret; environment variables should
   name secrets but never store values in repo files.
 

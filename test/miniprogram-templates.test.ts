@@ -63,6 +63,10 @@ test("miniprogram prep skill documents host-local runner rules", () => {
   assert.match(reference, /Artifact-first Default/);
   assert.match(reference, /Agent sandbox owns dependency installation and framework-specific builds/);
   assert.match(reference, /Gate-side rebuilds are opt-in source reproducibility checks/);
+  assert.match(reference, /Clean Build Final Task/);
+  assert.match(reference, /final series task/);
+  assert.match(reference, /Do not mix this with the behavior parity task/);
+  assert.match(reference, /source-reproducibility failure/);
   assert.match(reference, /Do not make npm ci or npm run build the default Gate path/);
   assert.match(reference, /not a uni-app, Taro, or native mini-program build plugin/);
   assert.match(reference, /page\.callMethod\(\)/);

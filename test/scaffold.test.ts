@@ -41,6 +41,7 @@ test("create writes explicit sandbox trust policy", () => {
     "AGENTS.md",
     "docs/specs",
     "docs/plans",
+    "docs/reference",
   ]);
 });
 
@@ -52,6 +53,27 @@ test("create documents Gate sandbox preflight in AGENTS", () => {
   assert.match(agents, /harness preflight gate/);
   assert.match(agents, /Gate sandbox/i);
   assert.match(agents, /harness check.*host/i);
+  assert.match(agents, /docs\/reference\/harness-runtime\.md/);
+});
+
+test("create writes runtime reference for agent-visible Gate environment facts", () => {
+  const target = mkdtempSync(join(tmpdir(), "harness-create-runtime-"));
+  createProject(target);
+  const runtime = readFileSync(
+    join(target, "docs/reference/harness-runtime.md"),
+    "utf8",
+  );
+
+  assert.match(runtime, /Harness Runtime Reference/);
+  assert.match(runtime, /Gate runtime/);
+  assert.match(runtime, /Node\.js 22\.14\.0/);
+  assert.match(runtime, /npm\/npx 10\.9\.2/);
+  assert.match(runtime, /Gate has no Claude/);
+  assert.match(runtime, /git, pnpm, yarn, and bun are not installed by default/);
+  assert.match(runtime, /source \/usr\/local\/nvm\/nvm\.sh/);
+  assert.match(runtime, /Gate network is blocked after `gateSetup`/);
+  assert.match(runtime, /127\.0\.0\.1 means the Gate sandbox/);
+  assert.match(runtime, /Clean rebuilds are source-reproducibility gates/);
 });
 
 test("create initializes git when target is not inside a repository", () => {

@@ -20,6 +20,7 @@ const DEFAULT_POLICY: SandboxPolicy = {
     "AGENTS.md",
     "docs/specs",
     "docs/plans",
+    "docs/reference",
   ],
   agentSetup: [],
   gateSetup: [],

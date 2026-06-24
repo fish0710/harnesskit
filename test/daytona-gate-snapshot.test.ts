@@ -117,6 +117,9 @@ test("harness-prep snapshot guidance documents legacy nvm boundaries", () => {
   assert.match(docs, /\/usr\/local\/nvm.*not writable/i);
   assert.match(docs, /do not .*nvm install/i);
   assert.match(docs, /gateSetup/);
+  assert.match(docs, /docs\/reference\/harness-runtime\.md/);
+  assert.match(docs, /Gate has no Claude/);
+  assert.match(docs, /127\.0\.0\.1 means the Gate sandbox/);
   assert.match(
     docs,
     /source \/usr\/local\/nvm\/nvm\.sh && nvm use 14\.21\.3 && npm ci/,

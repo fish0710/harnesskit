@@ -157,6 +157,7 @@ Only put implementation-owned paths in `candidateRoots`. Put task context and se
       "AGENTS.md",
       "docs/specs",
       "docs/plans",
+      "docs/reference",
       ".nvmrc",
       "package.json",
       "package-lock.json",
@@ -202,7 +203,9 @@ Rules:
 - Task ids and series ids must be safe path segments: no `/`, `\`, `.`, `..`, empty string, or NUL.
 - If using `tasks`, prefer explicit task gate contracts over changed-file selection.
 - Do not include `contracts`, `.harness`, or `harness.config.json` in mutable roots unless the user is explicitly doing Harness configuration work before the run.
-- Do not include `AGENTS.md`, `docs/specs`, or `docs/plans` in mutable roots. Put them in `readOnlyPaths` so the implementation agent can read task context without changing it.
+- Do not include `AGENTS.md`, `docs/specs`, `docs/plans`, or
+  `docs/reference` in mutable roots. Put them in `readOnlyPaths` so the
+  implementation agent can read task and runtime context without changing it.
 - Include compiled mini-program artifact roots such as `dist/build/mp-weixin`
   or `vue3-app/dist/build/mp-weixin` in `candidateRoots` when later
   host-local mini-program gates must consume agent-built artifacts.

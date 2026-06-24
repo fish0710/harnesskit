@@ -38,7 +38,9 @@ Create or update the spec with this table. Do not start `harness run` while any 
 - Start narrow: only include paths the implementation agent must change.
 - Keep these protected by default: `contracts`, `.harness`, `harness.config.json`, `.github/workflows`, `CODEOWNERS`, and trusted gate runners such as `test/gates`.
 - Put these in `readOnlyPaths` by default when they exist: `AGENTS.md`,
-  `docs/specs`, and `docs/plans`.
+  `docs/specs`, `docs/plans`, and `docs/reference`. The scaffolded
+  `docs/reference/harness-runtime.md` gives implementation agents the Gate
+  runtime facts they need before changing dependencies, build scripts, or setup.
 - Treat setup inputs as read-only environment assets when Agent or Gate setup
   needs them but the task must not change them: `.nvmrc`, root `package.json`,
   package-manager lockfiles, `tsconfig.json`, `babel.config.js`, and

@@ -164,6 +164,29 @@ special mini-program plugin support. If you enable such a gate, make sure
 `candidateRoots` contains every manifest, lockfile, build config, and helper
 script used by package lifecycle hooks.
 
+## Clean Build Final Task
+
+For migration task series, put strict clean rebuild work in a final series task
+after the mini-program behavior task has produced and validated an artifact. Do
+not make the first behavior-preservation task solve both UI parity and full
+source reproducibility unless the user explicitly accepts that broader scope.
+
+Do not mix this with the behavior parity task. A clean rebuild task should say
+plainly that its goal is "a fresh Gate runtime can rebuild this candidate from
+source." Its selected contracts can include the rebuild `command` contract and,
+after the rebuild writes `dist/build/mp-weixin`, the host-local mini-program
+parity contract as a regression check.
+
+Classify failure from this task as a source-reproducibility failure, not as a
+mini-program behavior failure. Typical fixes are dependency pinning, manifest
+and lockfile alignment, Node/package-manager version setup, Vite/uni-app config,
+or package lifecycle script cleanup.
+
+For this final task, include every intentional build input in `candidateRoots`:
+package manifests, lockfiles, `.nvmrc`, Vite/uni-app config, postcss/babel/ts
+config, helper scripts, source files, static assets, and the compiled artifact
+root consumed by later host-local gates.
+
 ## Validation Workflow
 
 Run preflight before starting an Agent. For mini-program contracts, this checks
