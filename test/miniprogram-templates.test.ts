@@ -60,6 +60,11 @@ test("miniprogram prep skill documents host-local runner rules", () => {
   assert.match(reference, /NODE_PATH/);
   assert.match(reference, /miniprogram-automator@0\.12\.1/);
   assert.match(reference, /createRequire/);
+  assert.match(reference, /Artifact-first Default/);
+  assert.match(reference, /Agent sandbox owns dependency installation and framework-specific builds/);
+  assert.match(reference, /Gate-side rebuilds are opt-in source reproducibility checks/);
+  assert.match(reference, /Do not make npm ci or npm run build the default Gate path/);
+  assert.match(reference, /not a uni-app, Taro, or native mini-program build plugin/);
   assert.match(reference, /page\.callMethod\(\)/);
   assert.match(reference, /page\.data/);
   assert.match(reference, /uni-app/);
@@ -68,6 +73,9 @@ test("miniprogram prep skill documents host-local runner rules", () => {
   assert.match(readme, /page\.data/);
   assert.match(readme, /uni-app\/Vue3/);
   assert.match(readme, /NODE_PATH/);
+  assert.match(readme, /already-built mini-program artifact/);
+  assert.match(readme, /Templates do not rebuild the project inside Gate by default/);
+  assert.match(readme, /source reproducibility/);
   assert.match(helpers, /createRequire\(import\.meta\.url\)\("miniprogram-automator"\)/);
   assert.match(helpers, /export async function inputText/);
   assert.match(helpers, /export async function tapElement/);

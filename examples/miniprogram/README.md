@@ -26,12 +26,25 @@ dist/dev/mp-weixin
 
 Adjust `projectPath` if your artifact path is different.
 
+The templates assume an already-built mini-program artifact. In a Daytona-backed
+Harness run, the Agent or project workflow should produce that artifact and
+publish it through `candidateRoots`; the host-local mini-program gate then opens
+the materialized artifact in WeChat DevTools.
+
+Templates do not rebuild the project inside Gate by default. If you need
+source reproducibility, add a separate `type: command` contract that installs
+dependencies and runs the project-specific build, and treat failures from that
+contract as rebuild failures rather than mini-program behavior failures.
+
 ## Run
 
 Harness provides the `miniprogram-automator` dependency to trusted runners
 through `NODE_PATH`; target projects do not need to install it only for gates.
 
 Run managed mode through Harness:
+
+Make sure `projectPath` exists before running the behavior gate. Harness does
+not infer how to build the artifact from the framework.
 
 ```bash
 harness check --dir contracts --json

@@ -15,6 +15,29 @@ Agent or Gate sandbox. The sandbox only needs to produce the compiled artifact;
 the host gate consumes that artifact after Harness materializes the candidate
 files.
 
+## Artifact-first Default
+
+Default mini-program behavior gates should validate an already-built
+mini-program artifact. Agent sandbox owns dependency installation and framework-specific builds.
+Harness should consume the compiled `projectPath` such as `dist/build/mp-weixin`;
+it is not a uni-app, Taro, or native mini-program build plugin.
+
+Do not make npm ci or npm run build the default Gate path for mini-program
+behavior tasks. Do not make package lifecycle scripts part of the default Gate
+path either. Those steps add network, package manager, Node version, and
+framework-toolchain failure modes before the user-visible mini-program behavior
+is tested.
+
+For a normal task series:
+
+- Tell the Agent to install dependencies and build the mini-program artifact.
+- Include the compiled artifact root in `candidateRoots`.
+- Keep mini-program behavior gates pointed at the compiled `projectPath`.
+- Keep `gateSetup` empty unless another selected remote contract truly needs
+  setup.
+- Use a lightweight artifact check if you need early feedback that the Agent
+  published `project.config.json`, `app.json`, and expected page files.
+
 ## Contract Shape
 
 Use `type: miniprogram` with a compiled artifact path and a trusted runner:
@@ -129,6 +152,18 @@ if (!submit) throw new Error("missing .submit-order");
 await submit.trigger("click");
 ```
 
+## Opt-in Rebuild Gate
+
+Gate-side rebuilds are opt-in source reproducibility checks. Use them only when
+the requirement is "a fresh remote environment can rebuild this candidate from
+source." Name and document that contract separately from the behavior gate.
+
+A rebuild contract can run framework-specific commands such as
+`npm run build:mp-weixin`, but that is ordinary `type: command` behavior, not
+special mini-program plugin support. If you enable such a gate, make sure
+`candidateRoots` contains every manifest, lockfile, build config, and helper
+script used by package lifecycle hooks.
+
 ## Validation Workflow
 
 Run preflight before starting an Agent. For mini-program contracts, this checks
@@ -148,7 +183,8 @@ Do not run preflight and the actual mini-program gate concurrently on the same
 `autoPort`; WeChat DevTools exposes one automation project per port and the two
 commands will race.
 
-Build first when you want to run the actual host-local UI gate:
+For host-local manual checks, build or otherwise materialize the artifact before
+running the UI gate:
 
 ```bash
 npm run build:mp-weixin
