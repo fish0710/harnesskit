@@ -20,7 +20,7 @@ import {
   buildClaudeCommand,
   createDaytonaExecutionTarget,
   getClaudeEnvironment,
-  parseClaudeSessionId,
+  parseClaudeSessionIdFromCommandOutput,
 } from "./daytona.js";
 import { publishCandidate } from "./publish.js";
 import type {
@@ -95,6 +95,20 @@ function commandFailure(label: string, result: {
     `${label} failed with exit ${result.exitCode}: ${
       result.stderr || result.stdout || "(no output)"
     }`,
+  );
+}
+
+function claudeSessionIdFailure(result: {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}, persistedStream?: string): Error {
+  const output = result.stderr || result.stdout || persistedStream || "";
+  const trimmed = output.trim();
+  const detail = trimmed ? trimmed.slice(0, 4000) : "(no output)";
+  return new Error(
+    "Claude session id was not reported by the Daytona Claude command " +
+      `(exit ${result.exitCode}): ${detail}`,
   );
 }
 
@@ -308,6 +322,18 @@ async function persistClaudeStreamOutput(
   });
 }
 
+async function readClaudeStreamOutput(
+  handle: SandboxHandle,
+  streamPath: string | undefined,
+): Promise<string | undefined> {
+  if (!streamPath) return undefined;
+  try {
+    return (await handle.readFile(streamPath)).toString("utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 export function createDaytonaRunEnvironment(
   options: DaytonaRunEnvironmentOptions,
 ): RunEnvironment {
@@ -511,18 +537,23 @@ export function createDaytonaRunEnvironment(
             observe,
             true,
           );
+          const persistedStream = await readClaudeStreamOutput(
+            handle,
+            streamPath,
+          );
           await persistClaudeStreamOutput(
             handle.id,
             attempt,
-            result.stdout,
+            persistedStream ?? result.stdout,
             claudeObservationEnv,
             observe,
           );
-          const parsedClaudeSessionId = parseClaudeSessionId(result.stdout);
+          const parsedClaudeSessionId = parseClaudeSessionIdFromCommandOutput({
+            stdout: result.stdout,
+            ...(persistedStream ? { stream: persistedStream } : {}),
+          });
           if (!parsedClaudeSessionId) {
-            throw new Error(
-              "Claude session id was not reported by the Daytona Claude command",
-            );
+            throw claudeSessionIdFailure(result, persistedStream);
           }
           if (
             claudeSessionId &&

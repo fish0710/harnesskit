@@ -673,6 +673,26 @@ test("remote workspace downloads regular file bytes through the SDK", async () =
   ]);
 });
 
+test("SDK handle reads absolute mounted volume paths without rewriting them", async () => {
+  const streamPath = "/harness-observability/attempt-1/claude-stream.jsonl";
+  const content = Buffer.from(JSON.stringify({ session_id: "session-1" }) + "\n");
+  const sdkSandbox = fakeSdkSandbox({
+    downloads: new Map([[streamPath, content]]),
+    absoluteDownloadOnly: true,
+  });
+  const provider = createDaytonaSdkProviderFromClient(fakeSdkClient(sdkSandbox));
+  const handle = await provider.create({
+    role: "agent",
+    envVars: modelEnvironment,
+    ephemeral: false,
+  });
+
+  const bytes = await handle.readFile(streamPath);
+
+  assert.deepEqual(bytes, content);
+  assert.deepEqual(sdkSandbox.calls.downloaded, [streamPath]);
+});
+
 test("SDK handle verifies host-controlled bytes and metadata", async () => {
   const content = Buffer.from("trusted\n");
   const sdkSandbox = fakeSdkSandbox({
@@ -1067,6 +1087,7 @@ function fakeSdkClient(sandbox: ReturnType<typeof fakeSdkSandbox>) {
 function fakeSdkSandbox(options: {
   listings?: Map<string, FileInfo[]>;
   downloads?: Map<string, Buffer>;
+  absoluteDownloadOnly?: boolean;
   toolboxProxyUrl?: string;
   ptyOutput?: string[];
   ptyExitCode?: number;
@@ -1136,6 +1157,15 @@ function fakeSdkSandbox(options: {
           [];
       },
       async downloadFile(path: string) {
+        if (options.absoluteDownloadOnly) {
+          if (!path.startsWith("/")) {
+            throw new Error(`SDK path must be absolute: ${path}`);
+          }
+          calls.downloaded.push(path);
+          const content = options.downloads?.get(path);
+          if (!content) throw new Error(`Missing fake download: ${path}`);
+          return content;
+        }
         if (path.startsWith("/")) {
           throw new Error(`SDK path must be relative: ${path}`);
         }
