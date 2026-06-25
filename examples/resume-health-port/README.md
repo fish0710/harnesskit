@@ -1,56 +1,69 @@
-# Resume Health Port Example
+# Resume Health Port Daytona Example
 
-This is a minimal Daytona Claude resume verification fixture.
+This example demonstrates the Harness feedback loop with a real
+Daytona-backed Claude Agent sandbox and a fresh Gate sandbox.
 
-The candidate-visible task document asks Claude to create
-`examples/resume-health-port/src/server.js` on port `3321`, but the protected
-HTTP contract checks `http://127.0.0.1:3320/health`. The server file is omitted
-from the baseline on purpose, so the first agent attempt must generate it.
+The checked-in baseline server starts on the protected contract port, so
+preflight can prove the Gate runtime is ready. It intentionally returns
+`{"ready": false}`, so the baseline is product-red rather than readiness-red.
+Claude then edits only `examples/resume-health-port/src/server.js`.
 
-Expected loop:
+The task text includes a product note that says port `3321`, while the protected
+HTTP contract checks `http://127.0.0.1:3320/health`. If Claude follows the note
+too literally, the first Gate attempt fails and Harness feeds the diagnostic
+back into the same Agent sandbox. A later attempt should satisfy the protected
+contract.
 
-1. Claude works in one persistent Daytona agent sandbox.
-2. The first candidate exposes `/health` on `3321`.
-3. The gate sandbox starts the candidate server and checks port `3320`.
-4. The gate fails and Harness feeds the HTTP diagnostic back to Claude.
-5. The next Claude attempt must resume the captured Claude session in the same
-   agent sandbox and change the server to port `3320`.
-6. A fresh gate sandbox validates the corrected candidate.
+## Required Environment
 
-Run from the repository worktree root:
+Export credentials in your shell. Do not write them into this repository.
+
+```bash
+export DAYTONA_API_KEY="<daytona-key>"
+export DAYTONA_API_URL="<optional-daytona-api-url>"
+export ANTHROPIC_AUTH_TOKEN="<model-token>"
+export ANTHROPIC_BASE_URL="<model-endpoint>"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="<model>"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="<model>"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="<model>"
+```
+
+Optional snapshot overrides:
+
+```bash
+export HARNESS_DAYTONA_AGENT_SNAPSHOT="harness-agent-claude-latest"
+export HARNESS_DAYTONA_GATE_SNAPSHOT="harness-gate-runtime-latest"
+```
+
+## Run
+
+Run from the Harness repository root after building the source checkout CLI:
 
 ```bash
 npm run build
-node dist/src/cli.js run "Read examples/resume-health-port/TASK.md and implement it exactly. Do not edit examples/resume-health-port/contracts or examples/resume-health-port/harness.config.json." \
-  --driver claude \
-  --dir examples/resume-health-port/contracts \
-  --config examples/resume-health-port/harness.config.json
+node dist/src/cli.js run "Read examples/resume-health-port/TASK.md and implement it. Treat Harness gate feedback as authoritative if it conflicts with the task text." --driver claude --dir examples/resume-health-port/contracts --config examples/resume-health-port/harness.config.json --max-attempts 3
 ```
 
-After the run, inspect the host manifest:
+## Expected Result
+
+- The Agent sandbox may edit only `examples/resume-health-port/src`.
+- The Agent sandbox can read `TASK.md` and `package.json` but cannot publish
+  edits to them.
+- Harness hides and protects the contracts and config from the Agent.
+- Each Gate attempt uses a fresh Gate sandbox without Claude credentials.
+- Gate setup starts the candidate server inside the Gate sandbox, then the HTTP
+  contract checks `GET /health`.
+- The final passing candidate publishes only the server file bytes evaluated by
+  Gate.
+
+Inspect the host run record:
 
 ```bash
 RUN_FILE="$(ls -t .harness/runs/*.json | head -1)"
-node -e 'const r=require(process.argv[1]); console.log(JSON.stringify({runId:r.runId,status:r.status,attempts:r.attempts}, null, 2))' "$RUN_FILE"
+node -e 'const fs=require("node:fs"); const r=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log(JSON.stringify({runId:r.runId,status:r.status,outcome:r.outcome,attempts:r.attempts,selectedContracts:r.selectedContracts}, null, 2))' "$RUN_FILE"
 ```
 
-The manifest should show the same `claudeSessionId` being resumed on the later
-attempt.
-
-The agent sandbox mounts the Daytona volume subpath `runs/<runId>` at:
-
-```text
-/harness-observability
-```
-
-Inside that mounted run root, Claude state is stable across attempts:
-
-```text
-/harness-observability/.claude
-```
-
-To inspect the persisted Claude session after sandbox cleanup, mount or inspect
-the Daytona volume `harness-claude-observability` at subpath
-`runs/<runId>` and browse `.claude`. The session files should show the original
-conversation continuing after the gate failure feedback instead of a fresh
-conversation being started.
+Claude observability is stored under the Daytona volume
+`harness-claude-observability` at run subpath `runs/<runId>`. In the Agent
+sandbox the mounted run root is `/harness-observability`, and Claude native
+state is copied under `/harness-observability/.claude`.

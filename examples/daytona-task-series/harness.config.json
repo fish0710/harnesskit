@@ -1,0 +1,50 @@
+{
+  "baseline": ["domain.model"],
+  "rules": [],
+  "series": {
+    "id": "daytona-order-series"
+  },
+  "sandbox": {
+    "candidateRoots": [
+      "examples/daytona-task-series/src"
+    ],
+    "protectedPaths": [
+      "examples/daytona-task-series/contracts",
+      "examples/daytona-task-series/harness.config.json",
+      ".harness"
+    ],
+    "readOnlyPaths": [
+      "examples/daytona-task-series/TASK.md",
+      "examples/daytona-task-series/package.json",
+      "examples/daytona-task-series/test"
+    ],
+    "agentSetup": [],
+    "gateSetup": [],
+    "limits": {
+      "maxFiles": 1000,
+      "maxFileBytes": 10485760,
+      "maxTotalBytes": 209715200
+    },
+    "retainOnFailure": false
+  },
+  "autoCommit": {
+    "enabled": false,
+    "messageTemplate": "harness example: {index}/{total} {id}"
+  },
+  "tasks": [
+    {
+      "id": "define-domain-model",
+      "task": "Read examples/daytona-task-series/TASK.md. Implement the Order domain model in examples/daytona-task-series/src/domain-model.js only.",
+      "gate": {
+        "contracts": ["domain.model"]
+      }
+    },
+    {
+      "id": "implement-order-service",
+      "task": "Read examples/daytona-task-series/TASK.md. Implement the Order service in examples/daytona-task-series/src/order-service.js only. Preserve the domain model behavior.",
+      "gate": {
+        "contracts": ["domain.model", "order.service"]
+      }
+    }
+  ]
+}

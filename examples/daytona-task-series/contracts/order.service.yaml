@@ -1,0 +1,8 @@
+id: order.service
+type: command
+stage: service
+scenario: Order service must compose the domain model and payment transition.
+cmd: bash
+args: ["-lc", "cd examples/daytona-task-series && node --test test/order-service.test.js"]
+expectExit: 0
+timeoutMs: 120000
