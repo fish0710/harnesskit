@@ -36,13 +36,171 @@ const CLAUDE_RESUME_INVOKE =
   '--resume "$HARNESS_CLAUDE_SESSION_ID" ' +
   '-p "$HARNESS_PROMPT" --output-format stream-json --verbose';
 
+function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function nodeInlineScript(script: string): string {
+  return `/usr/local/bin/node -e ${shellSingleQuote(script)}`;
+}
+
 function streamPersistingClaudeCommand(invoke: string): string {
+  const streamReaderScript = [
+    'const fs = require("node:fs");',
+    'const readline = require("node:readline");',
+    "let inputFd;",
+    "let input;",
+    "let streamFd;",
+    'const graceSeconds = Number(process.env.HARNESS_CLAUDE_RESULT_GRACE_SECONDS ?? "30");',
+    'const graceMs = Number.isFinite(graceSeconds) && graceSeconds >= 0 ? graceSeconds * 1000 : 30000;',
+    "let finalResultSuccess = false;",
+    "let graceTimer;",
+    "let finished = false;",
+    "let reader;",
+    "function clearGraceTimer() {",
+    "  if (graceTimer) {",
+    "    clearTimeout(graceTimer);",
+    "    graceTimer = undefined;",
+    "  }",
+    "}",
+    "function scheduleGraceTimer() {",
+    "  clearGraceTimer();",
+    "  graceTimer = setTimeout(() => {",
+    "    try {",
+    '      process.kill(Number(process.env.HARNESS_CLAUDE_PID), "SIGTERM");',
+    '      fs.writeFileSync(process.env.HARNESS_CLAUDE_TERM_MARKER_PATH, "");',
+    "    } catch {",
+    "      // Claude may already have exited.",
+    "    }",
+    "    finish(0);",
+    "  }, graceMs);",
+    "}",
+    "function writeDiagnostic(error) {",
+    '  const message = error instanceof Error ? error.message : String(error);',
+    '  const diagnostic = `[claude stream reader] ${message.slice(0, 1000)}\\n`;',
+    "  try {",
+    "    fs.writeFileSync(process.env.HARNESS_CLAUDE_READER_DIAGNOSTIC_PATH, diagnostic);",
+    "  } catch {",
+    "    // If the diagnostic handoff fails, stderr still preserves local detail.",
+    "  }",
+    "  fs.writeSync(2, diagnostic);",
+    "}",
+    "function fail(error) {",
+    "  writeDiagnostic(error);",
+    "  finish(1);",
+    "}",
+    "function closeStream() {",
+    "  if (streamFd === undefined) return;",
+    "  try {",
+    "    fs.closeSync(streamFd);",
+    "  } catch {",
+    "    // The stream fd may already be closed during process shutdown.",
+    "  }",
+    "  streamFd = undefined;",
+    "}",
+    "function closeInput() {",
+    "  if (input) input.destroy();",
+    "  if (inputFd === undefined) return;",
+    "  try {",
+    "    fs.closeSync(inputFd);",
+    "  } catch {",
+    "    // The input fd may already be closed by the read stream.",
+    "  }",
+    "  inputFd = undefined;",
+    "}",
+    "function writeStatus(status) {",
+    "  fs.writeFileSync(process.env.HARNESS_CLAUDE_READER_STATUS_PATH, String(status));",
+    "}",
+    "function finish(status) {",
+    "  if (finished) return;",
+    "  finished = true;",
+    "  clearGraceTimer();",
+    "  writeStatus(status);",
+    "  if (reader) reader.close();",
+    "  closeInput();",
+    "  closeStream();",
+    "  process.exit(status);",
+    "}",
+    "process.on('exit', closeStream);",
+    "try {",
+    '  inputFd = fs.openSync(process.env.HARNESS_CLAUDE_STDOUT_PIPE, "r");',
+    '  input = fs.createReadStream(null, { fd: inputFd, autoClose: true });',
+    '  streamFd = fs.openSync(process.env.HARNESS_CLAUDE_STREAM_PATH, "a");',
+    '  reader = readline.createInterface({ input, crlfDelay: Infinity });',
+    "  reader.on('line', (line) => {",
+    "    try {",
+    '      const output = line + "\\n";',
+    "      fs.writeSync(1, output);",
+    "      fs.writeSync(streamFd, output);",
+    "      if (finalResultSuccess) scheduleGraceTimer();",
+    "      let record;",
+    "      try {",
+    "        record = JSON.parse(line);",
+    "      } catch {",
+    "        return;",
+    "      }",
+    '      if (record === null || typeof record !== "object" || Array.isArray(record)) return;',
+    '      if (record.type !== "result") return;',
+    "      finalResultSuccess = record.is_error !== true;",
+    "      if (finalResultSuccess) scheduleGraceTimer(); else clearGraceTimer();",
+    "    } catch (error) {",
+    "      fail(error);",
+    "    }",
+    "  });",
+    "  reader.on('close', () => {",
+    "    finish(finalResultSuccess ? 0 : 1);",
+    "  });",
+    "} catch (error) {",
+    "  fail(error);",
+    "}",
+  ].join("\n");
+  const streamScript = [
+    "set -e",
+    'mkdir -p "$(dirname "$HARNESS_CLAUDE_STREAM_PATH")"',
+    'claude_tmp_dir="$(mktemp -d /tmp/harness-claude-${HARNESS_ATTEMPT:-0}.XXXXXX)"',
+    'claude_stderr_path="$claude_tmp_dir/stderr.log"',
+    'claude_stdout_pipe="$claude_tmp_dir/stdout.fifo"',
+    'claude_reader_status_path="$claude_tmp_dir/reader.status"',
+    'claude_reader_diagnostic_path="$claude_tmp_dir/reader.diagnostic"',
+    'claude_term_marker_path="$claude_tmp_dir/claude.term"',
+    'claude_kill_marker_path="$claude_tmp_dir/claude.kill"',
+    'cleanup_tmp() { rm -rf "$claude_tmp_dir"; }',
+    "trap cleanup_tmp EXIT",
+    'mkfifo "$claude_stdout_pipe"',
+    "set +e",
+    "result_success=0",
+    "killed_for_reader_failure=0",
+    "claude_killer_pid=",
+    "reader_killer_pid=",
+    'terminate_claude() { if kill -0 "$claude_pid" 2>/dev/null; then if kill "$claude_pid" 2>/dev/null; then touch "$claude_term_marker_path"; fi; ( sleep "${HARNESS_CLAUDE_TERMINATE_GRACE_SECONDS:-1}"; if kill -0 "$claude_pid" 2>/dev/null; then if kill -KILL "$claude_pid" 2>/dev/null; then touch "$claude_kill_marker_path"; fi; fi ) & claude_killer_pid=$!; fi; }',
+    'terminate_reader() { if kill -0 "$reader_pid" 2>/dev/null; then kill "$reader_pid" 2>/dev/null || true; ( sleep "${HARNESS_CLAUDE_TERMINATE_GRACE_SECONDS:-1}"; if kill -0 "$reader_pid" 2>/dev/null; then kill -KILL "$reader_pid" 2>/dev/null || true; fi ) & reader_killer_pid=$!; fi; }',
+    `${invoke} > "$claude_stdout_pipe" 2> "$claude_stderr_path" & claude_pid=$!`,
+    `HARNESS_CLAUDE_PID="$claude_pid" HARNESS_CLAUDE_STDOUT_PIPE="$claude_stdout_pipe" HARNESS_CLAUDE_READER_STATUS_PATH="$claude_reader_status_path" HARNESS_CLAUDE_READER_DIAGNOSTIC_PATH="$claude_reader_diagnostic_path" HARNESS_CLAUDE_TERM_MARKER_PATH="$claude_term_marker_path" ${nodeInlineScript(streamReaderScript)} & reader_pid=$!`,
+    'while [ ! -s "$claude_reader_status_path" ]; do if ! kill -0 "$reader_pid" 2>/dev/null; then break; fi; sleep 0.05; done',
+    'if [ -s "$claude_reader_status_path" ]; then reader_status="$(cat "$claude_reader_status_path")"; else reader_status=1; fi',
+    'case "$reader_status" in 0|1) ;; *) reader_status=1 ;; esac',
+    'if [ "$reader_status" -ne 0 ] && [ -s "$claude_reader_diagnostic_path" ]; then cat "$claude_reader_diagnostic_path"; fi',
+    'if kill -0 "$reader_pid" 2>/dev/null; then terminate_reader; fi',
+    'if [ -n "$reader_killer_pid" ]; then wait "$reader_killer_pid" 2>/dev/null || true; fi',
+    'if [ "$reader_status" -ne 0 ] && kill -0 "$claude_pid" 2>/dev/null; then killed_for_reader_failure=1; terminate_claude; fi',
+    'if [ "$reader_status" -eq 0 ] && kill -0 "$claude_pid" 2>/dev/null; then terminate_claude; fi',
+    'wait "$claude_pid"',
+    "claude_status=$?",
+    'if [ -n "$claude_killer_pid" ]; then if [ "$claude_status" -eq 137 ]; then wait "$claude_killer_pid" 2>/dev/null || true; else kill "$claude_killer_pid" 2>/dev/null || true; wait "$claude_killer_pid" 2>/dev/null || true; fi; fi',
+    'if [ "$killed_for_reader_failure" -eq 1 ]; then exit "$reader_status"; fi',
+    'if [ "$reader_status" -eq 0 ]; then result_success=1; fi',
+    'if [ "$result_success" -eq 1 ] && { [ "$claude_status" -eq 0 ] || { [ "$claude_status" -eq 143 ] && [ -e "$claude_term_marker_path" ]; } || { [ "$claude_status" -eq 137 ] && [ -e "$claude_kill_marker_path" ]; }; }; then exit 0; fi',
+    'if [ "$reader_status" -ne 0 ] && [ "$claude_status" -eq 0 ]; then exit "$reader_status"; fi',
+    'if [ "$claude_status" -ne 0 ] && [ -s "$claude_stderr_path" ]; then ' +
+      'printf "\\n[claude stderr]\\n"; ' +
+      'cat "$claude_stderr_path"; ' +
+      "fi",
+    'exit "$claude_status"',
+  ].join("; ");
+
   return 'if [ -n "${HARNESS_CLAUDE_STREAM_PATH:-}" ]; then ' +
-    'mkdir -p "$(dirname "$HARNESS_CLAUDE_STREAM_PATH")" && ' +
-    `${invoke} > "$HARNESS_CLAUDE_STREAM_PATH"; ` +
-    'status=$?; ' +
-    'cat "$HARNESS_CLAUDE_STREAM_PATH"; ' +
-    'exit "$status"; ' +
+    `/usr/bin/bash -lc ${shellSingleQuote(streamScript)}; ` +
+    'wrapper_status=$?; exit "$wrapper_status"; ' +
     "fi; " +
     `exec ${invoke}`;
 }
@@ -85,6 +243,14 @@ export function parseClaudeSessionId(stdout: string): string | undefined {
     }
   }
   return undefined;
+}
+
+export function parseClaudeSessionIdFromCommandOutput(input: {
+  stdout: string;
+  stream?: string;
+}): string | undefined {
+  return parseClaudeSessionId(input.stdout) ??
+    (input.stream ? parseClaudeSessionId(input.stream) : undefined);
 }
 
 const LOCAL_DAYTONA_NO_PROXY_HOSTS = [
@@ -727,6 +893,14 @@ class DaytonaSandboxHandle implements SandboxHandle {
   }
 
   async readFile(path: string): Promise<Buffer> {
+    if (posix.isAbsolute(path)) {
+      try {
+        return await this.sandbox.fs.downloadFile(path);
+      } catch {
+        // Older workspace paths were passed through the SDK without a leading
+        // slash. Keep that fallback while allowing absolute volume mounts.
+      }
+    }
     return await this.sandbox.fs.downloadFile(daytonaSdkPath(path));
   }
 

@@ -1115,6 +1115,27 @@ test("Claude Daytona fails closed when the first attempt does not report a sessi
   );
 });
 
+test("Claude Daytona reports command output when the first attempt does not report a session id", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    claudeStdouts: ["zsh: read-only variable: status\n"],
+  });
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+  });
+
+  await assert.rejects(
+    () => environment.runTask({ task: "fix it" }),
+    /Claude session id.*zsh: read-only variable: status/is,
+  );
+});
+
 test("Claude Daytona rejects changed session id during resume", async () => {
   const root = createGitFixture({
     "src/a.ts": "before\n",
