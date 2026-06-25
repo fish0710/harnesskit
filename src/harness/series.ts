@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { selectByStage } from "../selector.js";
 import type { Contract } from "../types.js";
 import type { RunOutcome } from "./run.js";
+import { loadVerdicts } from "./verdicts.js";
 
 const SERIES_FIELDS = new Set(["id"]);
 const TASK_DEFAULTS_FIELDS = new Set(["gate"]);
@@ -696,6 +697,7 @@ export function decideTaskResume(input: {
   taskId: string;
   taskHash: string;
   ledgerTask?: SeriesLedgerTask;
+  hasResolvedReviewVerdict?: boolean;
 }): TaskResumeDecision {
   const existing = input.ledgerTask;
   if (!existing) return { action: "run" };
@@ -725,6 +727,14 @@ export function decideTaskResume(input: {
   }
 
   if (
+    existing.status === "blocked" &&
+    existing.taskHash === input.taskHash &&
+    input.hasResolvedReviewVerdict === true
+  ) {
+    return { action: "run" };
+  }
+
+  if (
     existing.status === "blocked" ||
     existing.status === "escalated" ||
     existing.status === "error"
@@ -736,6 +746,23 @@ export function decideTaskResume(input: {
   }
 
   return { action: "run" };
+}
+
+function hasSelectedResolvedReviewVerdict(
+  selectedContracts: Contract[],
+  verdicts: Record<string, unknown>,
+): boolean {
+  return selectedContracts.some((contract) =>
+    contract.type === "review" &&
+    Object.prototype.hasOwnProperty.call(verdicts, contract.id)
+  );
+}
+
+function shouldInspectBlockedReviewResume(
+  ledgerTask: SeriesLedgerTask | undefined,
+  currentTaskHash: string,
+): boolean {
+  return ledgerTask?.status === "blocked" && ledgerTask.taskHash === currentTaskHash;
 }
 
 function nowIso(): string {
@@ -790,6 +817,7 @@ function commitMessageForTask(input: {
 
 export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskSeriesResult> {
   const { cwd, config } = input;
+  const verdicts = loadVerdicts(cwd);
   const total = config.tasks.length;
   const ledger = readSeriesLedger(cwd, config.seriesId) ?? initialSeriesLedger(config);
 
@@ -798,10 +826,46 @@ export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskS
     const index = taskIndex + 1;
     const currentTaskHash = taskHash(task, config.autoCommit, config.taskDefaults);
     const existingTask = ledger.tasks.find((entry) => entry.id === task.id);
+    let preselectedContracts: Contract[] | undefined;
+    let hasResolvedReviewVerdict = false;
+    if (shouldInspectBlockedReviewResume(existingTask, currentTaskHash)) {
+      try {
+        preselectedContracts = selectTaskContracts({
+          contracts: input.contracts,
+          task,
+          defaults: config.taskDefaults,
+          fallbackStage: input.fallbackStage,
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const runRecordPath = await input.recordTaskSetupError?.({
+          task,
+          index,
+          total,
+          error,
+        });
+        updateLedgerTask(ledger, {
+          id: task.id,
+          taskHash: currentTaskHash,
+          status: "error",
+          startedAt: nowIso(),
+          errorReason: reason,
+          ...(runRecordPath ? { runRecord: runRecordPath } : {}),
+        });
+        ledger.status = "error";
+        writeUpdatedLedger(cwd, ledger);
+        return { outcome: "error", taskId: task.id, reason };
+      }
+      hasResolvedReviewVerdict = hasSelectedResolvedReviewVerdict(
+        preselectedContracts,
+        verdicts,
+      );
+    }
     const decision = decideTaskResume({
       taskId: task.id,
       taskHash: currentTaskHash,
       ledgerTask: existingTask,
+      hasResolvedReviewVerdict,
     });
 
     if (decision.action === "skip") {
@@ -851,7 +915,7 @@ export async function runTaskSeries(input: RunTaskSeriesInput): Promise<RunTaskS
 
     let selectedContracts: Contract[];
     try {
-      selectedContracts = selectTaskContracts({
+      selectedContracts = preselectedContracts ?? selectTaskContracts({
         contracts: input.contracts,
         task,
         defaults: config.taskDefaults,

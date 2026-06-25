@@ -746,6 +746,39 @@ test("decideTaskResume stops terminal non-success states for manual handling", (
     decideTaskResume({
       taskId: "one",
       taskHash: "hash-a",
+      hasResolvedReviewVerdict: true,
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "blocked",
+        errorReason: "needs review",
+      },
+    }),
+    { action: "run" },
+  );
+
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
+      taskHash: "hash-b",
+      hasResolvedReviewVerdict: true,
+      ledgerTask: {
+        id: "one",
+        taskHash: "hash-a",
+        status: "blocked",
+        errorReason: "needs review",
+      },
+    }),
+    {
+      action: "stop",
+      reason: "task one 已处于 blocked 状态，需人工处理后再继续",
+    },
+  );
+
+  assert.deepEqual(
+    decideTaskResume({
+      taskId: "one",
+      taskHash: "hash-a",
       ledgerTask: {
         id: "one",
         taskHash: "hash-a",
@@ -1309,6 +1342,120 @@ test("runTaskSeries stops on blocked outcome without running later tasks", async
   assert.equal(ledger.tasks[0]?.runRecord, ".harness/runs/blocked.json");
   assert.equal(ledger.tasks[0]?.errorReason, "needs product decision");
   assert.equal(ledger.tasks[1], undefined);
+});
+
+test("runTaskSeries reruns blocked review task when a matching verdict exists", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-review-resume-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "review-series" },
+    taskDefaults: { gate: { contracts: ["product.approval"] } },
+    autoCommit: { enabled: false, messageTemplate: "harness: {id}" },
+    tasks: [{ id: "review-task", task: "Needs approval." }],
+  })!;
+  const reviewContracts: Contract[] = [
+    { id: "product.approval", type: "review" },
+  ];
+  const currentTaskHash = taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults);
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: "review-series",
+    status: "running",
+    configHash: configHash(config),
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+    tasks: [
+      {
+        id: "review-task",
+        taskHash: currentTaskHash,
+        status: "blocked",
+        startedAt: "2026-06-25T00:00:00.000Z",
+        errorReason: "needs product approval",
+        runRecord: ".harness/runs/review-task.json",
+      },
+    ],
+  });
+  mkdirSync(join(cwd, ".harness"), { recursive: true });
+  writeFileSync(
+    join(cwd, ".harness", "verdicts.json"),
+    JSON.stringify({
+      "product.approval": {
+        optionId: "approve",
+        by: "tester",
+        at: "2026-06-25T00:00:01.000Z",
+      },
+    }),
+    "utf8",
+  );
+  const executed: SeriesTaskExecutionInput[] = [];
+
+  const result = await runTaskSeries({
+    cwd,
+    config,
+    contracts: reviewContracts,
+    executeTask: async (input) => {
+      executed.push(input);
+      return {
+        outcome: readyOutcome([]),
+        runRecordPath: ".harness/runs/review-task-rerun.json",
+      };
+    },
+  });
+
+  assert.deepEqual(result, { outcome: "completed" });
+  assert.deepEqual(executed.map((input) => input.task.id), ["review-task"]);
+  assert.deepEqual(executed[0]?.contracts.map((contract) => contract.id), ["product.approval"]);
+  const ledger = readSeriesLedger(cwd, "review-series")!;
+  assert.equal(ledger.status, "completed");
+  assert.equal(ledger.tasks[0]?.status, "completed");
+  assert.equal(ledger.tasks[0]?.runRecord, ".harness/runs/review-task-rerun.json");
+});
+
+test("runTaskSeries keeps blocked review task stopped when no verdict exists", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-review-still-blocked-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "review-series" },
+    taskDefaults: { gate: { contracts: ["product.approval"] } },
+    autoCommit: { enabled: false, messageTemplate: "harness: {id}" },
+    tasks: [{ id: "review-task", task: "Needs approval." }],
+  })!;
+  const currentTaskHash = taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults);
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: "review-series",
+    status: "running",
+    configHash: configHash(config),
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+    tasks: [
+      {
+        id: "review-task",
+        taskHash: currentTaskHash,
+        status: "blocked",
+        errorReason: "needs product approval",
+      },
+    ],
+  });
+  const executed: string[] = [];
+
+  const result = await runTaskSeries({
+    cwd,
+    config,
+    contracts: [{ id: "product.approval", type: "review" }],
+    executeTask: async (input) => {
+      executed.push(input.task.id);
+      return {
+        outcome: readyOutcome([]),
+        runRecordPath: ".harness/runs/unexpected.json",
+      };
+    },
+  });
+
+  assert.deepEqual(result, {
+    outcome: "error",
+    taskId: "review-task",
+    reason: "task review-task 已处于 blocked 状态，需人工处理后再继续",
+  });
+  assert.deepEqual(executed, []);
 });
 
 test("runTaskSeries autoCommit commits published source file and leaves ledger runtime state uncommitted", async () => {
