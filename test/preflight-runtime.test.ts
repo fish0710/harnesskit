@@ -270,6 +270,37 @@ test("static lint error returns not_ready and does not create sandbox", async ()
   assert.deepEqual(provider.requests, []);
 });
 
+test("mini-program command contracts fail preflight before sandbox creation", async () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+  const provider = new RecordingProvider();
+  const misModeled: Contract = {
+    id: "mp.vue3.home-flow",
+    type: "command",
+    cmd: "node",
+    args: ["test/gates/mp-home-flow.js"],
+    projectPath: "dist/build/mp-weixin",
+    runner: "test/gates/mp-home-flow.js",
+    devtools: {
+      mode: "managed",
+      cliPath: "/Applications/wechatwebdevtools.app/Contents/MacOS/cli",
+      autoPort: 9420,
+    },
+  };
+
+  const report = await runGatePreflight(
+    preflightOptions(root, provider, [misModeled]),
+  );
+
+  assert.equal(report.outcome, "not_ready");
+  assert.deepEqual(report.selectedContracts, ["mp.vue3.home-flow"]);
+  assert.deepEqual(report.remoteContracts, ["mp.vue3.home-flow"]);
+  assert.deepEqual(report.hostLocalContracts, []);
+  assert.equal(report.readinessErrors[0]?.id, "contract.mp.vue3.home-flow.miniprogramModel");
+  assert.match(report.readinessErrors[0]?.message ?? "", /type="miniprogram"/);
+  assert.match(report.readinessErrors[0]?.message ?? "", /projectPath/);
+  assert.deepEqual(provider.requests, []);
+});
+
 test("creates Gate sandbox, uploads baseline, runs setup and remote command, then cleans up", async () => {
   const root = createGitFixture({
     "AGENTS.md": "repo map\n",

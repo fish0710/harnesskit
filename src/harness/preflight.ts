@@ -643,6 +643,45 @@ function finding(
   };
 }
 
+const MINI_PROGRAM_COMMAND_TEXT =
+  /miniprogram-automator|wechatwebdevtools|WeChatDevTools|HARNESS_MINIPROGRAM_/i;
+
+function commandContractMiniProgramSignals(contract: Contract): string[] {
+  if (contract.type !== "command") return [];
+  const signals: string[] = [];
+  for (const field of ["projectPath", "runner", "devtools"] as const) {
+    if (Object.prototype.hasOwnProperty.call(contract, field)) {
+      signals.push(field);
+    }
+  }
+  const commandText = [
+    typeof contract.cmd === "string" ? contract.cmd : "",
+    ...(Array.isArray(contract.args) ? contract.args.map(String) : []),
+  ].filter(Boolean).join(" ");
+  if (MINI_PROGRAM_COMMAND_TEXT.test(commandText)) {
+    signals.push("command text");
+  }
+  return signals;
+}
+
+function lintCommandContractModeling(contracts: Contract[]): PreflightFinding[] {
+  const findings: PreflightFinding[] = [];
+  for (const contract of contracts) {
+    const signals = commandContractMiniProgramSignals(contract);
+    if (signals.length === 0) continue;
+    findings.push(finding(
+      `contract.${contract.id}.miniprogramModel`,
+      "error",
+      `契约 ${contract.id} 是 type="command"，但包含小程序自动化信号(${signals.join(", ")}). ` +
+        `微信小程序真实自动化必须建模为 type="miniprogram"，使用 projectPath、runner、devtools；` +
+        `type="command" 仅用于可在远端 Gate sandbox 执行的构建、测试、lint 或源码可复现检查。`,
+      "contract",
+      contract.id,
+    ));
+  }
+  return findings;
+}
+
 export function lintGateReadiness(input: GateReadinessLintInput): PreflightFinding[] {
   const findings: PreflightFinding[] = [];
   const gateSetupBootstrappedTools = new Set<string>();
@@ -901,11 +940,14 @@ export async function runGatePreflight(
 ): Promise<GatePreflightReport> {
   const environment = options.environment ?? process.env;
   const baseUrl = (options.ctx as { baseUrl?: string }).baseUrl;
-  const staticFindings = lintGateReadiness({
-    contracts: options.contracts,
-    policy: options.policy,
-    baseUrl,
-  });
+  const staticFindings = [
+    ...lintGateReadiness({
+      contracts: options.contracts,
+      policy: options.policy,
+      baseUrl,
+    }),
+    ...lintCommandContractModeling(options.contracts),
+  ];
   const selectedContracts = options.contracts.map((contract) => contract.id);
   const remoteContracts = options.contracts.filter((contract) =>
     !isHostLocalContract(contract)
