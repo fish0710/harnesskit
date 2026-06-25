@@ -1,0 +1,7 @@
+id: cli.behavior
+type: command
+scenario: Quote CLI must satisfy protected executable behavior tests.
+cmd: bash
+args: ["-lc", "cd examples/daytona-cli-tdd && npm test"]
+expectExit: 0
+timeoutMs: 120000

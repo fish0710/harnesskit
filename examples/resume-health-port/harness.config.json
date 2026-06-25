@@ -3,13 +3,16 @@
   "rules": [],
   "sandbox": {
     "candidateRoots": [
-      "examples/resume-health-port/TASK.md",
-      "examples/resume-health-port/src",
-      "examples/resume-health-port/package.json"
+      "examples/resume-health-port/src"
     ],
     "protectedPaths": [
       "examples/resume-health-port/contracts",
-      "examples/resume-health-port/harness.config.json"
+      "examples/resume-health-port/harness.config.json",
+      ".harness"
+    ],
+    "readOnlyPaths": [
+      "examples/resume-health-port/TASK.md",
+      "examples/resume-health-port/package.json"
     ],
     "agentSetup": [],
     "gateSetup": [

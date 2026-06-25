@@ -1,0 +1,8 @@
+id: domain.model
+type: command
+stage: domain
+scenario: Order domain model must create valid orders and reject invalid input.
+cmd: bash
+args: ["-lc", "cd examples/daytona-task-series && node --test test/domain-model.test.js"]
+expectExit: 0
+timeoutMs: 120000

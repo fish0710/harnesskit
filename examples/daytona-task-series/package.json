@@ -1,0 +1,11 @@
+{
+  "name": "daytona-task-series-example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:domain": "node --test test/domain-model.test.js",
+    "test:service": "node --test test/order-service.test.js",
+    "test": "npm run test:domain && npm run test:service"
+  }
+}
