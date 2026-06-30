@@ -44,6 +44,17 @@ function runRecord(overrides: Partial<RunRecordV3> = {}): RunRecordV3 {
   };
 }
 
+function assertResumeError(
+  record: RunRecordV3,
+  current: { head?: string; dirty?: boolean },
+  message: string,
+): void {
+  assert.throws(
+    () => buildRetainedRunResumeRequest(record, current),
+    (error: unknown) => error instanceof Error && error.message === message,
+  );
+}
+
 test("accepts retained escalated Claude runs with claudeSessionId", () => {
   const request = buildRetainedRunResumeRequest(
     runRecord({
@@ -113,95 +124,131 @@ test("accepts interrupted running Claude runs with stream path and marks command
 });
 
 test("rejects deleted retained sandboxes based on cleanup event", () => {
-  assert.throws(
-    () => buildRetainedRunResumeRequest(
-      runRecord({
-        attempts: [
-          {
-            ...baseAttempt,
-            agentSandboxId: "sandbox-deleted",
+  assertResumeError(
+    runRecord({
+      attempts: [
+        {
+          ...baseAttempt,
+          agentSandboxId: "sandbox-deleted",
+        },
+      ],
+      events: [
+        {
+          at: "2026-06-30T00:02:00.000Z",
+          event: "agent.cleanup.end",
+          data: {
+            id: "sandbox-deleted",
+            outcome: "deleted",
           },
-        ],
-        events: [
-          {
-            at: "2026-06-30T00:02:00.000Z",
-            event: "agent.cleanup.end",
-            data: {
-              id: "sandbox-deleted",
-              outcome: "deleted",
-            },
-          },
-        ],
-      }),
-      { head: "head-1", dirty: false },
-    ),
-    /deleted/,
+        },
+      ],
+    }),
+    { head: "head-1", dirty: false },
+    "agent sandbox sandbox-deleted was deleted",
   );
 });
 
 test("rejects current HEAD mismatch", () => {
-  assert.throws(
-    () => buildRetainedRunResumeRequest(
-      runRecord(),
-      { head: "head-2", dirty: false },
-    ),
-    /HEAD/,
+  assertResumeError(
+    runRecord(),
+    { head: "head-2", dirty: false },
+    "current HEAD head-2 does not match source run HEAD head-1",
+  );
+});
+
+test("rejects HEAD mismatch before current dirty worktrees", () => {
+  assertResumeError(
+    runRecord(),
+    { head: "head-2", dirty: true },
+    "current HEAD head-2 does not match source run HEAD head-1",
   );
 });
 
 test("rejects source dirty repositories", () => {
-  assert.throws(
-    () => buildRetainedRunResumeRequest(
-      runRecord({
-        repo: {
-          root: "/repo",
-          head: "head-1",
-          dirty: true,
-        },
-      }),
-      { head: "head-1", dirty: false },
-    ),
-    /source.*dirty/,
+  assertResumeError(
+    runRecord({
+      repo: {
+        root: "/repo",
+        head: "head-1",
+        dirty: true,
+      },
+    }),
+    { head: "head-1", dirty: false },
+    "source run started from a dirty worktree; retained resume cannot reconstruct its baseline safely",
+  );
+});
+
+test("rejects source runs without a recorded clean dirty state", () => {
+  assertResumeError(
+    runRecord({
+      repo: {
+        root: "/repo",
+        head: "head-1",
+      },
+    }),
+    { head: "head-1", dirty: false },
+    "source run did not record clean/dirty state; retained resume cannot reconstruct its baseline safely",
+  );
+});
+
+test("rejects source runs without a recorded Git HEAD", () => {
+  assertResumeError(
+    runRecord({
+      repo: {
+        root: "/repo",
+        dirty: false,
+      },
+    }),
+    { head: "head-1", dirty: false },
+    "source run did not record a Git HEAD; retained resume cannot reconstruct its baseline safely",
+  );
+});
+
+test("rejects current repositories without a readable Git HEAD", () => {
+  assertResumeError(
+    runRecord(),
+    { dirty: false },
+    "current Git HEAD could not be read; retained resume requires a matching baseline",
   );
 });
 
 test("rejects current dirty worktrees", () => {
-  assert.throws(
-    () => buildRetainedRunResumeRequest(
-      runRecord(),
-      { head: "head-1", dirty: true },
-    ),
-    /current.*dirty/,
+  assertResumeError(
+    runRecord(),
+    { head: "head-1", dirty: true },
+    "current worktree has source changes; commit, stash, or revert them before retained resume",
+  );
+});
+
+test("rejects current repositories without a known clean dirty state", () => {
+  assertResumeError(
+    runRecord(),
+    { head: "head-1" },
+    "current worktree clean/dirty state could not be read; retained resume requires a clean baseline",
   );
 });
 
 test("rejects non-Claude daytona command driver", () => {
-  assert.throws(
-    () => buildRetainedRunResumeRequest(
-      runRecord({ driver: "daytona(command)" }),
-      { head: "head-1", dirty: false },
-    ),
-    /daytona\(claude\)/,
+  assertResumeError(
+    runRecord({ driver: "daytona(command)" }),
+    { head: "head-1", dirty: false },
+    "only daytona(claude) runs can be resumed",
   );
 });
 
 test("rejects completed non-escalated outcomes", () => {
-  assert.throws(
-    () => buildRetainedRunResumeRequest(
-      runRecord({ outcome: "ready_for_mr" }),
-      { head: "head-1", dirty: false },
-    ),
-    /escalated|running/,
+  assertResumeError(
+    runRecord({ outcome: "ready_for_mr" }),
+    { head: "head-1", dirty: false },
+    "only escalated or interrupted running Claude runs can be resumed",
   );
 });
 
 test("rejects empty selectedContracts", () => {
-  assert.throws(
-    () => buildRetainedRunResumeRequest(
-      runRecord({ selectedContracts: [] }),
-      { head: "head-1", dirty: false },
-    ),
-    /selectedContracts/,
+  assertResumeError(
+    runRecord({ selectedContracts: [] }),
+    { head: "head-1", dirty: false },
+    "source run did not record selected contracts; retained resume cannot safely select Gate contracts",
   );
 });
 
@@ -237,56 +284,50 @@ test("selects latest attempt with sandbox over earlier attempt", () => {
 });
 
 test("rejects attempts without retained sandbox ids", () => {
-  assert.throws(
-    () => buildRetainedRunResumeRequest(
-      runRecord({
-        attempts: [
-          {
-            attempt: 1,
-            claudeSessionId: "session-1",
-            gateSandboxIds: [],
-          },
-        ],
-      }),
-      { head: "head-1", dirty: false },
-    ),
-    /agentSandboxId/,
+  assertResumeError(
+    runRecord({
+      attempts: [
+        {
+          attempt: 1,
+          claudeSessionId: "session-1",
+          gateSandboxIds: [],
+        },
+      ],
+    }),
+    { head: "head-1", dirty: false },
+    "source run did not record an Agent sandbox id",
   );
 });
 
 test("rejects missing Claude session and stream metadata", () => {
-  assert.throws(
-    () => buildRetainedRunResumeRequest(
-      runRecord({
-        attempts: [
-          {
-            attempt: 1,
-            agentSandboxId: "sandbox-1",
-            gateSandboxIds: [],
-          },
-        ],
-      }),
-      { head: "head-1", dirty: false },
-    ),
-    /claudeSessionId|claudeStreamPath/,
+  assertResumeError(
+    runRecord({
+      attempts: [
+        {
+          attempt: 1,
+          agentSandboxId: "sandbox-1",
+          gateSandboxIds: [],
+        },
+      ],
+    }),
+    { head: "head-1", dirty: false },
+    "source run did not record a Claude session id or stream path",
   );
 });
 
 test("rejects invalid attempt numbers", () => {
-  assert.throws(
-    () => buildRetainedRunResumeRequest(
-      runRecord({
-        attempts: [
-          {
-            attempt: 0,
-            agentSandboxId: "sandbox-0",
-            claudeSessionId: "session-0",
-            gateSandboxIds: [],
-          } as RunRecordAttempt,
-        ],
-      }),
-      { head: "head-1", dirty: false },
-    ),
-    /attempt/,
+  assertResumeError(
+    runRecord({
+      attempts: [
+        {
+          attempt: 0,
+          agentSandboxId: "sandbox-0",
+          claudeSessionId: "session-0",
+          gateSandboxIds: [],
+        } as RunRecordAttempt,
+      ],
+    }),
+    { head: "head-1", dirty: false },
+    "source run attempt metadata is invalid",
   );
 });

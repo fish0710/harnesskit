@@ -36,7 +36,7 @@ function eventDataHasDeletedSandbox(data: unknown, agentSandboxId: string): bool
 
 function assertValidAttemptNumber(attempt: RunRecordAttempt): void {
   if (!Number.isSafeInteger(attempt.attempt) || attempt.attempt < 1) {
-    throw new Error("resume source attempt metadata must include a safe integer attempt >= 1");
+    throw new Error("source run attempt metadata is invalid");
   }
 }
 
@@ -57,31 +57,39 @@ export function buildRetainedRunResumeRequest(
   current: CurrentRepoState,
 ): RetainedRunResumeRequest {
   if (record.driver !== "daytona(claude)") {
-    throw new Error("resume requires a daytona(claude) source record");
+    throw new Error("only daytona(claude) runs can be resumed");
   }
   if (!isResumeEligibleRecord(record)) {
-    throw new Error("resume source must be completed with outcome escalated or an interrupted running record");
+    throw new Error("only escalated or interrupted running Claude runs can be resumed");
   }
   if (record.repo.dirty === true) {
-    throw new Error("resume source repo was dirty");
+    throw new Error("source run started from a dirty worktree; retained resume cannot reconstruct its baseline safely");
+  }
+  if (record.repo.dirty !== false) {
+    throw new Error("source run did not record clean/dirty state; retained resume cannot reconstruct its baseline safely");
+  }
+  if (!hasString(record.repo.head)) {
+    throw new Error("source run did not record a Git HEAD; retained resume cannot reconstruct its baseline safely");
+  }
+  if (!hasString(current.head)) {
+    throw new Error("current Git HEAD could not be read; retained resume requires a matching baseline");
+  }
+  if (record.repo.head !== current.head) {
+    throw new Error(`current HEAD ${current.head} does not match source run HEAD ${record.repo.head}`);
   }
   if (current.dirty === true) {
-    throw new Error("resume current repo is dirty");
+    throw new Error("current worktree has source changes; commit, stash, or revert them before retained resume");
   }
-  if (
-    hasString(record.repo.head) &&
-    hasString(current.head) &&
-    record.repo.head !== current.head
-  ) {
-    throw new Error("resume current HEAD does not match source HEAD");
+  if (current.dirty !== false) {
+    throw new Error("current worktree clean/dirty state could not be read; retained resume requires a clean baseline");
   }
   if (record.selectedContracts.length === 0) {
-    throw new Error("resume source selectedContracts must not be empty");
+    throw new Error("source run did not record selected contracts; retained resume cannot safely select Gate contracts");
   }
 
   const attempt = latestAttemptWithSandbox(record.attempts);
   if (attempt === undefined || !hasString(attempt.agentSandboxId)) {
-    throw new Error("resume source has no attempt with agentSandboxId");
+    throw new Error("source run did not record an Agent sandbox id");
   }
   const agentSandboxId = attempt.agentSandboxId;
 
@@ -90,7 +98,7 @@ export function buildRetainedRunResumeRequest(
     eventDataHasDeletedSandbox(event.data, agentSandboxId),
   );
   if (cleanupDeleted) {
-    throw new Error("resume source retained sandbox was deleted");
+    throw new Error(`agent sandbox ${agentSandboxId} was deleted`);
   }
 
   const claudeSessionId = hasString(attempt.claudeSessionId)
@@ -100,7 +108,7 @@ export function buildRetainedRunResumeRequest(
     ? attempt.claudeStreamPath
     : undefined;
   if (claudeSessionId === undefined && claudeStreamPath === undefined) {
-    throw new Error("resume source attempt must include claudeSessionId or claudeStreamPath");
+    throw new Error("source run did not record a Claude session id or stream path");
   }
 
   return {

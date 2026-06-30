@@ -64,6 +64,15 @@ export interface CommitPublishedChangesInput {
   message: string;
 }
 
+export interface MarkSeriesTaskReadyToCommitInput {
+  cwd: string;
+  config: TaskSeriesConfig;
+  taskId: string;
+  sourceRunRecordPath: string;
+  runRecordPath: string;
+  changedFiles: string[];
+}
+
 export type CommitPublishedChangesResult =
   | { committed: false }
   | { committed: true; commit: string };
@@ -794,6 +803,64 @@ function updateLedgerTask(ledger: SeriesLedger, task: SeriesLedgerTask): void {
 function writeUpdatedLedger(cwd: string, ledger: SeriesLedger): void {
   ledger.updatedAt = nowIso();
   writeSeriesLedger(cwd, ledger);
+}
+
+function assertRetainedResumeLedgerTaskIsCurrent(
+  task: SeriesLedgerTask,
+  sourceRunRecordPath: string,
+): void {
+  if (task.status !== "escalated" && task.status !== "running") {
+    throw new Error(
+      `task ${task.id} status ${task.status} cannot be marked ready_to_commit from a retained resume`,
+    );
+  }
+  if (task.runRecord !== undefined && task.runRecord !== sourceRunRecordPath) {
+    throw new Error(
+      `task ${task.id} ledger run record changed since the retained run`,
+    );
+  }
+  if (task.status === "escalated" && task.runRecord !== sourceRunRecordPath) {
+    throw new Error(
+      `task ${task.id} ledger run record changed since the retained run`,
+    );
+  }
+}
+
+export function markSeriesTaskReadyToCommit(
+  input: MarkSeriesTaskReadyToCommitInput,
+): void {
+  const ledger = readSeriesLedger(input.cwd, input.config.seriesId);
+  if (!ledger) throw new Error(`series ledger not found: ${input.config.seriesId}`);
+
+  const task = input.config.tasks.find((entry) => entry.id === input.taskId);
+  if (!task) throw new Error(`unknown series task: ${input.taskId}`);
+
+  const existingTask = ledger.tasks.find((entry) => entry.id === input.taskId);
+  if (!existingTask) throw new Error(`series ledger task not found: ${input.taskId}`);
+
+  const currentTaskHash = taskHash(
+    task,
+    input.config.autoCommit,
+    input.config.taskDefaults,
+  );
+  if (existingTask.taskHash !== currentTaskHash) {
+    throw new Error(`task ${input.taskId} configuration changed since the retained run`);
+  }
+  assertRetainedResumeLedgerTaskIsCurrent(
+    existingTask,
+    input.sourceRunRecordPath,
+  );
+
+  updateLedgerTask(ledger, {
+    id: input.taskId,
+    taskHash: currentTaskHash,
+    status: "ready_to_commit",
+    startedAt: existingTask.startedAt,
+    changedFiles: [...input.changedFiles],
+    runRecord: input.runRecordPath,
+  });
+  ledger.status = "running";
+  writeUpdatedLedger(input.cwd, ledger);
 }
 
 function runOutcomeReason(outcome: RunOutcome): string | undefined {

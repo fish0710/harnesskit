@@ -12,6 +12,7 @@
  *   contract freeze <file>                     # 冻结契约(打 hash,写回)
  */
 import { parseArgs } from "node:util";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve, extname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -43,6 +44,7 @@ import {
 } from "./harness/run.js";
 import {
   loadTaskSeriesConfig,
+  markSeriesTaskReadyToCommit,
   readSeriesLedger,
   runTaskSeries,
   type TaskSeriesConfig,
@@ -64,6 +66,10 @@ import {
   type RunRecordChild,
   type RunRecordObservability,
 } from "./harness/record.js";
+import {
+  buildRetainedRunResumeRequest,
+  type CurrentRepoState,
+} from "./harness/resume.js";
 import { createProject } from "./harness/scaffold.js";
 import { writePlan } from "./harness/plan.js";
 import { gatherStatus } from "./harness/status.js";
@@ -242,6 +248,58 @@ function createLazyDaytonaProvider(environment: NodeJS.ProcessEnv): SandboxProvi
 function fail(msg: string): never {
   console.error(`错误: ${msg}`);
   process.exit(1);
+}
+
+function gitOutput(cwd: string, args: string[]): string | undefined {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
+function isHarnessInternalPath(path: string): boolean {
+  return path === ".harness" || path.startsWith(".harness/");
+}
+
+function gitPorcelainChangedPaths(status: string): string[] {
+  const entries = status.split("\0").filter((entry) => entry.length > 0);
+  const paths: string[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    const code = entry.slice(0, 2);
+    const path = entry.slice(3);
+    if (path) paths.push(path);
+    if (code.includes("R") || code.includes("C")) {
+      const secondaryPath = entries[index + 1];
+      if (secondaryPath) {
+        paths.push(secondaryPath);
+        index += 1;
+      }
+    }
+  }
+  return paths;
+}
+
+function currentRepoState(cwd: string): CurrentRepoState {
+  const head = gitOutput(cwd, ["rev-parse", "HEAD"]);
+  const status = gitOutput(cwd, [
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--untracked-files=all",
+  ]);
+  return {
+    ...(head ? { head } : {}),
+    ...(status === undefined
+      ? {}
+      : {
+        dirty: gitPorcelainChangedPaths(status).some((path) =>
+          !isHarnessInternalPath(path)
+        ),
+      }),
+  };
 }
 
 function selectContractsForValues(
@@ -589,6 +647,17 @@ export interface SingleTaskRunOverrides {
   seriesId?: string;
   taskIndex?: number;
   taskTotal?: number;
+  retainedResume?: {
+    sourceRunId: string;
+    agentSandboxId: string;
+    claudeSessionId?: string;
+    claudeStreamPath?: string;
+    recoverCompletedCommand?: boolean;
+    completedAttempts: number;
+    policy: SandboxPolicy;
+    gate: GateCore;
+    ctx: RunContext;
+  };
 }
 
 export interface SingleTaskRunResult {
@@ -608,15 +677,23 @@ async function runSingleTask(
   const dir = resolve(cwd, values.dir as string);
   const runId = buildRunId();
   const runStore = new RunStore(cwd, { makeRunId: () => runId });
+  const retainedResume = overrides?.retainedResume;
   const recorder = runStore.startRun({
     runId,
     kind: overrides?.kind ?? "single",
     ...(overrides?.parentRunId ? { parentRunId: overrides.parentRunId } : {}),
     task: taskRecordMetadata(task, overrides),
-    driver: runRecordDriverLabel(values),
+    driver: retainedResume ? "daytona(claude)" : runRecordDriverLabel(values),
     observability: disabledRunObservability(),
     selectedContracts: overrides?.selectedContracts?.map((contract) => contract.id) ?? [],
   });
+  if (retainedResume) {
+    recorder.recordEvent("run.resume.source", {
+      sourceRunId: retainedResume.sourceRunId,
+      agentSandboxId: retainedResume.agentSandboxId,
+      completedAttempts: retainedResume.completedAttempts,
+    });
+  }
 
   let diagnosticLog: DiagnosticLogger | undefined;
   try {
@@ -630,9 +707,9 @@ async function runSingleTask(
     diagnosticLog.info("run.setup", "run record created", {
       runId,
       kind: overrides?.kind ?? "single",
-      driver: runRecordDriverLabel(values),
+      driver: retainedResume ? "daytona(claude)" : runRecordDriverLabel(values),
     });
-    const agent = selectAgent(values);
+    const agent = retainedResume ? { kind: "claude" as const } : selectAgent(values);
     diagnosticLog.debug("run.setup", "agent selected", {
       kind: agent.kind,
       ...(agent.kind === "command" ? { commandConfigured: true } : {}),
@@ -649,7 +726,9 @@ async function runSingleTask(
       recorder.setObservability(claudeRunObservability(runId, observabilityConfig));
     }
 
-    const contracts = loadRunnableContracts(dir);
+    const contracts = retainedResume
+      ? overrides?.selectedContracts ?? []
+      : loadRunnableContracts(dir);
     diagnosticLog.debug("run.setup", "contracts loaded", {
       dir,
       count: contracts.length,
@@ -662,13 +741,15 @@ async function runSingleTask(
     diagnosticLog.debug("run.setup", "contracts selected", {
       ids: selected.map((contract) => contract.id),
     });
-    const gate = await buildGate(values.properties as string | undefined);
+    const gate = retainedResume?.gate ??
+      await buildGate(values.properties as string | undefined);
     diagnosticLog.debug("run.setup", "gate built", {
-      properties: values.properties ?? null,
+      properties: retainedResume ? "(retained resume)" : values.properties ?? null,
     });
-    const ctx: RunContext = { cwd, verdicts: loadVerdicts(cwd) };
-    if (values["base-url"]) (ctx as { baseUrl?: string }).baseUrl =
-      values["base-url"] as string;
+    const ctx: RunContext = retainedResume?.ctx ?? { cwd, verdicts: loadVerdicts(cwd) };
+    if (!retainedResume && values["base-url"]) {
+      (ctx as { baseUrl?: string }).baseUrl = values["base-url"] as string;
+    }
     const environmentName = agent.kind === "scaffold"
       ? "scaffold"
       : `daytona(${agent.kind})`;
@@ -676,14 +757,14 @@ async function runSingleTask(
       cwd,
       values.config as string | undefined,
     );
-    const policy = loadSandboxPolicy(config);
+    const policy = retainedResume?.policy ?? loadSandboxPolicy(config);
     diagnosticLog.debug("run.setup", "policy loaded", {
       candidateRoots: policy.candidateRoots,
       readOnlyPaths: policy.readOnlyPaths,
       protectedPaths: policy.protectedPaths,
       retainOnFailure: policy.retainOnFailure,
     });
-    if (agent.kind !== "scaffold") {
+    if (agent.kind !== "scaffold" && !retainedResume) {
       diagnosticLog.info("preflight", "gate preflight start", {
         selectedContracts: selected.map((contract) => contract.id),
       });
@@ -733,6 +814,23 @@ async function runSingleTask(
         agent,
         environment: process.env,
         observability,
+        ...(retainedResume
+          ? {
+            resume: {
+              agentSandboxId: retainedResume.agentSandboxId,
+              ...(retainedResume.claudeSessionId
+                ? { claudeSessionId: retainedResume.claudeSessionId }
+                : {}),
+              ...(retainedResume.claudeStreamPath
+                ? { claudeStreamPath: retainedResume.claudeStreamPath }
+                : {}),
+              ...(retainedResume.recoverCompletedCommand
+                ? { recoverCompletedCommand: true }
+                : {}),
+              completedAttempts: retainedResume.completedAttempts,
+            },
+          }
+          : {}),
         onObservation(event, data) {
           recorder?.recordEvent(event, data);
           const redacted = redactObservationData(data);
@@ -760,6 +858,7 @@ async function runSingleTask(
       ...(initialFeedback ? { initialFeedback } : {}),
       onLog: (l) => console.log(l),
       diagnosticLog: diagnosticLog.enabled ? diagnosticLog : undefined,
+      ...(retainedResume ? { startWithGate: true } : {}),
     });
 
     let recPath: string;
@@ -1036,7 +1135,96 @@ function cmdStatus(args: string[]): void {
   console.log(gatherStatus(cwd, dir).join("\n"));
 }
 
-function cmdRuns(args: string[]): void {
+async function cmdRunsResume(args: string[]): Promise<void> {
+  const { values, positionals } = parse(args);
+  const runId = positionals[1];
+  if (!runId) {
+    fail("用法: harness runs resume <runId> [--dir d] [--config f] [--max-attempts n] [--max-ms ms] [--verbose]");
+  }
+
+  const cwd = process.cwd();
+  const source = new RunStore(cwd).readRun(runId);
+  if (!source) fail(`未找到 run 记录: ${runId}`);
+  const sourceRunRecordPath = resolve(cwd, ".harness", "runs", `${source.runId}.json`);
+
+  const request = buildRetainedRunResumeRequest(
+    source,
+    currentRepoState(cwd),
+  );
+  const config = loadHarnessConfig(cwd, values.config as string | undefined);
+  const policy = {
+    ...loadSandboxPolicy(config),
+    retainOnFailure: true,
+  };
+  const contracts = loadRunnableContracts(resolve(cwd, values.dir as string));
+  const contractsById = new Map(contracts.map((contract) => [contract.id, contract]));
+  const selectedContracts = request.selectedContracts.map((id) => {
+    const contract = contractsById.get(id);
+    if (!contract) throw new Error(`source run selected missing contract: ${id}`);
+    return contract;
+  });
+  const gate = await buildGate(values.properties as string | undefined);
+  const ctx: RunContext = { cwd, verdicts: loadVerdicts(cwd) };
+  if (values["base-url"]) (ctx as { baseUrl?: string }).baseUrl =
+    values["base-url"] as string;
+
+  const result = await runSingleTask(args, request.task, undefined, {
+    kind: source.kind === "series-task" ? "series-task" : "single",
+    ...(source.kind === "series-task" && source.parentRunId
+      ? { parentRunId: source.parentRunId }
+      : {}),
+    ...(source.kind === "series-task" && source.task.taskId
+      ? { taskId: source.task.taskId }
+      : {}),
+    ...(source.kind === "series-task" && source.task.seriesId
+      ? { seriesId: source.task.seriesId }
+      : {}),
+    ...(source.kind === "series-task" && source.task.index !== undefined
+      ? { taskIndex: source.task.index }
+      : {}),
+    ...(source.kind === "series-task" && source.task.total !== undefined
+      ? { taskTotal: source.task.total }
+      : {}),
+    selectedContracts,
+    retainedResume: {
+      sourceRunId: request.sourceRunId,
+      agentSandboxId: request.agentSandboxId,
+      ...(request.claudeSessionId ? { claudeSessionId: request.claudeSessionId } : {}),
+      ...(request.claudeStreamPath ? { claudeStreamPath: request.claudeStreamPath } : {}),
+      ...(request.recoverCompletedCommand ? { recoverCompletedCommand: true } : {}),
+      completedAttempts: request.completedAttempts,
+      policy,
+      gate,
+      ctx,
+    },
+  });
+
+  if (result.outcome.outcome === "ready_for_mr" && source.kind === "series-task") {
+    const seriesConfig = loadTaskSeriesConfig(config);
+    if (!seriesConfig) {
+      throw new Error(`series config missing for source run: ${source.runId}`);
+    }
+    if (seriesConfig.seriesId !== source.task.seriesId) {
+      throw new Error(`series config ${seriesConfig.seriesId} does not match source run series ${source.task.seriesId}`);
+    }
+    markSeriesTaskReadyToCommit({
+      cwd,
+      config: seriesConfig,
+      taskId: source.task.taskId!,
+      sourceRunRecordPath,
+      runRecordPath: result.runRecordPath,
+      changedFiles: result.outcome.publication?.changedFiles ?? [],
+    });
+  }
+
+  process.exitCode = result.outcome.outcome === "ready_for_mr"
+    ? 0
+    : result.outcome.outcome === "blocked"
+      ? 2
+      : 1;
+}
+
+async function cmdRuns(args: string[]): Promise<void> {
   const { values, positionals } = parse(args);
   const sub = positionals[0] ?? "list";
   const store = new RunStore(process.cwd());
@@ -1086,7 +1274,12 @@ function cmdRuns(args: string[]): void {
     return;
   }
 
-  fail("用法: harness runs [list|show <runId>] [--json] [--task-id id] [--series-id id]");
+  if (sub === "resume") {
+    await cmdRunsResume(args);
+    return;
+  }
+
+  fail("用法: harness runs [list|show <runId>|resume <runId>] [--json] [--task-id id] [--series-id id]");
 }
 
 function cmdCreate(args: string[]): void {
@@ -1120,6 +1313,7 @@ function help(): void {
   harness status                                 # 项目状态(契约/冻结/裁决/最近 run)
   harness runs list [--json] [--task-id id] [--series-id id]
   harness runs show <runId> [--json]
+  harness runs resume <runId> [--dir d] [--config f] [--max-attempts n] [--max-ms ms] [--verbose]
 
 门禁(验证层):
   harness check [--dir d] [--changed a,b | --stage s] [--config f] [--base-url u] [--properties m] [--json]
@@ -1141,7 +1335,7 @@ async function main(): Promise<void> {
     case "fix": await cmdFix(rest); break;
     case "review": await cmdReview(rest); break;
     case "status": cmdStatus(rest); break;
-    case "runs": cmdRuns(rest); break;
+    case "runs": await cmdRuns(rest); break;
     case "check": await cmdCheck(rest); break;
     case "gate": await cmdGate(rest); break;
     case "preflight": await cmdPreflight(rest); break;

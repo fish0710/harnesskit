@@ -1572,6 +1572,74 @@ test("retained Daytona resume recovers a completed Claude session from stream be
   );
 });
 
+test("retained Daytona resume recovers camelCase Claude sessionId from stream", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: [],
+    gateExitCodes: [0],
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  const streamPath = "/harness-observability/attempt-1/claude-stream.jsonl";
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("fixed\n"), false),
+  );
+  retained.files.set(
+    streamPath,
+    workspaceFile(
+      streamPath,
+      Buffer.from(
+        '{"type":"result","subtype":"success","terminal_reason":"completed","sessionId":"session-camel"}\n',
+      ),
+      false,
+    ),
+  );
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: retainingPolicy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeStreamPath: streamPath,
+      completedAttempts: 1,
+      recoverCompletedCommand: true,
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.equal(provider.claudeRuns, 0);
+  assert.deepEqual(
+    observations
+      .filter(([event]) => event === "agent.command.recovered")
+      .map(([, data]) => data),
+    [{
+      id: "retained-agent",
+      attempt: 1,
+      claudeSessionId: "session-camel",
+      claudeStreamPath: streamPath,
+      exitCode: 0,
+      outcome: "success",
+    }],
+  );
+});
+
 test("retained Daytona resume reports absolute attempts for recovered command and gates", async () => {
   const root = createGitFixture({
     "src/a.ts": "before\n",

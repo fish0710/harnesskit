@@ -198,8 +198,11 @@ function parseSuccessfulClaudeResultSessionId(
     if (event.subtype !== "success" || event.is_error === true) {
       return undefined;
     }
-    if (!isSafeClaudeSessionId(event.session_id)) return undefined;
-    return event.session_id;
+    const sessionId = typeof event.session_id === "string"
+      ? event.session_id
+      : event.sessionId;
+    if (!isSafeClaudeSessionId(sessionId)) return undefined;
+    return sessionId;
   }
   return undefined;
 }
