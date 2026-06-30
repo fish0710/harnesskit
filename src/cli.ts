@@ -92,6 +92,84 @@ const rest = argv.slice(1);
 
 export { redactObservationData } from "./harness/redaction.js";
 
+function observationObject(data: unknown): Record<string, unknown> | undefined {
+  return typeof data === "object" && data !== null && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : undefined;
+}
+
+function observationString(
+  data: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = data?.[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function observationNumber(
+  data: Record<string, unknown> | undefined,
+  key: string,
+): number | undefined {
+  const value = data?.[key];
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function quoteSummaryField(value: string): string {
+  return JSON.stringify(value);
+}
+
+export function renderSandboxObservation(event: string, data: unknown): string {
+  const value = observationObject(data);
+  if (event === "agent.claude.text") {
+    const text = observationString(value, "text");
+    if (text) return `    · Claude: ${text}`;
+  }
+  if (event === "agent.claude.tool") {
+    const tool = observationString(value, "tool");
+    if (tool) {
+      const details = ["command", "path", "pattern"]
+        .map((key) => {
+          const field = observationString(value, key);
+          return field ? `${key}=${quoteSummaryField(field)}` : undefined;
+        })
+        .filter((item): item is string => item !== undefined);
+      return `    · Claude tool: ${tool}${details.length ? ` ${details.join(" ")}` : ""}`;
+    }
+  }
+  if (event === "agent.command.progress") {
+    const lastEventType = observationString(value, "lastEventType") ?? "activity";
+    const lastTool = observationString(value, "lastTool");
+    const bytes = observationNumber(value, "bytes");
+    return `    · Claude progress: ${lastEventType}${lastTool ? ` via ${lastTool}` : ""}${
+      bytes === undefined ? "" : ` · ${bytes} bytes parsed`
+    }`;
+  }
+  if (event === "agent.claude.result") {
+    const details = [
+      observationString(value, "sessionId")
+        ? `session=${observationString(value, "sessionId")}`
+        : undefined,
+      observationNumber(value, "turns") === undefined
+        ? undefined
+        : `turns=${observationNumber(value, "turns")}`,
+      observationNumber(value, "durationMs") === undefined
+        ? undefined
+        : `durationMs=${observationNumber(value, "durationMs")}`,
+      observationNumber(value, "durationApiMs") === undefined
+        ? undefined
+        : `durationApiMs=${observationNumber(value, "durationApiMs")}`,
+      observationNumber(value, "ttftMs") === undefined
+        ? undefined
+        : `ttftMs=${observationNumber(value, "ttftMs")}`,
+    ].filter((item): item is string => item !== undefined);
+    return `    · Claude result${details.length ? `: ${details.join(" · ")}` : ""}`;
+  }
+  const rendered = JSON.stringify(data);
+  return `    · ${event}: ${rendered ?? String(data)}`;
+}
+
 const OPTIONS = {
   dir: { type: "string" as const, default: "contracts" },
   json: { type: "boolean" as const, default: false },
@@ -660,9 +738,7 @@ async function runSingleTask(
           const redacted = redactObservationData(data);
           diagnosticLog?.debug("sandbox", event, redacted);
           if (diagnosticLog?.enabled) return;
-          console.log(
-            `    · ${event}: ${JSON.stringify(redacted)}`,
-          );
+          console.log(renderSandboxObservation(event, redacted));
         },
       });
     }
