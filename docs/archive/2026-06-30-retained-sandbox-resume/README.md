@@ -30,6 +30,21 @@
 - series-task resume 成功后只把匹配 source run 的 `running`/`escalated` ledger
   task 标为 `ready_to_commit`，避免旧 run 覆盖已完成或更新的 ledger 状态。
 
+## Dirty Source Follow-up
+
+真实恢复 `2026-06-30T01-24-35-206Z-030a421b` 时发现一个历史 run 场景：
+source run 记录了 `repo.dirty: true`，但 dirty 文件来自 Harness 初始化后的
+规格、合同、Gate runner、运行记录等 host-owned 文件，而不是业务源码。
+
+为保持默认安全边界，同时支持这类恢复，CLI 增加显式救援参数：
+
+```bash
+harness runs resume <runId> --allow-harness-dirty-source
+```
+
+该参数只允许当前 dirty paths 落在 Harness-owned 路径内；若出现 `src/**`、
+package files、页面/组件代码或构建产物，恢复仍然 fail closed。
+
 ## 交付物
 
 | 产出 | 路径 |

@@ -185,6 +185,7 @@ const OPTIONS = {
   "base-url": { type: "string" as const },
   properties: { type: "string" as const },
   "retain-on-failure": { type: "boolean" as const, default: false },
+  "allow-harness-dirty-source": { type: "boolean" as const, default: false },
   "task-id": { type: "string" as const },
   "series-id": { type: "string" as const },
   // 产出引擎
@@ -290,12 +291,16 @@ function currentRepoState(cwd: string): CurrentRepoState {
     "-z",
     "--untracked-files=all",
   ]);
+  const changedPaths = status === undefined
+    ? undefined
+    : gitPorcelainChangedPaths(status);
   return {
     ...(head ? { head } : {}),
-    ...(status === undefined
+    ...(changedPaths === undefined
       ? {}
       : {
-        dirty: gitPorcelainChangedPaths(status).some((path) =>
+        changedPaths,
+        dirty: changedPaths.some((path) =>
           !isHarnessInternalPath(path)
         ),
       }),
@@ -654,6 +659,7 @@ export interface SingleTaskRunOverrides {
     claudeStreamPath?: string;
     recoverCompletedCommand?: boolean;
     completedAttempts: number;
+    allowedSourceDirtyPaths?: string[];
     policy: SandboxPolicy;
     gate: GateCore;
     ctx: RunContext;
@@ -693,6 +699,12 @@ async function runSingleTask(
       agentSandboxId: retainedResume.agentSandboxId,
       completedAttempts: retainedResume.completedAttempts,
     });
+    if (retainedResume.allowedSourceDirtyPaths) {
+      recorder.recordEvent("run.resume.source_dirty_override", {
+        sourceRunId: retainedResume.sourceRunId,
+        paths: retainedResume.allowedSourceDirtyPaths,
+      });
+    }
   }
 
   let diagnosticLog: DiagnosticLogger | undefined;
@@ -1139,7 +1151,7 @@ async function cmdRunsResume(args: string[]): Promise<void> {
   const { values, positionals } = parse(args);
   const runId = positionals[1];
   if (!runId) {
-    fail("用法: harness runs resume <runId> [--dir d] [--config f] [--max-attempts n] [--max-ms ms] [--verbose]");
+    fail("用法: harness runs resume <runId> [--dir d] [--config f] [--max-attempts n] [--max-ms ms] [--allow-harness-dirty-source] [--verbose]");
   }
 
   const cwd = process.cwd();
@@ -1150,6 +1162,9 @@ async function cmdRunsResume(args: string[]): Promise<void> {
   const request = buildRetainedRunResumeRequest(
     source,
     currentRepoState(cwd),
+    {
+      allowHarnessDirtySource: values["allow-harness-dirty-source"] === true,
+    },
   );
   const config = loadHarnessConfig(cwd, values.config as string | undefined);
   const policy = {
@@ -1192,6 +1207,9 @@ async function cmdRunsResume(args: string[]): Promise<void> {
       ...(request.claudeSessionId ? { claudeSessionId: request.claudeSessionId } : {}),
       ...(request.claudeStreamPath ? { claudeStreamPath: request.claudeStreamPath } : {}),
       ...(request.recoverCompletedCommand ? { recoverCompletedCommand: true } : {}),
+      ...(request.allowedSourceDirtyPaths
+        ? { allowedSourceDirtyPaths: request.allowedSourceDirtyPaths }
+        : {}),
       completedAttempts: request.completedAttempts,
       policy,
       gate,
@@ -1313,7 +1331,7 @@ function help(): void {
   harness status                                 # 项目状态(契约/冻结/裁决/最近 run)
   harness runs list [--json] [--task-id id] [--series-id id]
   harness runs show <runId> [--json]
-  harness runs resume <runId> [--dir d] [--config f] [--max-attempts n] [--max-ms ms] [--verbose]
+  harness runs resume <runId> [--dir d] [--config f] [--max-attempts n] [--max-ms ms] [--allow-harness-dirty-source] [--verbose]
 
 门禁(验证层):
   harness check [--dir d] [--changed a,b | --stage s] [--config f] [--base-url u] [--properties m] [--json]

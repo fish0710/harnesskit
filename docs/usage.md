@@ -154,6 +154,10 @@ Retained resume is intentionally conservative:
 - the source run must have started from a clean worktree, current Git HEAD must
   match the source run, and the current source worktree must be clean outside
   `.harness` runtime records;
+- if a historical source run was dirty only because Harness-owned setup files
+  were still untracked, use `--allow-harness-dirty-source`; Harness then allows
+  only `.harness`, contracts, Gate runners, Harness config, workflow, CODEOWNERS,
+  AGENTS, and Harness docs paths, and still rejects product source changes;
 - Harness validates the retained candidate with Gate before another Claude
   command;
 - if Gate passes, Harness publishes the candidate and deletes the retained
