@@ -117,6 +117,9 @@ For `--driver claude`, use:
 - `attempts[].claudeSessionId` and `resumedFromSessionId` -> session continuity evidence;
 - `attempts[].gateSandboxIds` -> fresh validation sandboxes;
 - `attempts[].claudeStreamPath` -> mounted path for the raw `stream-json` transcript, usually `/harness-observability/attempt-<n>/claude-stream.jsonl`.
+- `attempts[].claudeStreamBytes` -> host-side parsed stream progress from
+  `agent.command.progress`; this is not the authoritative remote file size or a
+  complete measure of sandbox-visible Claude output.
 - `attempts[].commandLastHeartbeatAt` -> host timestamp of the latest
   `agent.command.heartbeat` folded into the attempt.
 - `attempts[].commandLastHeartbeatElapsedMs` -> elapsed time reported by the

@@ -78,6 +78,10 @@ Use `runstore-observability.md` for compact RunStore extraction commands. Curren
 For `--driver claude`, the phase from `agent.command.start` to
 `agent.command.end` can be quiet. During that period, no Claude command output can be normal
 and the `claude-stream.jsonl` file may stay empty until the command exits.
+Do not describe missing or unchanged `claudeStreamBytes` as proof that Claude
+Code produced no sandbox output. That field only reflects host-side parsed
+stream progress recorded in RunStore; Claude may still be producing output that
+is visible inside the sandbox or not yet folded into a progress event.
 
 Use `agent.command.heartbeat` as the liveness signal:
 

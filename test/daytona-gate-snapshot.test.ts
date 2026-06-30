@@ -157,6 +157,18 @@ test("harness-prep documents Claude command heartbeat supervision", () => {
     runSupervision,
     /heartbeat events continue[\s\S]*Agent command is active[\s\S]*stdout, terminal output, or stream bytes are quiet/i,
   );
+  assert.match(
+    runSupervision,
+    /Do not describe missing or unchanged `claudeStreamBytes` as proof that Claude\s+Code produced no sandbox output/i,
+  );
+  assert.match(
+    runstore,
+    /`attempts\[\]\.claudeStreamBytes` -> host-side parsed stream progress/i,
+  );
+  assert.match(
+    runstore,
+    /not the authoritative remote file size or a\s+complete measure of sandbox-visible Claude output/i,
+  );
   assert.match(blockerAnalysis, /latest Agent event is `agent\.command\.heartbeat`/);
   assert.match(blockerAnalysis, /no later\s+`agent\.command\.end`/);
   assert.match(blockerAnalysis, /heartbeat stops unexpectedly/);
