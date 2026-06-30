@@ -620,8 +620,8 @@ export function createDaytonaRunEnvironment(
       };
     },
 
-    async runGate({ contracts, gate, ctx }) {
-      const attempt = Math.max(agentAttempt, 1);
+    async runGate({ contracts, gate, ctx, attempt: inputAttempt }) {
+      const attempt = inputAttempt ?? Math.max(agentAttempt, 1);
       approvedCandidate = undefined;
       const handle = await ensureAgent();
       try {

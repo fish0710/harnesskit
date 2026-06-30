@@ -14,12 +14,48 @@ import {
 } from "../src/harness/run.js";
 import type { AgentDriver } from "../src/harness/drivers.js";
 import { loadVerdicts, recordVerdict } from "../src/harness/verdicts.js";
-import type { CheckResult, Contract, Plugin, RunContext } from "../src/types.js";
+import type { CheckResult, Contract, GateReport, Plugin, RunContext } from "../src/types.js";
 
 const ctx: RunContext = { cwd: process.cwd() };
 const budget = (over: Partial<GenerationBudget> = {}): GenerationBudget => ({
   maxAttempts: 5, maxTokens: 1e9, maxMs: 600_000, contextThreshold: 0.99, repeatWallThreshold: 99, ...over,
 });
+
+function passReport(): GateReport {
+  return {
+    outcome: "pass",
+    results: [
+      {
+        id: "retained",
+        type: "test",
+        status: "pass",
+        durationMs: 1,
+        violations: [],
+      },
+    ],
+    summary: { total: 1, pass: 1, fail: 0, error: 0, needsReview: 0 },
+    pendingDecisions: [],
+    exitCode: 0,
+  };
+}
+
+function failReport(how: string): GateReport {
+  return {
+    outcome: "fail",
+    results: [
+      {
+        id: "retained",
+        type: "test",
+        status: "fail",
+        durationMs: 1,
+        violations: [{ what: "retained candidate failed", why: "candidate is stale", how }],
+      },
+    ],
+    summary: { total: 1, pass: 0, fail: 1, error: 0, needsReview: 0 },
+    pendingDecisions: [],
+    exitCode: 1,
+  };
+}
 
 // 假插件:状态由共享 flag 决定;假 driver:第 N 次调用时“修好”
 function flakyPlugin(state: { fixed: boolean }): Plugin {
@@ -246,6 +282,148 @@ test("runLoop emits diagnostic events for attempts, gates, publish, and close", 
       "info:loop:environment close end",
     ],
   );
+});
+
+test("runLoop can validate a retained candidate before running the agent", async () => {
+  const calls: string[] = [];
+  const environment: RunEnvironment = {
+    name: "retained-test",
+    async runTask() {
+      calls.push("task");
+      return { summary: "agent should not run", changedFiles: [] };
+    },
+    async runGate() {
+      calls.push("gate");
+      return passReport();
+    },
+    async publish() {
+      calls.push("publish");
+      return { ok: true, changedFiles: ["src/a.ts"] };
+    },
+    async close() {
+      calls.push("close");
+    },
+  };
+
+  const outcome = await runLoop({
+    task: "resume retained candidate",
+    contracts: [],
+    gate: new GateCore(),
+    ctx: { cwd: process.cwd() },
+    environment,
+    budget: budget(),
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.equal(outcome.attempts, 0);
+  assert.deepEqual(calls, ["gate", "publish", "close"]);
+});
+
+test("runLoop Gate-first passes logical attempt 0 to the environment gate", async () => {
+  const gateAttempts: Array<number | undefined> = [];
+  const environment: RunEnvironment = {
+    name: "retained-test",
+    async runTask() {
+      return { summary: "agent should not run", changedFiles: [] };
+    },
+    async runGate(input) {
+      gateAttempts.push(input.attempt);
+      return passReport();
+    },
+    async publish() {
+      return { ok: true, changedFiles: ["src/a.ts"] };
+    },
+    async close() {},
+  };
+
+  const outcome = await runLoop({
+    task: "resume retained candidate",
+    contracts: [],
+    gate: new GateCore(),
+    ctx: { cwd: process.cwd() },
+    environment,
+    budget: budget(),
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.equal(outcome.attempts, 0);
+  assert.deepEqual(gateAttempts, [0]);
+});
+
+test("runLoop feeds retained Gate diagnostics to the next agent attempt", async () => {
+  const calls: string[] = [];
+  const environment: RunEnvironment = {
+    name: "retained-test",
+    async runTask(input) {
+      calls.push(`task:${input.feedback?.includes("fix retained") ? "feedback" : "missing"}`);
+      return { summary: "agent fixed candidate", changedFiles: ["src/a.ts"] };
+    },
+    async runGate() {
+      calls.push("gate");
+      return calls.filter((call) => call === "gate").length === 1
+        ? failReport("fix retained")
+        : passReport();
+    },
+    async publish() {
+      calls.push("publish");
+      return { ok: true, changedFiles: ["src/a.ts"] };
+    },
+    async close() {
+      calls.push("close");
+    },
+  };
+
+  const outcome = await runLoop({
+    task: "resume retained candidate",
+    contracts: [],
+    gate: new GateCore(),
+    ctx: { cwd: process.cwd() },
+    environment,
+    budget: budget(),
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.deepEqual(calls, ["gate", "task:feedback", "gate", "publish", "close"]);
+});
+
+test("runLoop Gate-first failure can escalate before running the agent", async () => {
+  const calls: string[] = [];
+  const environment: RunEnvironment = {
+    name: "retained-test",
+    async runTask() {
+      calls.push("task");
+      return { summary: "agent should not run", changedFiles: [] };
+    },
+    async runGate() {
+      calls.push("gate");
+      return failReport("requires human review");
+    },
+    async publish() {
+      calls.push("publish");
+      return { ok: true, changedFiles: ["src/a.ts"] };
+    },
+    async close() {
+      calls.push("close");
+    },
+  };
+
+  const outcome = await runLoop({
+    task: "resume retained candidate",
+    contracts: [],
+    gate: new GateCore(),
+    ctx: { cwd: process.cwd() },
+    environment,
+    budget: budget({ repeatWallThreshold: 1 }),
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "escalated");
+  assert.equal(outcome.attempts, 0);
+  assert.equal(outcome.action?.kind, "human_review_contract");
+  assert.deepEqual(calls, ["gate", "close"]);
 });
 
 // ---------- 裁决存储 ----------

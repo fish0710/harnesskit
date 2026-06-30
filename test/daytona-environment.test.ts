@@ -510,6 +510,39 @@ test("multiple attempts reuse one agent and create a fresh gate each time", asyn
   assert.ok(gates.every((handle) => handle.verifications === 2));
 });
 
+test("Daytona gate observations use explicit logical attempt", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: [],
+    gateExitCodes: [0],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "command", command: "fake-agent" },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await environment.runGate({
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    attempt: 0,
+  });
+  await environment.close();
+
+  const gateRunStart = observations.find(([event]) =>
+    event === "gate.run.start"
+  );
+  const gateRunEnd = observations.find(([event]) => event === "gate.run.end");
+  assert.equal((gateRunStart?.[1] as { attempt?: number }).attempt, 0);
+  assert.equal((gateRunEnd?.[1] as { attempt?: number }).attempt, 0);
+});
+
 test("gate sandboxes use Gate runtime snapshots without model credentials or Claude installation", async () => {
   const root = createGitFixture({ "src/a.ts": "before\n" });
   const provider = scriptedProvider({
