@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an explicit CLI path that resumes an escalated Claude run from a retained Daytona Agent sandbox, validates the existing candidate with the current Gate first, and only asks Claude to continue if the candidate still fails.
+**Goal:** Add an explicit CLI path that resumes retained Daytona Claude work after either an escalated run or an interrupted local Harness orchestrator, validates the existing candidate with the current Gate first, and only asks Claude to continue if the candidate still fails.
 
-**Architecture:** Keep normal `harness run` semantics unchanged. Add an explicit `harness runs resume <runId>` command that validates the original run record, attaches to the retained Agent sandbox, seeds the previous Claude session and attempt number, runs Gate against the preserved candidate before any new agent command, then publishes or continues with `claude --resume`. For series-task runs, a successful resume updates the series ledger to `ready_to_commit` so the existing series resume path can commit or continue.
+**Architecture:** Keep normal `harness run` semantics unchanged. Add an explicit `harness runs resume <runId>` command that validates the original run record, attaches to the retained Agent sandbox, recovers or seeds the previous Claude session and attempt number, runs Gate against the preserved candidate before any new agent command, then publishes or continues with `claude --resume`. For series-task runs, a successful resume updates the series ledger to `ready_to_commit` so the existing series resume path can commit or continue.
 
 **Tech Stack:** TypeScript, Node `node:test`, existing Daytona SDK provider abstraction, RunStore v3 records, existing sandbox collector/publisher, existing task series ledger.
 
@@ -15,13 +15,16 @@
 - `runLoop()` always starts with `environment.runTask()`, then `environment.runGate()`.
 - Daytona Claude retries inside one live run already resume with `claude --resume <sessionId>` in the same Agent sandbox.
 - `retainOnFailure: true` prevents `close()` from deleting the Agent sandbox after an unpublished failure, but there is no CLI path that attaches to that retained sandbox later.
+- If the local Harness orchestrator is interrupted after `agent.command.start`, the Agent sandbox can keep running and Claude can finish successfully, but the host process never records `agent.command.end`, never parses the stream result, never enters Gate, and never publishes.
 - `SandboxProvider` only exposes `create()`. The Daytona SDK already exposes `get(id)`, but Harness does not surface it.
 - RunStore attempts already contain `agentSandboxId` and `claudeSessionId`.
+- Interrupted RunStore attempts can contain `agentSandboxId`, `claudeConfigDir`, and `claudeStreamPath` but no `claudeSessionId` or `exitCode`, even when the remote `claude-stream.jsonl` contains a successful result event.
 - Series ledger terminal statuses `blocked`, `escalated`, and `error` stop normal series resume.
+- Series ledger can also remain `running` when the host orchestrator is interrupted, even though the Agent sandbox candidate is complete.
 
 ## Recommended Scope
 
-Implement explicit resume only for `daytona(claude)` runs whose original outcome is `escalated`. Do not make ordinary `harness run` silently attach to old sandboxes. Do not support command-driver resume in this pass because command drivers do not have a durable session contract equivalent to Claude's session id.
+Implement explicit resume only for `daytona(claude)` runs whose source record is either completed with `outcome: "escalated"` or still `status: "running"` after local orchestrator interruption. Do not make ordinary `harness run` silently attach to old sandboxes. Do not support command-driver resume in this pass because command drivers do not have a durable session contract equivalent to Claude's session id.
 
 The resume path should be conservative:
 
@@ -30,8 +33,11 @@ The resume path should be conservative:
 - Require the current worktree to be clean outside `.harness`.
 - Require a retained `agentSandboxId`.
 - Refuse if the original record contains `agent.cleanup.end` with `outcome: "deleted"` for that sandbox id.
+- If `claudeSessionId` is missing but `claudeStreamPath` is present, attach to the sandbox and read the remote stream.
+- Treat a stream as recoverable only when it contains a safe `session_id`/`sessionId` on a `type: "result"` event with `subtype: "success"`.
+- Record an equivalent recovery event, `agent.command.recovered`, in the new resume run so RunStore has the recovered `claudeSessionId`, `exitCode: 0`, and stream path even though the original host process missed `agent.command.end`.
 - Prefer a Gate-first resume: collect the candidate already in the retained sandbox, run Gate, and publish immediately if Gate now passes.
-- If Gate still fails, run one or more additional Claude attempts using `claude --resume <sessionId>`.
+- If Gate still fails, run one or more additional Claude attempts using the recorded or recovered `claudeSessionId`.
 - Force `retainOnFailure: true` for the resume environment so a second failed resume does not destroy the preserved work.
 
 ## Files
@@ -41,7 +47,9 @@ The resume path should be conservative:
 - Modify: `src/harness/sandbox/daytona.ts`
   Add `get()` to the typed Daytona client and implement provider attach using `daytona.get(id)`.
 - Modify: `src/harness/sandbox/environment.ts`
-  Add retained Agent attach options, seed Claude resume state, skip Agent bootstrap on attach, and preserve retained cleanup semantics.
+  Add retained Agent attach options, recover Claude session state from stream when needed, skip Agent bootstrap on attach, and preserve retained cleanup semantics.
+- Modify: `src/harness/record.ts`
+  Record recovered command metadata from `agent.command.recovered` events.
 - Modify: `src/harness/run.ts`
   Add a Gate-first loop option for retained candidates without changing default run behavior.
 - Create: `src/harness/resume.ts`
@@ -58,7 +66,7 @@ The resume path should be conservative:
   Provider attach coverage.
 - Test: `test/daytona-environment.test.ts`
   Retained attach, Gate-first publish, and continued Claude resume coverage.
-- Test: `test/run-loop.test.ts`
+- Test: `test/harness-run.test.ts`
   Gate-first run loop behavior.
 - Test: `test/resume.test.ts`
   Resume validation helper coverage.
@@ -235,11 +243,11 @@ git commit -m "feat: attach to retained Daytona sandboxes"
 
 **Files:**
 - Modify: `src/harness/run.ts`
-- Test: `test/run-loop.test.ts`
+- Test: `test/harness-run.test.ts`
 
 - [ ] **Step 1: Write failing Gate-first tests**
 
-Append these tests to `test/run-loop.test.ts`:
+Append these tests to `test/harness-run.test.ts`:
 
 ```ts
 test("runLoop can validate a retained candidate before running the agent", async () => {
@@ -323,7 +331,7 @@ Run:
 
 ```bash
 npm run build
-node --test dist/test/run-loop.test.js --test-name-pattern "retained candidate|retained Gate diagnostics"
+node --test dist/test/harness-run.test.js --test-name-pattern "retained candidate|retained Gate diagnostics"
 ```
 
 Expected: build fails because `RunOptions` does not have `startWithGate`, or runtime fails because the loop still calls `runTask()` first.
@@ -448,7 +456,7 @@ Run:
 
 ```bash
 npm run build
-node --test dist/test/run-loop.test.js --test-name-pattern "retained candidate|retained Gate diagnostics"
+node --test dist/test/harness-run.test.js --test-name-pattern "retained candidate|retained Gate diagnostics"
 ```
 
 Expected: both tests pass.
@@ -456,7 +464,7 @@ Expected: both tests pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/harness/run.ts test/run-loop.test.ts
+git add src/harness/run.ts test/harness-run.test.ts
 git commit -m "feat: validate retained candidates before rerunning agents"
 ```
 
@@ -466,7 +474,9 @@ git commit -m "feat: validate retained candidates before rerunning agents"
 
 **Files:**
 - Modify: `src/harness/sandbox/environment.ts`
+- Modify: `src/harness/record.ts`
 - Test: `test/daytona-environment.test.ts`
+- Test: `test/observability.test.ts`
 
 - [ ] **Step 1: Write failing retained attach tests**
 
@@ -579,6 +589,136 @@ test("retained Daytona resume continues Claude with the captured session when Ga
 });
 ```
 
+Add this interrupted-orchestrator recovery test after the retained resume tests:
+
+```ts
+test("retained Daytona resume recovers a completed Claude session from stream before Gate", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [0],
+    claudeStdouts: [],
+  });
+  const retained = new RecordingHandle("agent", "retained-agent");
+  retained.files.set("src/a.ts", workspaceFile("src/a.ts", "fixed\n"));
+  retained.absoluteFiles.set(
+    "/harness-observability/attempt-1/claude-stream.jsonl",
+    Buffer.from([
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        terminal_reason: "completed",
+        session_id: "session-abc",
+      }),
+      "",
+    ].join("\n")),
+  );
+  provider.attachHandle = retained;
+  const observations: Array<[string, unknown]> = [];
+
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: { ...policy(), retainOnFailure: true },
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeStreamPath: "/harness-observability/attempt-1/claude-stream.jsonl",
+      completedAttempts: 1,
+      recoverCompletedCommand: true,
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const outcome = await runLoop({
+    task: "resume interrupted retained",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.equal(provider.claudeRuns, 0);
+  assert.deepEqual(
+    observations.filter(([event]) => event === "agent.command.recovered").map(([, data]) => ({
+      attempt: (data as { attempt?: number }).attempt,
+      claudeSessionId: (data as { claudeSessionId?: string }).claudeSessionId,
+      exitCode: (data as { exitCode?: number }).exitCode,
+    })),
+    [{ attempt: 1, claudeSessionId: "session-abc", exitCode: 0 }],
+  );
+});
+```
+
+Add this second interrupted recovery test:
+
+```ts
+test("retained Daytona resume uses recovered stream session when Gate still fails", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["still-broken\n", "fixed\n"],
+    gateExitCodes: [1, 0],
+    claudeStdouts: [
+      JSON.stringify({ type: "result", session_id: "session-abc" }),
+    ],
+  });
+  const retained = new RecordingHandle("agent", "retained-agent");
+  retained.files.set("src/a.ts", workspaceFile("src/a.ts", "still-broken\n"));
+  retained.absoluteFiles.set(
+    "/harness-observability/attempt-1/claude-stream.jsonl",
+    Buffer.from(`${JSON.stringify({
+      type: "result",
+      subtype: "success",
+      terminal_reason: "completed",
+      session_id: "session-abc",
+    })}\n`),
+  );
+  provider.attachHandle = retained;
+
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: { ...policy(), retainOnFailure: true },
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeStreamPath: "/harness-observability/attempt-1/claude-stream.jsonl",
+      completedAttempts: 1,
+      recoverCompletedCommand: true,
+    },
+  });
+
+  const outcome = await runLoop({
+    task: "resume interrupted retained",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    startWithGate: true,
+  });
+
+  const claudeCalls = retained.executeCalls.filter((call) =>
+    call.command.includes("/usr/local/bin/claude") &&
+    "HARNESS_PROMPT" in call.env
+  );
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.equal(claudeCalls[0]?.command, buildClaudeCommand("resume"));
+  assert.equal(claudeCalls[0]?.env.HARNESS_CLAUDE_SESSION_ID, "session-abc");
+});
+```
+
 Update the `ScriptedProvider` interface and fake provider implementation in the same test file to include:
 
 ```ts
@@ -615,7 +755,30 @@ In `src/harness/sandbox/environment.ts`, add:
 export interface DaytonaRunResumeOptions {
   agentSandboxId: string;
   claudeSessionId?: string;
+  claudeStreamPath?: string;
   completedAttempts: number;
+  recoverCompletedCommand?: boolean;
+}
+```
+
+Add a small parser in `src/harness/sandbox/environment.ts` or reuse an exported helper from `daytona.ts`:
+
+```ts
+function parseSuccessfulClaudeResultSessionId(stream: string): string | undefined {
+  for (const line of stream.split(/\r?\n/)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== "object" || parsed === null) continue;
+    const event = parsed as Record<string, unknown>;
+    if (event.type !== "result" || event.subtype !== "success") continue;
+    const sessionId = parseClaudeSessionId(line);
+    if (sessionId) return sessionId;
+  }
+  return undefined;
 }
 ```
 
@@ -687,12 +850,50 @@ At the top of `ensureAgent()`, after the `if (agentHandle) return agentHandle;` 
           durationMs: durationSince(preflightStartedAt),
         });
       }
+      if (
+        options.agent.kind === "claude" &&
+        options.resume.recoverCompletedCommand === true
+      ) {
+        if (!options.resume.claudeStreamPath) {
+          throw new Error("Claude stream path is required to recover an interrupted command");
+        }
+        const stream = (await handle.readFile(options.resume.claudeStreamPath)).toString("utf8");
+        const recoveredSessionId = parseSuccessfulClaudeResultSessionId(stream);
+        if (!recoveredSessionId) {
+          throw new Error("Claude stream did not contain a successful result session id");
+        }
+        claudeSessionId = recoveredSessionId;
+        observe("agent.command.recovered", {
+          id: handle.id,
+          attempt: options.resume.completedAttempts,
+          claudeSessionId: recoveredSessionId,
+          claudeStreamPath: options.resume.claudeStreamPath,
+          exitCode: 0,
+          outcome: "success",
+        });
+      }
       agentHandle = handle;
       return handle;
     }
 ```
 
 This intentionally skips `agent.upload` and `agent.setup` for resumed sandboxes. The retained workspace is the candidate being recovered.
+
+- [ ] **Step 5A: Record recovered command metadata**
+
+In `src/harness/record.ts`, allow `agent.command.recovered` in `RunRecorder.applyEvent()` alongside `agent.command.end`. For the recovered event:
+
+```ts
+if (event === "agent.command.recovered") {
+  attempt.endedAt = this.now();
+  if (typeof value.id === "string") attempt.agentSandboxId = value.id;
+  if (typeof value.claudeSessionId === "string") attempt.claudeSessionId = value.claudeSessionId;
+  if (typeof value.claudeStreamPath === "string") attempt.claudeStreamPath = value.claudeStreamPath;
+  if (Number.isSafeInteger(value.exitCode)) attempt.exitCode = Number(value.exitCode);
+}
+```
+
+Add an `observability.test.ts` case that records `agent.command.recovered` and asserts the attempt contains `agentSandboxId`, `claudeSessionId`, `claudeStreamPath`, `exitCode: 0`, and `endedAt`.
 
 - [ ] **Step 6: Keep failure retention conservative**
 
@@ -798,6 +999,29 @@ test("buildRetainedRunResumeRequest accepts retained escalated Claude runs", () 
   });
 });
 
+test("buildRetainedRunResumeRequest accepts interrupted running Claude runs with stream path", () => {
+  assert.deepEqual(buildRetainedRunResumeRequest(record({
+    status: "running",
+    outcome: undefined,
+    attempts: [{
+      attempt: 1,
+      agentSandboxId: "sandbox-123",
+      claudeStreamPath: "/harness-observability/attempt-1/claude-stream.jsonl",
+      claudeConfigDir: "/home/daytona/.claude",
+      gateSandboxIds: [],
+    }],
+  }), repo), {
+    task: "fix feature",
+    selectedContracts: ["gate-a"],
+    agentSandboxId: "sandbox-123",
+    claudeStreamPath: "/harness-observability/attempt-1/claude-stream.jsonl",
+    completedAttempts: 1,
+    recoverCompletedCommand: true,
+    sourceRunId: "run-1",
+    sourceKind: "single",
+  });
+});
+
 test("buildRetainedRunResumeRequest rejects deleted retained sandboxes", () => {
   assert.throws(
     () => buildRetainedRunResumeRequest(record({
@@ -833,7 +1057,7 @@ test("buildRetainedRunResumeRequest rejects unsupported records", () => {
   );
   assert.throws(
     () => buildRetainedRunResumeRequest(record({ outcome: "ready_for_mr" }), repo),
-    /only escalated runs can be resumed/,
+    /only escalated or interrupted running Claude runs can be resumed/,
   );
   assert.throws(
     () => buildRetainedRunResumeRequest(record({ selectedContracts: [] }), repo),
@@ -870,6 +1094,8 @@ export interface RetainedRunResumeRequest {
   selectedContracts: string[];
   agentSandboxId: string;
   claudeSessionId?: string;
+  claudeStreamPath?: string;
+  recoverCompletedCommand?: boolean;
   completedAttempts: number;
   sourceRunId: string;
   sourceKind: RunRecordKind;
@@ -902,8 +1128,9 @@ export function buildRetainedRunResumeRequest(
   if (record.driver !== "daytona(claude)") {
     throw new Error("only daytona(claude) runs can be resumed");
   }
-  if (record.outcome !== "escalated") {
-    throw new Error("only escalated runs can be resumed");
+  const interruptedRunning = record.status === "running" && record.outcome === undefined;
+  if (record.outcome !== "escalated" && !interruptedRunning) {
+    throw new Error("only escalated or interrupted running Claude runs can be resumed");
   }
   if (record.repo.dirty === true) {
     throw new Error("source run started from a dirty worktree; retained resume cannot reconstruct its baseline safely");
@@ -925,6 +1152,9 @@ export function buildRetainedRunResumeRequest(
   if (sandboxWasDeleted(record, attempt.agentSandboxId)) {
     throw new Error(`agent sandbox ${attempt.agentSandboxId} was deleted`);
   }
+  if (!attempt.claudeSessionId && !attempt.claudeStreamPath) {
+    throw new Error("source run did not record a Claude session id or stream path");
+  }
   if (!Number.isSafeInteger(attempt.attempt) || attempt.attempt < 1) {
     throw new Error("source run attempt metadata is invalid");
   }
@@ -934,6 +1164,10 @@ export function buildRetainedRunResumeRequest(
     selectedContracts: [...record.selectedContracts],
     agentSandboxId: attempt.agentSandboxId,
     ...(attempt.claudeSessionId ? { claudeSessionId: attempt.claudeSessionId } : {}),
+    ...(attempt.claudeStreamPath ? { claudeStreamPath: attempt.claudeStreamPath } : {}),
+    ...(!attempt.claudeSessionId && attempt.claudeStreamPath
+      ? { recoverCompletedCommand: true }
+      : {}),
     completedAttempts: attempt.attempt,
     sourceRunId: record.runId,
     sourceKind: record.kind,
@@ -1017,6 +1251,47 @@ test("markSeriesTaskReadyToCommit records resumed publication for escalated task
     changedFiles: ["src/a.ts"],
     runRecord: ".harness/runs/resume.json",
   });
+});
+
+test("markSeriesTaskReadyToCommit records resumed publication for interrupted running task", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-retained-running-resume-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    autoCommit: { enabled: false, messageTemplate: "harness: {id}" },
+    tasks: [
+      { id: "one", task: "Recover interrupted retained candidate." },
+    ],
+  })!;
+  const now = "2026-06-30T00:00:00.000Z";
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "running",
+    configHash: "a".repeat(64),
+    createdAt: now,
+    updatedAt: now,
+    tasks: [{
+      id: "one",
+      taskHash: taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults),
+      status: "running",
+      startedAt: now,
+      runRecord: ".harness/runs/source.json",
+    }],
+  });
+
+  markSeriesTaskReadyToCommit({
+    cwd,
+    config,
+    taskId: "one",
+    runRecordPath: ".harness/runs/resume.json",
+    changedFiles: ["src/a.ts"],
+  });
+
+  const ledger = readSeriesLedger(cwd, config.seriesId)!;
+  assert.equal(ledger.status, "running");
+  assert.equal(ledger.tasks[0]?.status, "ready_to_commit");
+  assert.deepEqual(ledger.tasks[0]?.changedFiles, ["src/a.ts"]);
+  assert.equal(ledger.tasks[0]?.runRecord, ".harness/runs/resume.json");
 });
 ```
 
@@ -1179,6 +1454,51 @@ test("CLI runs resume validates source run before Daytona attach", () => {
 });
 ```
 
+Add a CLI validation test for interrupted running records:
+
+```ts
+test("CLI runs resume accepts interrupted running Claude records before Daytona attach", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-cli-runs-resume-running-"));
+  mkdirSync(join(cwd, ".harness", "runs"), { recursive: true });
+  writeFileSync(join(cwd, ".harness", "runs", "running-run.json"), JSON.stringify({
+    schemaVersion: 3,
+    runId: "running-run",
+    createdAt: "2026-06-30T00:00:00.000Z",
+    updatedAt: "2026-06-30T00:10:00.000Z",
+    kind: "single",
+    repo: { root: cwd, dirty: false },
+    task: { description: "recover interrupted" },
+    driver: "daytona(claude)",
+    status: "running",
+    observability: {
+      enabled: true,
+      backend: "daytona-volume",
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+    },
+    selectedContracts: ["gate-a"],
+    attempts: [{
+      attempt: 1,
+      agentSandboxId: "sandbox-123",
+      claudeStreamPath: "/harness-observability/attempt-1/claude-stream.jsonl",
+      claudeConfigDir: "/home/daytona/.claude",
+      gateSandboxIds: [],
+    }],
+    events: [],
+  }, null, 2));
+
+  const result = spawnSync(
+    process.execPath,
+    [cliPath, "runs", "resume", "running-run"],
+    { cwd, encoding: "utf8", env: { ...process.env, DAYTONA_API_KEY: "" } },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr + result.stdout, /DAYTONA_API_KEY/);
+  assert.doesNotMatch(result.stderr + result.stdout, /only escalated/);
+});
+```
+
 - [ ] **Step 2: Run the CLI tests and verify they fail**
 
 Run:
@@ -1266,6 +1586,8 @@ async function cmdRunsResume(args: string[]): Promise<void> {
       sourceRunId: resume.sourceRunId,
       agentSandboxId: resume.agentSandboxId,
       claudeSessionId: resume.claudeSessionId,
+      claudeStreamPath: resume.claudeStreamPath,
+      recoverCompletedCommand: resume.recoverCompletedCommand,
       completedAttempts: resume.completedAttempts,
       policy,
       gate,
@@ -1311,6 +1633,8 @@ Find `SingleTaskRunOverrides` in `src/cli.ts` and add:
     sourceRunId: string;
     agentSandboxId: string;
     claudeSessionId?: string;
+    claudeStreamPath?: string;
+    recoverCompletedCommand?: boolean;
     completedAttempts: number;
     policy: SandboxPolicy;
     gate: GateCore;
@@ -1385,6 +1709,12 @@ When creating the Daytona environment, add:
               agentSandboxId: overrides.retainedResume.agentSandboxId,
               ...(overrides.retainedResume.claudeSessionId
                 ? { claudeSessionId: overrides.retainedResume.claudeSessionId }
+                : {}),
+              ...(overrides.retainedResume.claudeStreamPath
+                ? { claudeStreamPath: overrides.retainedResume.claudeStreamPath }
+                : {}),
+              ...(overrides.retainedResume.recoverCompletedCommand
+                ? { recoverCompletedCommand: true }
                 : {}),
               completedAttempts: overrides.retainedResume.completedAttempts,
             },
@@ -1469,9 +1799,10 @@ harness runs resume <runId> --driver claude --max-attempts 2
 
 Resume is intentionally conservative:
 
-- only `daytona(claude)` escalated runs are supported;
+- only `daytona(claude)` escalated runs and interrupted `daytona(claude)` running runs are supported;
 - the original run must have recorded `agentSandboxId` and selected contracts;
 - the original Agent sandbox must not have been deleted;
+- if `claudeSessionId` is absent, the original attempt must have recorded `claudeStreamPath` and the retained sandbox stream must contain a successful Claude result event;
 - the current Git `HEAD` must match the source run and the current worktree must be clean;
 - Harness validates the retained candidate with Gate before starting another Claude command;
 - if Gate passes, Harness publishes the candidate and deletes the retained sandbox;
@@ -1498,6 +1829,8 @@ harness runs resume <runId> --driver claude --max-attempts 2
 ```
 
 The resume command attaches to the retained Agent sandbox, collects the existing candidate, runs Gate first, and publishes without another Claude turn if the fixed Gate passes. If Gate still fails, it feeds the new diagnostics into `claude --resume <sessionId>` inside the same retained Agent sandbox.
+
+If the local Harness process was interrupted while Claude kept running remotely, the source run can still be `status=running` and lack `claudeSessionId`. In that case `harness runs resume <runId>` reads the recorded `claudeStreamPath` from the retained sandbox. A stream event like `{"type":"result","subtype":"success","session_id":"..."}` is treated as a recovered successful command, and the recovered session id is used for later `claude --resume` if Gate still fails.
 ```
 
 - [ ] **Step 3: Update architecture docs**
@@ -1506,6 +1839,8 @@ In `docs/architecture/daytona-sandbox-gate.md`, add this paragraph after the exi
 
 ```md
 Cross-run retained resume is explicit. A retained Agent sandbox can be reused only through `harness runs resume <runId>`, which validates RunStore metadata, attaches by `agentSandboxId`, skips Agent upload/setup, runs Gate against the retained candidate first, and only then resumes Claude if new diagnostics are needed. Ordinary `harness run` never silently attaches to an old sandbox.
+
+Interrupted orchestrator recovery is also explicit. If the host process died after `agent.command.start`, resume reads the retained sandbox stream path recorded in RunStore, recovers a successful Claude result and session id, records `agent.command.recovered`, and continues with the same Gate-first path. This avoids discarding completed remote work just because the host missed `agent.command.end`.
 ```
 
 - [ ] **Step 4: Run doc-adjacent tests**
@@ -1590,6 +1925,7 @@ If no verification note is added, do not create an empty commit.
 ## Risks And Decisions
 
 - **Baseline reconstruction:** The resume command refuses dirty source runs and current HEAD drift because RunStore does not contain the original full baseline snapshot.
+- **Interrupted host process:** A `running` source run is resumable only when the retained sandbox still exists and the recorded Claude stream proves a successful completed result. Without that proof, Harness refuses to infer success.
 - **Gate-first behavior:** This is deliberate. The most common retained-sandbox recovery case is a broken Gate, so the preserved candidate should get a chance to pass before Claude edits again.
 - **Series continuation:** A successful series-task resume marks the task `ready_to_commit`; the existing series resume path remains responsible for committing and continuing later tasks.
 - **Command driver:** Not supported in this pass. It lacks a durable session id and a defined prompt feedback contract after process exit.
