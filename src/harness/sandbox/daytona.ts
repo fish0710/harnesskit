@@ -411,6 +411,7 @@ export interface DaytonaSdkClient {
     networkBlockAll: boolean;
     volumes?: VolumeMount[];
   }): Promise<DaytonaSdkSandbox>;
+  get(sandboxIdOrName: string): Promise<DaytonaSdkSandbox>;
   delete(sandbox: DaytonaSdkSandbox): Promise<void>;
 }
 
@@ -628,6 +629,21 @@ function normalizeVolumeSubpath(subpath: string | undefined): string | undefined
     throw new Error("Daytona volume subpath must not escape the volume");
   }
   return normalized;
+}
+
+function assertSafeSandboxId(value: string): string {
+  if (
+    value === "" ||
+    value !== value.trim() ||
+    value === "." ||
+    value === ".." ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    value.includes("\0")
+  ) {
+    throw new Error("sandbox id must be a non-empty safe path segment");
+  }
+  return value;
 }
 
 function fileKind(info: FileInfo): RemoteFileEntry["kind"] {
@@ -1165,6 +1181,12 @@ class DaytonaSdkProvider implements SandboxProvider {
     return new DaytonaSandboxHandle(this.client, sandbox);
   }
 
+  async attach(sandboxId: string): Promise<SandboxHandle> {
+    const sandbox = await this.client.get(assertSafeSandboxId(sandboxId));
+    if (this.apiUrl) rewriteRemoteToolboxProxy(sandbox, this.apiUrl);
+    return new DaytonaSandboxHandle(this.client, sandbox);
+  }
+
   private async resolveVolumes(
     request: SandboxCreateRequest,
   ): Promise<VolumeMount[]> {
@@ -1209,7 +1231,7 @@ export function createDaytonaSdkProvider(
 export function createDaytonaSdkProviderFromClient(
   client: DaytonaSdkClient,
   apiUrl?: string,
-): SandboxProvider {
+): SandboxProvider & { attach(sandboxId: string): Promise<SandboxHandle> } {
   return new DaytonaSdkProvider(client, apiUrl);
 }
 

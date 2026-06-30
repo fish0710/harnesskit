@@ -96,4 +96,5 @@ export interface SandboxHandle {
 
 export interface SandboxProvider {
   create(request: SandboxCreateRequest): Promise<SandboxHandle>;
+  attach?(sandboxId: string): Promise<SandboxHandle>;
 }

@@ -162,6 +162,9 @@ test("SDK provider maps role, environment, and lifecycle fields into create", as
       created.push(request);
       return sdkSandbox;
     },
+    async get() {
+      return sdkSandbox;
+    },
     async delete() {
       sdkSandbox.calls.deleted++;
     },
@@ -219,6 +222,9 @@ test("SDK provider resolves requested volumes before sandbox creation", async ()
       created.push(request);
       return sdkSandbox;
     },
+    async get() {
+      return sdkSandbox;
+    },
     async delete() {
       sdkSandbox.calls.deleted++;
     },
@@ -255,6 +261,9 @@ test("SDK provider fails closed when volume service is missing for a volume requ
       created.push(request);
       return sdkSandbox;
     },
+    async get() {
+      return sdkSandbox;
+    },
     async delete() {
       sdkSandbox.calls.deleted++;
     },
@@ -289,6 +298,9 @@ test("SDK provider rejects blank volume names before volume resolution", async (
     },
     async create(request: CreatedSdkRequest) {
       created.push(request);
+      return sdkSandbox;
+    },
+    async get() {
       return sdkSandbox;
     },
     async delete() {
@@ -329,6 +341,9 @@ test("SDK provider rejects unsafe volume mount paths before sandbox creation", a
         created.push(request);
         return sdkSandbox;
       },
+      async get() {
+        return sdkSandbox;
+      },
       async delete() {
         sdkSandbox.calls.deleted++;
       },
@@ -366,6 +381,9 @@ test("SDK provider rejects unsafe volume subpaths before sandbox creation", asyn
       },
       async create(request: CreatedSdkRequest) {
         created.push(request);
+        return sdkSandbox;
+      },
+      async get() {
         return sdkSandbox;
       },
       async delete() {
@@ -442,6 +460,9 @@ test("SDK provider rejects empty Agent snapshot requests before client create", 
       created.push(request);
       return sdkSandbox;
     },
+    async get() {
+      return sdkSandbox;
+    },
     async delete() {
       sdkSandbox.calls.deleted++;
     },
@@ -468,6 +489,9 @@ test("SDK provider rejects empty Gate snapshot requests before client create", a
       created.push(request);
       return sdkSandbox;
     },
+    async get() {
+      return sdkSandbox;
+    },
     async delete() {
       sdkSandbox.calls.deleted++;
     },
@@ -484,6 +508,37 @@ test("SDK provider rejects empty Gate snapshot requests before client create", a
     /Gate snapshot must not be empty/,
   );
   assert.deepEqual(created, []);
+});
+
+test("SDK provider attaches to an existing sandbox by id", async () => {
+  const sdkSandbox = fakeSdkSandbox();
+  const calls = { get: [] as string[] };
+  const provider = createDaytonaSdkProviderFromClient({
+    ...fakeSdkClient(sdkSandbox),
+    async get(id: string) {
+      calls.get.push(id);
+      return sdkSandbox;
+    },
+  });
+
+  const attached = await provider.attach("sandbox-retained-123");
+
+  assert.equal(attached.id, "sdk-sandbox");
+  assert.deepEqual(calls.get, ["sandbox-retained-123"]);
+});
+
+test("SDK provider rejects unsafe attach ids", async () => {
+  const provider = createDaytonaSdkProviderFromClient({
+    ...fakeSdkClient(fakeSdkSandbox()),
+    async get() {
+      throw new Error("get should not be called");
+    },
+  });
+
+  await assert.rejects(
+    () => provider.attach("../sandbox"),
+    /sandbox id must be a non-empty safe path segment/,
+  );
 });
 
 test("SDK handle uploads nested files and preserves executable mode", async () => {
@@ -1076,6 +1131,9 @@ function recordingHandle(id: string) {
 function fakeSdkClient(sandbox: ReturnType<typeof fakeSdkSandbox>) {
   return {
     async create() {
+      return sandbox;
+    },
+    async get() {
       return sandbox;
     },
     async delete() {
