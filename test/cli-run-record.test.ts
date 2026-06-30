@@ -174,6 +174,7 @@ test("CLI help documents runs resume", () => {
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /harness runs resume <runId>/);
+  assert.match(result.stdout, /--allow-harness-dirty-source/);
 });
 
 test("CLI runs resume validates source run before Daytona attach", () => {
@@ -259,6 +260,130 @@ test("CLI runs resume accepts interrupted running Claude records before Daytona 
   assert.equal(result.status, 1);
   assert.match(result.stderr + result.stdout, /DAYTONA_API_KEY/);
   assert.doesNotMatch(result.stderr + result.stdout, /only escalated/);
+});
+
+test("CLI runs resume allows explicit Harness-only dirty source override", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-cli-runs-resume-dirty-allowed-"));
+  const head = initGitFixture(cwd);
+  const contractsDir = join(cwd, "contracts");
+  writeJson(join(contractsDir, "gate-a.json"), {
+    id: "gate-a",
+    type: "command",
+    cmd: "true",
+  });
+  write(join(cwd, "test", "gates", "gate-a.js"), "console.log('gate');\n");
+  writeJson(join(cwd, ".harness", "runs", "dirty-run.json"), {
+    schemaVersion: 3,
+    runId: "dirty-run",
+    kind: "single",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:01:00.000Z",
+    repo: { root: cwd, head, dirty: true },
+    task: { description: "resume dirty harness source" },
+    driver: "daytona(claude)",
+    status: "running",
+    observability: {
+      enabled: false,
+      backend: "disabled",
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+    },
+    selectedContracts: ["gate-a"],
+    attempts: [{
+      attempt: 1,
+      agentSandboxId: "agent-sandbox-a",
+      claudeStreamPath: "/tmp/claude-stream.jsonl",
+      gateSandboxIds: [],
+    }],
+    events: [],
+  });
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      cliPath,
+      "runs",
+      "resume",
+      "dirty-run",
+      "--allow-harness-dirty-source",
+    ],
+    { cwd, encoding: "utf8", env: { ...process.env, DAYTONA_API_KEY: "" } },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr + result.stdout, /DAYTONA_API_KEY/);
+  assert.doesNotMatch(result.stderr + result.stdout, /source run started from a dirty worktree/);
+
+  const resumeRecord = allRunRecords(cwd).find((record) => record.runId !== "dirty-run");
+  assert.ok(resumeRecord, "expected resume command to create a new run record");
+  const events = resumeRecord.events as Array<{ event?: string; data?: unknown }>;
+  const overrideEvent = events.find((event) =>
+    event.event === "run.resume.source_dirty_override"
+  );
+  assert.ok(overrideEvent, "expected dirty-source override audit event");
+  assert.deepEqual(
+    (overrideEvent.data as { paths?: string[] }).paths?.sort(),
+    [
+      ".harness/runs/dirty-run.json",
+      "contracts/gate-a.json",
+      "test/gates/gate-a.js",
+    ],
+  );
+});
+
+test("CLI runs resume rejects dirty-source override with product source changes", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-cli-runs-resume-dirty-reject-"));
+  const head = initGitFixture(cwd);
+  writeJson(join(cwd, "contracts", "gate-a.json"), {
+    id: "gate-a",
+    type: "command",
+    cmd: "true",
+  });
+  write(join(cwd, "src", "app.ts"), "export const app = true;\n");
+  writeJson(join(cwd, ".harness", "runs", "dirty-run.json"), {
+    schemaVersion: 3,
+    runId: "dirty-run",
+    kind: "single",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:01:00.000Z",
+    repo: { root: cwd, head, dirty: true },
+    task: { description: "resume dirty product source" },
+    driver: "daytona(claude)",
+    status: "running",
+    observability: {
+      enabled: false,
+      backend: "disabled",
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+    },
+    selectedContracts: ["gate-a"],
+    attempts: [{
+      attempt: 1,
+      agentSandboxId: "agent-sandbox-a",
+      claudeStreamPath: "/tmp/claude-stream.jsonl",
+      gateSandboxIds: [],
+    }],
+    events: [],
+  });
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      cliPath,
+      "runs",
+      "resume",
+      "dirty-run",
+      "--allow-harness-dirty-source",
+    ],
+    { cwd, encoding: "utf8", env: { ...process.env, DAYTONA_API_KEY: "" } },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /current worktree has non-Harness source changes; retained dirty-source resume is not safe: src\/app\.ts/,
+  );
+  assert.doesNotMatch(result.stderr + result.stdout, /DAYTONA_API_KEY/);
 });
 
 test("CLI scaffold run with --verbose writes diagnostic JSONL and records its path", () => {

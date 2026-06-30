@@ -256,6 +256,19 @@ source changes, then resume explicitly:
 harness runs resume <runId> --max-attempts 2
 ```
 
+If an older source run recorded `repo.dirty: true` only because Harness-owned
+setup files were untracked when the run started, use the explicit rescue flag:
+
+```bash
+harness runs resume <runId> --allow-harness-dirty-source --max-attempts 2
+```
+
+The flag does not permit product source changes. Harness validates the current
+dirty paths and only allows `.harness`, contracts, `test/gates`, Harness config,
+`.github/workflows`, `CODEOWNERS`, `AGENTS.md`, and Harness docs paths. Any
+dirty path such as `src/**`, package files, app pages, or build outputs still
+fails closed.
+
 Resume is Gate-first. Harness attaches the retained Agent sandbox, collects the
 existing candidate, and runs Gate before starting another Claude turn. If the
 fixed Gate passes, Harness publishes the retained candidate without another

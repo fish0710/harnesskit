@@ -46,11 +46,12 @@ function runRecord(overrides: Partial<RunRecordV3> = {}): RunRecordV3 {
 
 function assertResumeError(
   record: RunRecordV3,
-  current: { head?: string; dirty?: boolean },
+  current: { head?: string; dirty?: boolean; changedPaths?: string[] },
   message: string,
+  options?: Parameters<typeof buildRetainedRunResumeRequest>[2],
 ): void {
   assert.throws(
-    () => buildRetainedRunResumeRequest(record, current),
+    () => buildRetainedRunResumeRequest(record, current, options),
     (error: unknown) => error instanceof Error && error.message === message,
   );
 }
@@ -175,6 +176,97 @@ test("rejects source dirty repositories", () => {
     }),
     { head: "head-1", dirty: false },
     "source run started from a dirty worktree; retained resume cannot reconstruct its baseline safely",
+  );
+});
+
+test("accepts source dirty repositories with explicit Harness-only dirty override", () => {
+  const request = buildRetainedRunResumeRequest(
+    runRecord({
+      repo: {
+        root: "/repo",
+        head: "head-1",
+        dirty: true,
+      },
+    }),
+    {
+      head: "head-1",
+      dirty: true,
+      changedPaths: [
+        ".harness/runs/source.json",
+        "contracts/gate-a.yaml",
+        "test/gates/vue3-parity.js",
+        "harness.config.json",
+        ".github/workflows/harness-gate.yml",
+        "CODEOWNERS",
+        "AGENTS.md",
+        "docs/specs/vue3.md",
+        "docs/plans/vue3.md",
+        "docs/reference/runtime.md",
+      ],
+    },
+    { allowHarnessDirtySource: true },
+  );
+
+  assert.deepEqual(request.allowedSourceDirtyPaths, [
+    ".harness/runs/source.json",
+    "contracts/gate-a.yaml",
+    "test/gates/vue3-parity.js",
+    "harness.config.json",
+    ".github/workflows/harness-gate.yml",
+    "CODEOWNERS",
+    "AGENTS.md",
+    "docs/specs/vue3.md",
+    "docs/plans/vue3.md",
+    "docs/reference/runtime.md",
+  ]);
+});
+
+test("rejects dirty-source override when current dirty paths include product source", () => {
+  assertResumeError(
+    runRecord({
+      repo: {
+        root: "/repo",
+        head: "head-1",
+        dirty: true,
+      },
+    }),
+    {
+      head: "head-1",
+      dirty: true,
+      changedPaths: ["contracts/gate-a.yaml", "src/app.ts"],
+    },
+    "current worktree has non-Harness source changes; retained dirty-source resume is not safe: src/app.ts",
+    { allowHarnessDirtySource: true },
+  );
+});
+
+test("rejects dirty-source override when current dirty paths are unavailable", () => {
+  assertResumeError(
+    runRecord({
+      repo: {
+        root: "/repo",
+        head: "head-1",
+        dirty: true,
+      },
+    }),
+    { head: "head-1", dirty: true },
+    "current dirty paths could not be read; retained dirty-source resume requires path-level validation",
+    { allowHarnessDirtySource: true },
+  );
+});
+
+test("rejects dirty-source override when current dirty paths are empty", () => {
+  assertResumeError(
+    runRecord({
+      repo: {
+        root: "/repo",
+        head: "head-1",
+        dirty: true,
+      },
+    }),
+    { head: "head-1", dirty: false, changedPaths: [] },
+    "current dirty paths are empty; retained dirty-source resume cannot verify the source dirty state",
+    { allowHarnessDirtySource: true },
   );
 });
 

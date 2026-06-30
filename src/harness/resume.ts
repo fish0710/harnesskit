@@ -3,6 +3,11 @@ import type { RunRecordAttempt, RunRecordKind, RunRecordV3 } from "./record.js";
 export interface CurrentRepoState {
   head?: string;
   dirty?: boolean;
+  changedPaths?: string[];
+}
+
+export interface RetainedRunResumeOptions {
+  allowHarnessDirtySource?: boolean;
 }
 
 export interface RetainedRunResumeRequest {
@@ -15,6 +20,7 @@ export interface RetainedRunResumeRequest {
   completedAttempts: number;
   sourceRunId: string;
   sourceKind: RunRecordKind;
+  allowedSourceDirtyPaths?: string[];
 }
 
 function isResumeEligibleRecord(record: RunRecordV3): boolean {
@@ -52,9 +58,48 @@ function latestAttemptWithSandbox(attempts: RunRecordAttempt[]): RunRecordAttemp
   return latest;
 }
 
+function pathIsOrUnder(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`);
+}
+
+function isHarnessOwnedDirtyPath(path: string): boolean {
+  return (
+    pathIsOrUnder(path, ".harness") ||
+    pathIsOrUnder(path, "contracts") ||
+    pathIsOrUnder(path, "test/gates") ||
+    pathIsOrUnder(path, ".github/workflows") ||
+    pathIsOrUnder(path, "docs/specs") ||
+    pathIsOrUnder(path, "docs/plans") ||
+    pathIsOrUnder(path, "docs/reference") ||
+    pathIsOrUnder(path, "docs/decisions") ||
+    path === "harness.config.json" ||
+    path === "CODEOWNERS" ||
+    path === "AGENTS.md"
+  );
+}
+
+function validateHarnessDirtySourceOverride(current: CurrentRepoState): string[] {
+  if (!current.changedPaths) {
+    throw new Error("current dirty paths could not be read; retained dirty-source resume requires path-level validation");
+  }
+  if (current.changedPaths.length === 0) {
+    throw new Error("current dirty paths are empty; retained dirty-source resume cannot verify the source dirty state");
+  }
+  const disallowed = current.changedPaths.filter((path) =>
+    !isHarnessOwnedDirtyPath(path)
+  );
+  if (disallowed.length > 0) {
+    throw new Error(
+      `current worktree has non-Harness source changes; retained dirty-source resume is not safe: ${disallowed.join(", ")}`,
+    );
+  }
+  return [...current.changedPaths];
+}
+
 export function buildRetainedRunResumeRequest(
   record: RunRecordV3,
   current: CurrentRepoState,
+  options: RetainedRunResumeOptions = {},
 ): RetainedRunResumeRequest {
   if (record.driver !== "daytona(claude)") {
     throw new Error("only daytona(claude) runs can be resumed");
@@ -62,10 +107,11 @@ export function buildRetainedRunResumeRequest(
   if (!isResumeEligibleRecord(record)) {
     throw new Error("only escalated or interrupted running Claude runs can be resumed");
   }
-  if (record.repo.dirty === true) {
+  const allowHarnessDirtySource = options.allowHarnessDirtySource === true;
+  if (record.repo.dirty === true && !allowHarnessDirtySource) {
     throw new Error("source run started from a dirty worktree; retained resume cannot reconstruct its baseline safely");
   }
-  if (record.repo.dirty !== false) {
+  if (record.repo.dirty !== true && record.repo.dirty !== false) {
     throw new Error("source run did not record clean/dirty state; retained resume cannot reconstruct its baseline safely");
   }
   if (!hasString(record.repo.head)) {
@@ -77,10 +123,13 @@ export function buildRetainedRunResumeRequest(
   if (record.repo.head !== current.head) {
     throw new Error(`current HEAD ${current.head} does not match source run HEAD ${record.repo.head}`);
   }
-  if (current.dirty === true) {
+  const allowedSourceDirtyPaths = record.repo.dirty === true
+    ? validateHarnessDirtySourceOverride(current)
+    : undefined;
+  if (current.dirty === true && allowedSourceDirtyPaths === undefined) {
     throw new Error("current worktree has source changes; commit, stash, or revert them before retained resume");
   }
-  if (current.dirty !== false) {
+  if (current.dirty !== false && allowedSourceDirtyPaths === undefined) {
     throw new Error("current worktree clean/dirty state could not be read; retained resume requires a clean baseline");
   }
   if (record.selectedContracts.length === 0) {
@@ -123,5 +172,8 @@ export function buildRetainedRunResumeRequest(
     completedAttempts: attempt.attempt,
     sourceRunId: record.runId,
     sourceKind: record.kind,
+    ...(allowedSourceDirtyPaths === undefined
+      ? {}
+      : { allowedSourceDirtyPaths }),
   };
 }
