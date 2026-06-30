@@ -20,6 +20,7 @@ import {
   buildClaudeCommand,
   createDaytonaExecutionTarget,
   getClaudeEnvironment,
+  isSafeClaudeSessionId,
   parseClaudeSessionIdFromCommandOutput,
 } from "./daytona.js";
 import { publishCandidate } from "./publish.js";
@@ -58,6 +59,14 @@ export interface DaytonaRunObservabilityOptions {
   config: DaytonaObservabilityConfig;
 }
 
+export interface DaytonaRunResumeOptions {
+  agentSandboxId: string;
+  claudeSessionId?: string;
+  claudeStreamPath?: string;
+  completedAttempts: number;
+  recoverCompletedCommand?: boolean;
+}
+
 export interface DaytonaRunEnvironmentOptions {
   provider: SandboxProvider;
   root: string;
@@ -65,6 +74,7 @@ export interface DaytonaRunEnvironmentOptions {
   agent: SandboxAgentSpec;
   environment?: Record<string, string | undefined>;
   observability?: DaytonaRunObservabilityOptions;
+  resume?: DaytonaRunResumeOptions;
   onObservation?: (event: string, data: unknown) => void;
   heartbeatIntervalMs?: number;
 }
@@ -151,6 +161,47 @@ function validateHeartbeatIntervalMs(value: number | undefined): void {
       "heartbeatIntervalMs must be a positive safe integer when provided",
     );
   }
+}
+
+function validateResumeOptions(
+  value: DaytonaRunResumeOptions | undefined,
+): void {
+  if (!value) return;
+  if (
+    !Number.isSafeInteger(value.completedAttempts) ||
+    value.completedAttempts <= 0
+  ) {
+    throw new Error(
+      "completedAttempts must be a positive safe integer when resume is provided",
+    );
+  }
+  if (
+    value.claudeSessionId !== undefined &&
+    !isSafeClaudeSessionId(value.claudeSessionId)
+  ) {
+    throw new Error("Claude session id must be safe when resume is provided");
+  }
+}
+
+function parseSuccessfulClaudeResultSessionId(
+  stream: string,
+): string | undefined {
+  for (const line of stream.split(/\r?\n/)) {
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isRecord(event)) continue;
+    if (event.type !== "result") continue;
+    if (event.subtype !== "success" || event.is_error === true) {
+      return undefined;
+    }
+    if (!isSafeClaudeSessionId(event.session_id)) return undefined;
+    return event.session_id;
+  }
+  return undefined;
 }
 
 function shouldBlockGateNetwork(contracts: Contract[]): boolean {
@@ -338,6 +389,7 @@ export function createDaytonaRunEnvironment(
   options: DaytonaRunEnvironmentOptions,
 ): RunEnvironment {
   validateHeartbeatIntervalMs(options.heartbeatIntervalMs);
+  validateResumeOptions(options.resume);
   const environment = options.environment ?? process.env;
   const baseline = captureWorkspace(options.root, options.policy);
   const modelEnvironment = options.agent.kind === "claude"
@@ -366,8 +418,9 @@ export function createDaytonaRunEnvironment(
   let approvedCandidate: CandidateSnapshot | undefined;
   let published = false;
   let closed = false;
-  let agentAttempt = 0;
-  let claudeSessionId: string | undefined;
+  let agentHandleAttached = false;
+  let agentAttempt = options.resume?.completedAttempts ?? 0;
+  let claudeSessionId = options.resume?.claudeSessionId;
 
   const observe = (event: string, data: unknown) => {
     options.onObservation?.(event, data);
@@ -376,6 +429,68 @@ export function createDaytonaRunEnvironment(
   const ensureAgent = async (): Promise<SandboxHandle> => {
     if (closed) throw new Error("Daytona run environment is closed");
     if (agentHandle) return agentHandle;
+    if (options.resume) {
+      if (!options.provider.attach) {
+        throw new Error(
+          "Sandbox provider does not support retained sandbox attach",
+        );
+      }
+      observe("agent.attach.start", { id: options.resume.agentSandboxId });
+      const attachStartedAt = Date.now();
+      const handle = await options.provider.attach(
+        options.resume.agentSandboxId,
+      );
+      agentHandle = handle;
+      agentHandleAttached = true;
+      observe("agent.attach.end", {
+        id: handle.id,
+        role: "agent",
+        durationMs: durationSince(attachStartedAt),
+      });
+      if (options.agent.kind === "claude") {
+        observe("agent.preflight.start", { id: handle.id });
+        const preflightStartedAt = Date.now();
+        const preflight = await handle.execute(
+          CLAUDE_TOOLCHAIN_PREFLIGHT,
+          REMOTE_ROOT,
+          {},
+          30_000,
+        );
+        assertClaudeToolchain(preflight);
+        observe("agent.preflight.end", {
+          id: handle.id,
+          exitCode: preflight.exitCode,
+          durationMs: durationSince(preflightStartedAt),
+        });
+        if (options.resume.recoverCompletedCommand === true) {
+          const streamPath = options.resume.claudeStreamPath;
+          if (!streamPath) {
+            throw new Error(
+              "Claude stream path is required to recover an interrupted command",
+            );
+          }
+          const stream = (await handle.readFile(streamPath)).toString("utf8");
+          const recoveredSessionId = parseSuccessfulClaudeResultSessionId(
+            stream,
+          );
+          if (!recoveredSessionId) {
+            throw new Error(
+              "Claude stream did not contain a successful result session id",
+            );
+          }
+          claudeSessionId = recoveredSessionId;
+          observe("agent.command.recovered", {
+            id: handle.id,
+            attempt: options.resume.completedAttempts,
+            claudeSessionId: recoveredSessionId,
+            claudeStreamPath: streamPath,
+            exitCode: 0,
+            outcome: "success",
+          });
+        }
+      }
+      return handle;
+    }
     observe("agent.create.start", {});
     const createStartedAt = Date.now();
     const handle = await options.provider.create({
@@ -621,11 +736,15 @@ export function createDaytonaRunEnvironment(
     },
 
     async runGate({ contracts, gate, ctx, attempt: inputAttempt }) {
-      const attempt = inputAttempt ?? Math.max(agentAttempt, 1);
+      const attempt = inputAttempt === undefined
+        ? Math.max(agentAttempt, 1)
+        : options.resume
+        ? options.resume.completedAttempts + inputAttempt
+        : inputAttempt;
       approvedCandidate = undefined;
       const handle = await ensureAgent();
       try {
-        observe("candidate.collect.start", { id: handle.id });
+        observe("candidate.collect.start", { id: handle.id, attempt });
         const collectStartedAt = Date.now();
         pendingCandidate = await collectCandidate(
           handle.workspace(
@@ -645,6 +764,7 @@ export function createDaytonaRunEnvironment(
         );
         observe("candidate.collect.end", {
           id: handle.id,
+          attempt,
           operations: pendingCandidate.operations.length,
           files: pendingCandidate.files.size,
           durationMs: durationSince(collectStartedAt),
@@ -851,7 +971,9 @@ export function createDaytonaRunEnvironment(
       if (closed) return;
       if (
         agentHandle &&
-        (!options.policy.retainOnFailure || published)
+        (agentHandleAttached
+          ? published
+          : (!options.policy.retainOnFailure || published))
       ) {
         observe("agent.cleanup.start", { id: agentHandle.id });
         const cleanupStartedAt = Date.now();

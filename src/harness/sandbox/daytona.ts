@@ -210,7 +210,7 @@ const CLAUDE_RESUME_COMMAND = streamPersistingClaudeCommand(
   CLAUDE_RESUME_INVOKE,
 );
 
-function isSafeClaudeSessionId(sessionId: unknown): sessionId is string {
+export function isSafeClaudeSessionId(sessionId: unknown): sessionId is string {
   return (
     typeof sessionId === "string" &&
     sessionId.length > 0 &&

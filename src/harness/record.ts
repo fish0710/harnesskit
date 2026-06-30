@@ -120,6 +120,7 @@ export interface RunRecordAttempt {
   startedAt?: string;
   endedAt?: string;
   exitCode?: number;
+  commandOutcome?: string;
   gateSandboxIds: string[];
   gateOutcome?: string;
 }
@@ -408,6 +409,7 @@ function isRunRecordAttempt(value: unknown): value is RunRecordAttempt {
       value.exitCode === undefined ||
       Number.isSafeInteger(value.exitCode)
     ) &&
+    isOptionalString(value.commandOutcome) &&
     isStringArray(value.gateSandboxIds) &&
     isOptionalString(value.gateOutcome)
   );
@@ -600,6 +602,7 @@ export class RunRecorder {
     if (
       event !== "agent.command.start" &&
       event !== "agent.command.end" &&
+      event !== "agent.command.recovered" &&
       event !== "agent.command.progress" &&
       event !== "agent.command.heartbeat" &&
       event !== "agent.observability.stream" &&
@@ -635,6 +638,25 @@ export class RunRecorder {
     if (event === "agent.command.end") {
       attempt.endedAt = this.now();
       if (typeof value.exitCode === "number") attempt.exitCode = value.exitCode;
+      if (typeof value.outcome === "string") {
+        attempt.commandOutcome = value.outcome;
+      }
+    }
+    if (event === "agent.command.recovered") {
+      attempt.endedAt = this.now();
+      if (typeof value.id === "string") attempt.agentSandboxId = value.id;
+      if (typeof value.claudeSessionId === "string") {
+        attempt.claudeSessionId = value.claudeSessionId;
+      }
+      if (typeof value.claudeStreamPath === "string") {
+        attempt.claudeStreamPath = value.claudeStreamPath;
+      }
+      if (isNonNegativeSafeInteger(value.exitCode)) {
+        attempt.exitCode = value.exitCode;
+      }
+      if (typeof value.outcome === "string") {
+        attempt.commandOutcome = value.outcome;
+      }
     }
     if (
       event === "agent.observability.stream" &&
