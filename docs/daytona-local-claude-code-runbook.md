@@ -234,6 +234,41 @@ session id; later gate-fail attempts run `claude --resume <sessionId>` in the
 same agent sandbox and reuse `/home/daytona/.claude`. Missing or
 inconsistent resume state fails closed instead of starting a fresh conversation.
 
+## Recovering a retained failed run
+
+Inspect the run first:
+
+```bash
+harness runs show <runId> --json
+```
+
+If the run was retained, has `attempts[].agentSandboxId`, and does not have an
+`agent.cleanup.end` event that deleted the sandbox, confirm the conservative
+resume checks before proceeding: the source run started from a clean worktree,
+the current `HEAD` still matches that source run, the current source worktree is
+clean outside `.harness` runtime records, the run recorded selected contracts,
+and the attempt has either
+`claudeSessionId` or a recoverable `claudeStreamPath`. Resolve any host-side
+runtime or configuration issue without changing the source `HEAD` or leaving
+source changes, then resume explicitly:
+
+```bash
+harness runs resume <runId> --max-attempts 2
+```
+
+Resume is Gate-first. Harness attaches the retained Agent sandbox, collects the
+existing candidate, and runs Gate before starting another Claude turn. If the
+fixed Gate passes, Harness publishes the retained candidate without another
+Claude command. If Gate still fails, Harness feeds the new diagnostics into
+`claude --resume <sessionId>` inside the same sandbox.
+
+Interrupted local orchestrator runs can leave the source run at
+`status=running` and without `claudeSessionId`. In that case resume reads the
+recorded `claudeStreamPath`; a successful stream result such as
+`{"type":"result","subtype":"success","session_id":"..."}` or the equivalent
+`sessionId` form is treated as a recovered successful command, and the
+recovered session id is used for later resume attempts.
+
 TODO: Improve HTTP gate diagnostics for connection failures. A minimal resume
 fixture showed that `fetch failed` is enough to trigger a retry, but not always
 enough for the resumed agent to infer the actionable fix. HTTP diagnostics
