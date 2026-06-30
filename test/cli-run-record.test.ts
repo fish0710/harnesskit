@@ -24,6 +24,26 @@ function writeJson(path: string, value: unknown): void {
   write(path, JSON.stringify(value, null, 2));
 }
 
+function runGit(args: string[], cwd: string): string {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(
+    result.status,
+    0,
+    `git ${args.join(" ")} failed\n${result.stdout}\n${result.stderr}`,
+  );
+  return result.stdout.trim();
+}
+
+function initGitFixture(cwd: string): string {
+  runGit(["init"], cwd);
+  runGit(["config", "user.name", "Harness Tests"], cwd);
+  runGit(["config", "user.email", "harness-tests@example.com"], cwd);
+  write(join(cwd, "README.md"), "# fixture\n");
+  runGit(["add", "README.md"], cwd);
+  runGit(["commit", "-m", "chore: init"], cwd);
+  return runGit(["rev-parse", "HEAD"], cwd);
+}
+
 function projectFixture(): { cwd: string; contractsDir: string } {
   const cwd = mkdtempSync(join(tmpdir(), "harness-cli-run-record-"));
   const contractsDir = join(cwd, "contracts");
@@ -130,6 +150,115 @@ test("CLI runs list and show expose persisted run records as JSON", () => {
   assert.equal(shown.runId, runId);
   assert.equal(shown.report?.outcome, "pass");
   assert.ok(shown.logs?.some((line) => line.includes("门禁: pass")));
+});
+
+test("CLI runs resume rejects missing run records", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-cli-runs-resume-missing-"));
+
+  const result = spawnSync(
+    process.execPath,
+    [cliPath, "runs", "resume", "missing-run"],
+    { cwd, encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /未找到 run 记录: missing-run/);
+});
+
+test("CLI help documents runs resume", () => {
+  const result = spawnSync(
+    process.execPath,
+    [cliPath, "help"],
+    { encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /harness runs resume <runId>/);
+});
+
+test("CLI runs resume validates source run before Daytona attach", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-cli-runs-resume-invalid-"));
+  writeJson(join(cwd, ".harness", "runs", "bad-run.json"), {
+    schemaVersion: 3,
+    runId: "bad-run",
+    kind: "single",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:01:00.000Z",
+    repo: { root: cwd, dirty: false },
+    task: { description: "resume invalid driver" },
+    driver: "daytona(command)",
+    status: "completed",
+    observability: {
+      enabled: false,
+      backend: "disabled",
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+    },
+    selectedContracts: ["gate-a"],
+    attempts: [{ attempt: 1, agentSandboxId: "agent-sandbox-a", gateSandboxIds: [] }],
+    events: [],
+    outcome: "escalated",
+  });
+
+  const result = spawnSync(
+    process.execPath,
+    [cliPath, "runs", "resume", "bad-run"],
+    { cwd, encoding: "utf8", env: { ...process.env, DAYTONA_API_KEY: "" } },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /only daytona\(claude\) runs can be resumed/);
+  assert.doesNotMatch(result.stderr + result.stdout, /DAYTONA_API_KEY/);
+});
+
+test("CLI runs resume accepts interrupted running Claude records before Daytona attach", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-cli-runs-resume-running-"));
+  initGitFixture(cwd);
+  const contractsDir = join(cwd, "contracts");
+  writeJson(join(contractsDir, "gate-a.json"), {
+    id: "gate-a",
+    type: "command",
+    cmd: "true",
+  });
+  runGit(["add", "contracts/gate-a.json"], cwd);
+  runGit(["commit", "-m", "test: add gate"], cwd);
+  const head = runGit(["rev-parse", "HEAD"], cwd);
+  writeJson(join(cwd, ".harness", "runs", "running-run.json"), {
+    schemaVersion: 3,
+    runId: "running-run",
+    kind: "single",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:01:00.000Z",
+    repo: { root: cwd, head, dirty: false },
+    task: { description: "resume interrupted claude" },
+    driver: "daytona(claude)",
+    status: "running",
+    observability: {
+      enabled: false,
+      backend: "disabled",
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+    },
+    selectedContracts: ["gate-a"],
+    attempts: [{
+      attempt: 1,
+      agentSandboxId: "agent-sandbox-a",
+      claudeStreamPath: "/tmp/claude-stream.jsonl",
+      claudeConfigDir: "/tmp/claude-config",
+      gateSandboxIds: [],
+    }],
+    events: [],
+  });
+
+  const result = spawnSync(
+    process.execPath,
+    [cliPath, "runs", "resume", "running-run"],
+    { cwd, encoding: "utf8", env: { ...process.env, DAYTONA_API_KEY: "" } },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr + result.stdout, /DAYTONA_API_KEY/);
+  assert.doesNotMatch(result.stderr + result.stdout, /only escalated/);
 });
 
 test("CLI scaffold run with --verbose writes diagnostic JSONL and records its path", () => {

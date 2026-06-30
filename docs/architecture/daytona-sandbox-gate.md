@@ -426,6 +426,17 @@ Claude Code 原生 `.claude/projects/...jsonl` 由 `/home/daytona/.claude`
 - 缺失 session id、resume 状态不可确认，或出现不一致 session 时，Harness
   fail closed，不退回 fresh conversation。
 
+Cross-run retained resume 是显式操作，只能通过
+`harness runs resume <runId>` 进入。Harness 会先校验 RunStore metadata，
+通过 `agentSandboxId` attach 既有 Agent sandbox，跳过 Agent upload/setup，
+先针对 retained candidate 运行 Gate，只有需要新诊断时才 resume Claude。
+
+普通 `harness run` 绝不会静默 attach 到旧 sandbox。被中断的本地
+orchestrator recovery 会读取 retained sandbox stream path，从 stream-json
+中恢复成功的 Claude result 和 `session_id`/`sessionId`，记录
+`agent.command.recovered`，然后继续 Gate-first 流程，避免因为宿主错过
+`agent.command.end` 就丢弃已经完成的远端工作。
+
 `agent.observability.start/end` 和 `agent.command.start/end` 都会进入 run
 manifest。即使 Daytona provider 创建、harness config 解析或 agent command
 执行失败，Claude run 也会尽量把 manifest 标为 `status: "error"` 并记录原因。

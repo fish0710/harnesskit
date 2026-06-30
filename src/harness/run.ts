@@ -31,6 +31,7 @@ export interface RunOptions {
   environment: RunEnvironment;
   budget: GenerationBudget;
   initialFeedback?: string;
+  startWithGate?: boolean;
   contextUsedRatio?: () => number;
   onLog?: (line: string) => void;
   diagnosticLog?: RunDiagnosticLog;
@@ -45,6 +46,7 @@ export interface RunEnvironment {
     contracts: Contract[];
     gate: GateCore;
     ctx: RunContext;
+    attempt?: number;
   }): Promise<GateReport>;
   publish(): Promise<PublicationResult>;
   close(): Promise<void>;
@@ -139,25 +141,7 @@ export async function runLoop(o: RunOptions): Promise<RunOutcome> {
   const hardCap = Math.max(o.budget.maxAttempts, 1);
 
   try {
-    while (true) {
-      state.attempts++;
-      o.diagnosticLog?.info("loop", "attempt start", {
-        attempt: state.attempts,
-        environment: o.environment.name,
-        feedbackBytes: Buffer.byteLength(feedback),
-      });
-      log(`第 ${state.attempts} 轮 · environment=${o.environment.name}`);
-      o.diagnosticLog?.debug("loop", "agent run start", {
-        attempt: state.attempts,
-      });
-      const act = await o.environment.runTask({ task: o.task, feedback });
-      o.diagnosticLog?.debug("loop", "agent run end", {
-        attempt: state.attempts,
-        summary: act.summary,
-        changedFiles: act.changedFiles,
-      });
-      log(`  driver: ${act.summary}`);
-
+    const evaluateGate = async (): Promise<RunOutcome | undefined> => {
       o.diagnosticLog?.debug("loop", "gate run start", {
         attempt: state.attempts,
         contracts: o.contracts.map((contract) => contract.id),
@@ -166,6 +150,7 @@ export async function runLoop(o: RunOptions): Promise<RunOutcome> {
         contracts: o.contracts,
         gate: o.gate,
         ctx: o.ctx,
+        attempt: state.attempts,
       });
       o.diagnosticLog?.debug("loop", "gate run end", {
         attempt: state.attempts,
@@ -240,6 +225,35 @@ export async function runLoop(o: RunOptions): Promise<RunOutcome> {
         feedbackBytes: Buffer.byteLength(feedback),
       });
       log("  未通过 → 把诊断反馈给 driver,重试");
+      return undefined;
+    };
+
+    if (o.startWithGate) {
+      const retainedOutcome = await evaluateGate();
+      if (retainedOutcome) return retainedOutcome;
+    }
+
+    while (true) {
+      state.attempts++;
+      o.diagnosticLog?.info("loop", "attempt start", {
+        attempt: state.attempts,
+        environment: o.environment.name,
+        feedbackBytes: Buffer.byteLength(feedback),
+      });
+      log(`第 ${state.attempts} 轮 · environment=${o.environment.name}`);
+      o.diagnosticLog?.debug("loop", "agent run start", {
+        attempt: state.attempts,
+      });
+      const act = await o.environment.runTask({ task: o.task, feedback });
+      o.diagnosticLog?.debug("loop", "agent run end", {
+        attempt: state.attempts,
+        summary: act.summary,
+        changedFiles: act.changedFiles,
+      });
+      log(`  driver: ${act.summary}`);
+
+      const outcome = await evaluateGate();
+      if (outcome) return outcome;
     }
   } finally {
     o.diagnosticLog?.info("loop", "environment close start", {

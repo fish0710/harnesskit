@@ -92,6 +92,16 @@ function policy(setup: {
   });
 }
 
+function retainingPolicy() {
+  return loadSandboxPolicy({
+    sandbox: {
+      candidateRoots: ["src"],
+      protectedPaths: ["contracts"],
+      retainOnFailure: true,
+    },
+  });
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -112,8 +122,11 @@ async function waitUntil(
 interface ScriptedProvider extends SandboxProvider {
   requests: SandboxCreateRequest[];
   handles: RecordingHandle[];
+  attachHandle?: RecordingHandle;
+  attachedIds: string[];
   agentPrompts: string[];
   readonly claudeRuns: number;
+  createAttachedAgent(id: string): RecordingHandle;
   agentFiles(): Map<string, WorkspaceFile>;
 }
 
@@ -394,6 +407,7 @@ function scriptedProvider(options: {
   mutateProtectedOnGate?: boolean;
   commandExitCodes?: Record<string, number>;
   throwCommands?: Record<string, Error>;
+  attachHandle?: RecordingHandle;
 }): ScriptedProvider {
   const state = {
     ...options,
@@ -415,9 +429,12 @@ function scriptedProvider(options: {
   };
   const requests: SandboxCreateRequest[] = [];
   const handles: RecordingHandle[] = [];
+  const attachedIds: string[] = [];
   return {
     requests,
     handles,
+    attachHandle: options.attachHandle,
+    attachedIds,
     agentPrompts: state.agentPrompts,
     get claudeRuns() {
       return state.claudeRuns;
@@ -429,6 +446,20 @@ function scriptedProvider(options: {
         request.role,
         state,
       );
+      handles.push(handle);
+      return handle;
+    },
+    async attach(id) {
+      attachedIds.push(id);
+      if (!this.attachHandle) throw new Error(`missing retained handle: ${id}`);
+      if (!handles.includes(this.attachHandle)) {
+        handles.push(this.attachHandle);
+      }
+      return this.attachHandle;
+    },
+    createAttachedAgent(id) {
+      const handle = new RecordingHandle(id, "agent", state);
+      this.attachHandle = handle;
       handles.push(handle);
       return handle;
     },
@@ -508,6 +539,39 @@ test("multiple attempts reuse one agent and create a fresh gate each time", asyn
     "task context\n",
   );
   assert.ok(gates.every((handle) => handle.verifications === 2));
+});
+
+test("Daytona gate observations use explicit logical attempt", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: [],
+    gateExitCodes: [0],
+  });
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "command", command: "fake-agent" },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  await environment.runGate({
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    attempt: 0,
+  });
+  await environment.close();
+
+  const gateRunStart = observations.find(([event]) =>
+    event === "gate.run.start"
+  );
+  const gateRunEnd = observations.find(([event]) => event === "gate.run.end");
+  assert.equal((gateRunStart?.[1] as { attempt?: number }).attempt, 0);
+  assert.equal((gateRunEnd?.[1] as { attempt?: number }).attempt, 0);
 });
 
 test("gate sandboxes use Gate runtime snapshots without model credentials or Claude installation", async () => {
@@ -1079,6 +1143,656 @@ test("Claude Daytona retries strongly resume the captured session in one agent s
     { attempt: 1, resume: false, claudeSessionId: undefined },
     { attempt: 2, resume: true, claudeSessionId: "session-abc" },
   ]);
+});
+
+test("retained Daytona resume attaches to the existing agent and publishes if Gate now passes", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: [],
+    gateExitCodes: [0],
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("fixed\n"), false),
+  );
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: retainingPolicy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeSessionId: "session-abc",
+      completedAttempts: 3,
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.equal(
+    provider.requests.filter((request) => request.role === "agent").length,
+    0,
+  );
+  assert.deepEqual(provider.attachedIds, ["retained-agent"]);
+  assert.equal(provider.claudeRuns, 0);
+  assert.equal(readFileSync(join(root, "src/a.ts"), "utf8"), "fixed\n");
+  assert.equal(retained.deleted, 1);
+  assert.equal(
+    observations.some(([event]) => event === "agent.attach.end"),
+    true,
+  );
+});
+
+test("retained Daytona resume rejects unsafe captured Claude session ids", () => {
+  const root = createGitFixture({ "src/a.ts": "before\n" });
+
+  for (const claudeSessionId of ["", " session-abc", "session-abc ", "session\nabc"]) {
+    const provider = scriptedProvider({
+      candidateVersions: [],
+      gateExitCodes: [],
+    });
+
+    assert.throws(
+      () =>
+        createDaytonaRunEnvironment({
+          provider,
+          root,
+          policy: retainingPolicy(),
+          agent: { kind: "claude" },
+          environment: configuredClaudeEnvironment,
+          resume: {
+            agentSandboxId: "retained-agent",
+            claudeSessionId,
+            completedAttempts: 1,
+          },
+        }),
+      /Claude session id/i,
+    );
+  }
+});
+
+test("retained Daytona resume preserves attached sandbox when preflight fails", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: [],
+    gateExitCodes: [],
+    throwCommands: {
+      [CLAUDE_TOOLCHAIN_PREFLIGHT]: new Error("preflight boom"),
+    },
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("still-broken\n"), false),
+  );
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeSessionId: "session-abc",
+      completedAttempts: 1,
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      runLoop({
+        task: "fix it",
+        contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+        gate: new GateCore().use(commandPlugin),
+        ctx: { cwd: root },
+        environment,
+        budget,
+        startWithGate: true,
+      }),
+    /preflight boom/,
+  );
+  assert.deepEqual(provider.attachedIds, ["retained-agent"]);
+  assert.equal(retained.deleted, 0);
+});
+
+test("retained Daytona resume continues Claude with the captured session when Gate still fails", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [1, 0],
+    claudeStdouts: [
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        session_id: "session-abc",
+      }),
+    ],
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("still-broken\n"), false),
+  );
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: retainingPolicy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeSessionId: "session-abc",
+      completedAttempts: 3,
+    },
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  const claudeCalls = retained.executeCalls.filter((call) =>
+    call.command.includes("/usr/local/bin/claude") &&
+    "HARNESS_PROMPT" in call.env
+  );
+  assert.equal(claudeCalls.length, 1);
+  assert.equal(claudeCalls[0]?.command, buildClaudeCommand("resume"));
+  assert.equal(claudeCalls[0]?.env.HARNESS_CLAUDE_SESSION_ID, "session-abc");
+  assert.match(claudeCalls[0]?.env.HARNESS_PROMPT ?? "", /门禁反馈/);
+});
+
+test("retained Daytona resume rejects error stream result before later safe success", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: [],
+    gateExitCodes: [],
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  const streamPath = "/harness-observability/attempt-1/claude-stream.jsonl";
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("still-broken\n"), false),
+  );
+  retained.files.set(
+    streamPath,
+    workspaceFile(
+      streamPath,
+      Buffer.from(
+        [
+          '{"type":"result","subtype":"success","is_error":true,"session_id":"session-abc"}',
+          '{"type":"result","subtype":"success","session_id":"session-safe"}',
+          "",
+        ].join("\n"),
+      ),
+      false,
+    ),
+  );
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeStreamPath: streamPath,
+      completedAttempts: 1,
+      recoverCompletedCommand: true,
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      runLoop({
+        task: "fix it",
+        contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+        gate: new GateCore().use(commandPlugin),
+        ctx: { cwd: root },
+        environment,
+        budget,
+        startWithGate: true,
+      }),
+    /successful result session id/,
+  );
+  assert.equal(provider.claudeRuns, 0);
+  assert.equal(retained.deleted, 0);
+});
+
+test("retained Daytona resume rejects unsafe Claude stream session ids during recovery", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: [],
+    gateExitCodes: [],
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  const streamPath = "/harness-observability/attempt-1/claude-stream.jsonl";
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("still-broken\n"), false),
+  );
+  retained.files.set(
+    streamPath,
+    workspaceFile(
+      streamPath,
+      Buffer.from(
+        '{"type":"result","subtype":"success","session_id":" session-abc"}\n',
+      ),
+      false,
+    ),
+  );
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeStreamPath: streamPath,
+      completedAttempts: 1,
+      recoverCompletedCommand: true,
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      runLoop({
+        task: "fix it",
+        contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+        gate: new GateCore().use(commandPlugin),
+        ctx: { cwd: root },
+        environment,
+        budget,
+        startWithGate: true,
+      }),
+    /successful result session id/,
+  );
+  assert.equal(retained.deleted, 0);
+});
+
+test("retained Daytona resume rejects unsafe stream result before later safe result", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: [],
+    gateExitCodes: [],
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  const streamPath = "/harness-observability/attempt-1/claude-stream.jsonl";
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("still-broken\n"), false),
+  );
+  retained.files.set(
+    streamPath,
+    workspaceFile(
+      streamPath,
+      Buffer.from(
+        [
+          '{"type":"result","subtype":"success","session_id":" session-abc"}',
+          '{"type":"result","subtype":"success","session_id":"session-safe"}',
+          "",
+        ].join("\n"),
+      ),
+      false,
+    ),
+  );
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: policy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeStreamPath: streamPath,
+      completedAttempts: 1,
+      recoverCompletedCommand: true,
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      runLoop({
+        task: "fix it",
+        contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+        gate: new GateCore().use(commandPlugin),
+        ctx: { cwd: root },
+        environment,
+        budget,
+        startWithGate: true,
+      }),
+    /successful result session id/,
+  );
+  assert.equal(provider.claudeRuns, 0);
+  assert.equal(retained.deleted, 0);
+});
+
+test("retained Daytona resume recovers a completed Claude session from stream before Gate", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: [],
+    gateExitCodes: [0],
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  const streamPath = "/harness-observability/attempt-1/claude-stream.jsonl";
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("fixed\n"), false),
+  );
+  retained.files.set(
+    streamPath,
+    workspaceFile(
+      streamPath,
+      Buffer.from(
+        '{"type":"result","subtype":"success","terminal_reason":"completed","session_id":"session-abc"}\n',
+      ),
+      false,
+    ),
+  );
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: retainingPolicy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeStreamPath: streamPath,
+      completedAttempts: 1,
+      recoverCompletedCommand: true,
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.equal(provider.claudeRuns, 0);
+  assert.deepEqual(
+    observations
+      .filter(([event]) => event === "agent.command.recovered")
+      .map(([, data]) => data),
+    [{
+      id: "retained-agent",
+      attempt: 1,
+      claudeSessionId: "session-abc",
+      claudeStreamPath: streamPath,
+      exitCode: 0,
+      outcome: "success",
+    }],
+  );
+});
+
+test("retained Daytona resume recovers camelCase Claude sessionId from stream", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: [],
+    gateExitCodes: [0],
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  const streamPath = "/harness-observability/attempt-1/claude-stream.jsonl";
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("fixed\n"), false),
+  );
+  retained.files.set(
+    streamPath,
+    workspaceFile(
+      streamPath,
+      Buffer.from(
+        '{"type":"result","subtype":"success","terminal_reason":"completed","sessionId":"session-camel"}\n',
+      ),
+      false,
+    ),
+  );
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: retainingPolicy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeStreamPath: streamPath,
+      completedAttempts: 1,
+      recoverCompletedCommand: true,
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.equal(provider.claudeRuns, 0);
+  assert.deepEqual(
+    observations
+      .filter(([event]) => event === "agent.command.recovered")
+      .map(([, data]) => data),
+    [{
+      id: "retained-agent",
+      attempt: 1,
+      claudeSessionId: "session-camel",
+      claudeStreamPath: streamPath,
+      exitCode: 0,
+      outcome: "success",
+    }],
+  );
+});
+
+test("retained Daytona resume reports absolute attempts for recovered command and gates", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [1, 0],
+    claudeStdouts: [
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        session_id: "session-abc",
+      }),
+    ],
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  const streamPath = "/harness-observability/attempt-3/claude-stream.jsonl";
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("still-broken\n"), false),
+  );
+  retained.files.set(
+    streamPath,
+    workspaceFile(
+      streamPath,
+      Buffer.from(
+        '{"type":"result","subtype":"success","terminal_reason":"completed","session_id":"session-abc"}\n',
+      ),
+      false,
+    ),
+  );
+  const observations: Array<[string, unknown]> = [];
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: retainingPolicy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeStreamPath: streamPath,
+      completedAttempts: 3,
+      recoverCompletedCommand: true,
+    },
+    onObservation: (event, data) => observations.push([event, data]),
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  assert.deepEqual(
+    observations
+      .filter(([, data]) => typeof (data as { attempt?: unknown }).attempt === "number")
+      .filter(([event]) =>
+        event === "agent.command.recovered" ||
+        event === "agent.command.start" ||
+        event === "candidate.collect.start" ||
+        event === "candidate.collect.end" ||
+        event === "gate.run.start" ||
+        event === "gate.run.end"
+      )
+      .map(([event, data]) => [
+        event,
+        (data as { attempt: number }).attempt,
+      ]),
+    [
+      ["agent.command.recovered", 3],
+      ["candidate.collect.start", 3],
+      ["candidate.collect.end", 3],
+      ["gate.run.start", 3],
+      ["gate.run.end", 3],
+      ["agent.command.start", 4],
+      ["candidate.collect.start", 4],
+      ["candidate.collect.end", 4],
+      ["gate.run.start", 4],
+      ["gate.run.end", 4],
+    ],
+  );
+});
+
+test("retained Daytona resume uses recovered stream session when Gate still fails", async () => {
+  const root = createGitFixture({
+    "src/a.ts": "before\n",
+    "contracts/gate.yaml": "trusted\n",
+  });
+  const provider = scriptedProvider({
+    candidateVersions: ["fixed\n"],
+    gateExitCodes: [1, 0],
+    claudeStdouts: [
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        session_id: "session-abc",
+      }),
+    ],
+  });
+  const retained = provider.createAttachedAgent("retained-agent");
+  const streamPath = "/harness-observability/attempt-1/claude-stream.jsonl";
+  retained.files.set(
+    "src/a.ts",
+    workspaceFile("src/a.ts", Buffer.from("still-broken\n"), false),
+  );
+  retained.files.set(
+    streamPath,
+    workspaceFile(
+      streamPath,
+      Buffer.from(
+        '{"type":"result","subtype":"success","terminal_reason":"completed","session_id":"session-abc"}\n',
+      ),
+      false,
+    ),
+  );
+  const environment = createDaytonaRunEnvironment({
+    provider,
+    root,
+    policy: retainingPolicy(),
+    agent: { kind: "claude" },
+    environment: configuredClaudeEnvironment,
+    resume: {
+      agentSandboxId: "retained-agent",
+      claudeStreamPath: streamPath,
+      completedAttempts: 1,
+      recoverCompletedCommand: true,
+    },
+  });
+
+  const outcome = await runLoop({
+    task: "fix it",
+    contracts: [{ id: "trusted", type: "command", cmd: "true" }],
+    gate: new GateCore().use(commandPlugin),
+    ctx: { cwd: root },
+    environment,
+    budget,
+    startWithGate: true,
+  });
+
+  assert.equal(outcome.outcome, "ready_for_mr");
+  const claudeCalls = retained.executeCalls.filter((call) =>
+    call.command.includes("/usr/local/bin/claude") &&
+    "HARNESS_PROMPT" in call.env
+  );
+  assert.equal(claudeCalls.length, 1);
+  assert.equal(claudeCalls[0]?.command, buildClaudeCommand("resume"));
+  assert.equal(claudeCalls[0]?.env.HARNESS_CLAUDE_SESSION_ID, "session-abc");
 });
 
 test("Claude Daytona fails closed when the first attempt does not report a session id", async () => {

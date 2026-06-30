@@ -132,6 +132,35 @@ harness create . --force
 
 如果所有候选根都被保护或只读，Harness 会直接报错，因为 agent 没有可发布区域。
 
+### Retained sandbox resume
+
+`sandbox.retainOnFailure: true` keeps an unpublished Daytona Agent sandbox after
+an escalated Claude run. Ordinary `harness run` does not implicitly reuse old
+state; retained state is only reused by an explicit resume command:
+
+```bash
+harness runs resume <runId> --max-attempts 2
+```
+
+Retained resume is intentionally conservative:
+
+- only `daytona(claude)` escalated runs and interrupted `daytona(claude)`
+  running runs are supported;
+- the original run must have `agentSandboxId` and selected contracts;
+- the original Agent sandbox must not have been deleted;
+- if `claudeSessionId` is absent, the original attempt must have
+  `claudeStreamPath` and the retained stream must contain a successful Claude
+  result event with `session_id` or `sessionId`;
+- the source run must have started from a clean worktree, current Git HEAD must
+  match the source run, and the current source worktree must be clean outside
+  `.harness` runtime records;
+- Harness validates the retained candidate with Gate before another Claude
+  command;
+- if Gate passes, Harness publishes the candidate and deletes the retained
+  sandbox;
+- if Gate still fails, Harness resumes Claude with the recorded or recovered
+  session id and keeps the sandbox on failure.
+
 ## 4. 只跑验证，不启动 agent
 
 校验契约格式：

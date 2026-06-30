@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   unlinkSync,
   writeFileSync,
@@ -21,6 +22,7 @@ import {
   decideTaskResume,
   ensureCleanGitWorktree,
   loadTaskSeriesConfig,
+  markSeriesTaskReadyToCommit,
   readSeriesLedger,
   renderCommitMessage,
   runTaskSeries,
@@ -612,6 +614,303 @@ test("series ledger write uses unique temp files and leaves no tmp artifacts", (
       entry.endsWith(".tmp")
     ),
     [],
+  );
+});
+
+test("markSeriesTaskReadyToCommit records resumed publication for escalated task", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    tasks: [{ id: "one", task: "Update source." }],
+  })!;
+  const currentTaskHash = taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults);
+  const startedAt = "2026-06-17T00:00:00.000Z";
+
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "error",
+    configHash: configHash(config),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:01.000Z",
+    tasks: [{
+      id: "one",
+      taskHash: currentTaskHash,
+      status: "escalated",
+      runRecord: ".harness/runs/source.json",
+      startedAt,
+      completedAt: "2026-06-17T00:00:02.000Z",
+      commit: "abc123",
+      errorReason: "needs permission",
+    }],
+  });
+
+  markSeriesTaskReadyToCommit({
+    cwd,
+    config,
+    taskId: "one",
+    sourceRunRecordPath: ".harness/runs/source.json",
+    runRecordPath: ".harness/runs/resume.json",
+    changedFiles: ["src/a.ts"],
+  });
+
+  const ledger = readSeriesLedger(cwd, config.seriesId)!;
+  assert.equal(ledger.status, "running");
+  const persisted = JSON.parse(readFileSync(seriesLedgerPath(cwd, config.seriesId), "utf8"));
+  assert.deepEqual(persisted.tasks[0], {
+    id: "one",
+    taskHash: currentTaskHash,
+    status: "ready_to_commit",
+    startedAt,
+    changedFiles: ["src/a.ts"],
+    runRecord: ".harness/runs/resume.json",
+  });
+});
+
+test("markSeriesTaskReadyToCommit records resumed publication for interrupted running task", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    tasks: [{ id: "one", task: "Update source." }],
+  })!;
+  const currentTaskHash = taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults);
+  const startedAt = "2026-06-17T00:00:00.000Z";
+
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "running",
+    configHash: configHash(config),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:01.000Z",
+    tasks: [{
+      id: "one",
+      taskHash: currentTaskHash,
+      status: "running",
+      startedAt,
+    }],
+  });
+
+  markSeriesTaskReadyToCommit({
+    cwd,
+    config,
+    taskId: "one",
+    sourceRunRecordPath: ".harness/runs/source.json",
+    runRecordPath: ".harness/runs/resume.json",
+    changedFiles: ["src/a.ts"],
+  });
+
+  const ledger = readSeriesLedger(cwd, config.seriesId)!;
+  assert.equal(ledger.status, "running");
+  const persisted = JSON.parse(readFileSync(seriesLedgerPath(cwd, config.seriesId), "utf8"));
+  assert.deepEqual(persisted.tasks[0], {
+    id: "one",
+    taskHash: currentTaskHash,
+    status: "ready_to_commit",
+    startedAt,
+    changedFiles: ["src/a.ts"],
+    runRecord: ".harness/runs/resume.json",
+  });
+});
+
+test("markSeriesTaskReadyToCommit rejects missing ledger", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    tasks: [{ id: "one", task: "Update source." }],
+  })!;
+
+  assert.throws(
+    () => markSeriesTaskReadyToCommit({
+      cwd,
+      config,
+      taskId: "one",
+      sourceRunRecordPath: ".harness/runs/source.json",
+      runRecordPath: ".harness/runs/resume.json",
+      changedFiles: ["src/a.ts"],
+    }),
+    /series ledger not found: order-refactor/,
+  );
+});
+
+test("markSeriesTaskReadyToCommit rejects unknown series task", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    tasks: [{ id: "one", task: "Update source." }],
+  })!;
+
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "running",
+    configHash: configHash(config),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:01.000Z",
+    tasks: [{
+      id: "missing",
+      taskHash: "b".repeat(64),
+      status: "running",
+    }],
+  });
+
+  assert.throws(
+    () => markSeriesTaskReadyToCommit({
+      cwd,
+      config,
+      taskId: "missing",
+      sourceRunRecordPath: ".harness/runs/source.json",
+      runRecordPath: ".harness/runs/resume.json",
+      changedFiles: ["src/a.ts"],
+    }),
+    /unknown series task: missing/,
+  );
+});
+
+test("markSeriesTaskReadyToCommit rejects missing ledger task", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    tasks: [{ id: "one", task: "Update source." }],
+  })!;
+
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "running",
+    configHash: configHash(config),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:01.000Z",
+    tasks: [],
+  });
+
+  assert.throws(
+    () => markSeriesTaskReadyToCommit({
+      cwd,
+      config,
+      taskId: "one",
+      sourceRunRecordPath: ".harness/runs/source.json",
+      runRecordPath: ".harness/runs/resume.json",
+      changedFiles: ["src/a.ts"],
+    }),
+    /series ledger task not found: one/,
+  );
+});
+
+test("markSeriesTaskReadyToCommit rejects changed task hash", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const oldConfig = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    tasks: [{ id: "one", task: "Update source." }],
+  })!;
+  const currentConfig = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    tasks: [{ id: "one", task: "Update source differently." }],
+  })!;
+
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: oldConfig.seriesId,
+    status: "error",
+    configHash: configHash(oldConfig),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:01.000Z",
+    tasks: [{
+      id: "one",
+      taskHash: taskHash(oldConfig.tasks[0]!, oldConfig.autoCommit, oldConfig.taskDefaults),
+      status: "escalated",
+      runRecord: ".harness/runs/source.json",
+      startedAt: "2026-06-17T00:00:00.000Z",
+    }],
+  });
+
+  assert.throws(
+    () => markSeriesTaskReadyToCommit({
+      cwd,
+      config: currentConfig,
+      taskId: "one",
+      sourceRunRecordPath: ".harness/runs/source.json",
+      runRecordPath: ".harness/runs/resume.json",
+      changedFiles: ["src/a.ts"],
+    }),
+    /task one configuration changed since the retained run/,
+  );
+});
+
+test("markSeriesTaskReadyToCommit rejects completed ledger tasks", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    tasks: [{ id: "one", task: "Update source." }],
+  })!;
+  const currentTaskHash = taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults);
+
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "completed",
+    configHash: configHash(config),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:01.000Z",
+    tasks: [{
+      id: "one",
+      taskHash: currentTaskHash,
+      status: "completed",
+      runRecord: ".harness/runs/newer.json",
+      changedFiles: ["src/newer.ts"],
+      commit: "abc123",
+      startedAt: "2026-06-17T00:00:00.000Z",
+      completedAt: "2026-06-17T00:00:03.000Z",
+    }],
+  });
+
+  assert.throws(
+    () => markSeriesTaskReadyToCommit({
+      cwd,
+      config,
+      taskId: "one",
+      sourceRunRecordPath: ".harness/runs/source.json",
+      runRecordPath: ".harness/runs/resume.json",
+      changedFiles: ["src/a.ts"],
+    }),
+    /task one status completed cannot be marked ready_to_commit from a retained resume/,
+  );
+});
+
+test("markSeriesTaskReadyToCommit rejects stale source run records", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-series-ledger-"));
+  const config = loadTaskSeriesConfig({
+    series: { id: "order-refactor" },
+    tasks: [{ id: "one", task: "Update source." }],
+  })!;
+  const currentTaskHash = taskHash(config.tasks[0]!, config.autoCommit, config.taskDefaults);
+
+  writeSeriesLedger(cwd, {
+    schemaVersion: 1,
+    seriesId: config.seriesId,
+    status: "error",
+    configHash: configHash(config),
+    createdAt: "2026-06-17T00:00:00.000Z",
+    updatedAt: "2026-06-17T00:00:01.000Z",
+    tasks: [{
+      id: "one",
+      taskHash: currentTaskHash,
+      status: "escalated",
+      runRecord: ".harness/runs/newer.json",
+      startedAt: "2026-06-17T00:00:00.000Z",
+    }],
+  });
+
+  assert.throws(
+    () => markSeriesTaskReadyToCommit({
+      cwd,
+      config,
+      taskId: "one",
+      sourceRunRecordPath: ".harness/runs/source.json",
+      runRecordPath: ".harness/runs/resume.json",
+      changedFiles: ["src/a.ts"],
+    }),
+    /task one ledger run record changed since the retained run/,
   );
 });
 

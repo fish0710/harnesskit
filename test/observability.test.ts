@@ -315,6 +315,43 @@ test("RunRecorder records Claude stream path at command start for timeout diagno
   );
 });
 
+test("RunRecorder records recovered Claude command metadata on the attempt", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "harness-record-recovered-"));
+  const recorder = createRunRecorder(cwd, {
+    runId: "recovered-command",
+    task: "recover interrupted orchestrator command",
+    driver: "daytona(claude)",
+    observability: {
+      enabled: true,
+      backend: "daytona-volume",
+      volumeName: "harness-claude-observability",
+      mountPath: "/harness-observability",
+      runRoot: "/harness-observability/runs/recovered-command",
+    },
+  });
+
+  recorder.recordEvent("agent.command.recovered", {
+    attempt: 1,
+    id: "agent-1",
+    claudeSessionId: "session-abc",
+    claudeStreamPath: "/harness-observability/attempt-1/claude-stream.jsonl",
+    exitCode: 0,
+    outcome: "success",
+  });
+
+  const parsed = JSON.parse(readFileSync(recorder.path, "utf8"));
+
+  assert.equal(parsed.attempts[0].agentSandboxId, "agent-1");
+  assert.equal(parsed.attempts[0].claudeSessionId, "session-abc");
+  assert.equal(
+    parsed.attempts[0].claudeStreamPath,
+    "/harness-observability/attempt-1/claude-stream.jsonl",
+  );
+  assert.equal(parsed.attempts[0].exitCode, 0);
+  assert.equal(parsed.attempts[0].commandOutcome, "success");
+  assert.equal(typeof parsed.attempts[0].endedAt, "string");
+});
+
 test("RunRecorder records Claude stream progress on the attempt", () => {
   const cwd = mkdtempSync(join(tmpdir(), "harness-observability-record-"));
   const recorder = createRunRecorder(cwd, {
