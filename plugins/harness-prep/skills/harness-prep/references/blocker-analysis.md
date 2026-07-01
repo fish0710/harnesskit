@@ -101,14 +101,9 @@ Likely causes:
 - unsafe sandbox policy path;
 - setup command failed.
 - skipped or stale Gate preflight for a changed `gateSetup`, contract command, or Gate snapshot.
-- `hostLocal.<id>.devtools` readiness failed for a mini-program contract because
-  the host WeChat DevTools automation WebSocket could not be started or reached.
 
 Action: fix contract/config/setup before retrying Agent.
 Use `sandbox-snapshots.md` to distinguish a real product failure from a missing sandbox tool. For example, `git`, `pnpm`, `yarn`, and `bun` are absent by default; `nvm` requires sourcing `/usr/local/nvm/nvm.sh`; Gate never has `claude`.
-For mini-program host readiness errors, fix the macOS DevTools host state
-before retrying; the Daytona Agent cannot repair a missing local automation
-WebSocket.
 
 ### Contract `fail`
 

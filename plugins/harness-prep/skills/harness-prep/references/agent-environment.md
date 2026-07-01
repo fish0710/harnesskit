@@ -31,7 +31,7 @@ Create or update the spec with this table. Do not start `harness run` while any 
 | Claude model env | Anthropic env vars | shell env |
 | Snapshots | optional `HARNESS_DAYTONA_AGENT_SNAPSHOT`, `HARNESS_DAYTONA_GATE_SNAPSHOT` | shell env |
 | Proxy/no-proxy | remote Daytona may need proxy cleared; local needs `proxy.localhost` bypass | shell env |
-| Local host dependencies | WeChat DevTools, database, browser, etc. | host-local contract notes |
+| External dependencies | database, browser, third-party API, etc. | setup/env notes |
 
 ## Sandbox Policy Rules
 

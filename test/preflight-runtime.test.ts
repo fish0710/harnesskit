@@ -270,37 +270,6 @@ test("static lint error returns not_ready and does not create sandbox", async ()
   assert.deepEqual(provider.requests, []);
 });
 
-test("mini-program command contracts fail preflight before sandbox creation", async () => {
-  const root = createGitFixture({ "src/a.ts": "before\n" });
-  const provider = new RecordingProvider();
-  const misModeled: Contract = {
-    id: "mp.vue3.home-flow",
-    type: "command",
-    cmd: "node",
-    args: ["test/gates/mp-home-flow.js"],
-    projectPath: "dist/build/mp-weixin",
-    runner: "test/gates/mp-home-flow.js",
-    devtools: {
-      mode: "managed",
-      cliPath: "/Applications/wechatwebdevtools.app/Contents/MacOS/cli",
-      autoPort: 9420,
-    },
-  };
-
-  const report = await runGatePreflight(
-    preflightOptions(root, provider, [misModeled]),
-  );
-
-  assert.equal(report.outcome, "not_ready");
-  assert.deepEqual(report.selectedContracts, ["mp.vue3.home-flow"]);
-  assert.deepEqual(report.remoteContracts, ["mp.vue3.home-flow"]);
-  assert.deepEqual(report.hostLocalContracts, []);
-  assert.equal(report.readinessErrors[0]?.id, "contract.mp.vue3.home-flow.miniprogramModel");
-  assert.match(report.readinessErrors[0]?.message ?? "", /type="miniprogram"/);
-  assert.match(report.readinessErrors[0]?.message ?? "", /projectPath/);
-  assert.deepEqual(provider.requests, []);
-});
-
 test("creates Gate sandbox, uploads baseline, runs setup and remote command, then cleans up", async () => {
   const root = createGitFixture({
     "AGENTS.md": "repo map\n",
@@ -413,100 +382,6 @@ test("runtime infrastructure error from contract is readinessErrors", async () =
   assert.equal(report.readinessErrors[0]?.id, "contract.test.unit.runtime");
   assert.deepEqual(report.productFailures, []);
   assert.equal(provider.handles[0]?.deleted, 1);
-});
-
-test("host-local-only contracts return ready and do not create sandbox", async () => {
-  const root = createGitFixture({ "src/a.ts": "before\n" });
-  const provider = new RecordingProvider();
-  const miniprogram: Contract = {
-    id: "mp.smoke",
-    type: "miniprogram",
-    projectPath: "dist/dev/mp-weixin",
-    runner: "test/gates/runner.js",
-    devtools: { mode: "connect", wsEndpoint: "ws://127.0.0.1:19420" },
-  };
-  const { execution } = recordingExecutionTarget(() => ({ exitCode: 0 }));
-
-  const report = await runGatePreflight({
-    ...preflightOptions(root, provider, [miniprogram]),
-    ctx: { cwd: root, execution },
-  });
-
-  assert.equal(report.outcome, "ready");
-  assert.deepEqual(report.selectedContracts, ["mp.smoke"]);
-  assert.deepEqual(report.remoteContracts, []);
-  assert.deepEqual(report.hostLocalContracts, ["mp.smoke"]);
-  assert.deepEqual(provider.requests, []);
-});
-
-test("host-local miniprogram preflight warms and verifies DevTools before agent work", async () => {
-  const root = createGitFixture({ "src/a.ts": "before\n" });
-  const provider = new RecordingProvider();
-  const miniprogram: Contract = {
-    id: "mp.smoke",
-    type: "miniprogram",
-    projectPath: "dist/dev/mp-weixin",
-    runner: "test/gates/runner.js",
-    devtools: {
-      mode: "managed",
-      cliPath: "/Applications/WeChatDevTools/cli",
-      autoPort: 19420,
-    },
-  };
-  const { execution, calls } = recordingExecutionTarget(() => ({ exitCode: 0 }));
-
-  const report = await runGatePreflight({
-    ...preflightOptions(root, provider, [miniprogram]),
-    ctx: { cwd: root, execution },
-  });
-
-  assert.equal(report.outcome, "ready");
-  assert.deepEqual(report.readinessErrors, []);
-  assert.deepEqual(provider.requests, []);
-  assert.equal(calls.length, 3);
-  assert.equal(calls[0]!.command, "/Applications/WeChatDevTools/cli");
-  assert.deepEqual(calls[0]!.args, ["islogin"]);
-  assert.equal(calls[1]!.command, "/Applications/WeChatDevTools/cli");
-  assert.deepEqual(calls[1]!.args.slice(0, 5), [
-    "auto",
-    "--project",
-    calls[1]!.args[2],
-    "--auto-port",
-    "19420",
-  ]);
-  assert.equal(calls[2]!.command, "/Applications/WeChatDevTools/cli");
-  assert.deepEqual(calls[2]!.args, ["quit"]);
-});
-
-test("host-local miniprogram preflight blocks when DevTools readiness fails", async () => {
-  const root = createGitFixture({ "src/a.ts": "before\n" });
-  const provider = new RecordingProvider();
-  const miniprogram: Contract = {
-    id: "mp.smoke",
-    type: "miniprogram",
-    projectPath: "dist/dev/mp-weixin",
-    runner: "test/gates/runner.js",
-    devtools: {
-      mode: "managed",
-      cliPath: "/Applications/WeChatDevTools/cli",
-      autoPort: 19420,
-    },
-  };
-  const { execution } = recordingExecutionTarget((request) =>
-    request.args[0] === "islogin"
-      ? { exitCode: 2, stderr: "not logged in" }
-      : { exitCode: 0 }
-  );
-
-  const report = await runGatePreflight({
-    ...preflightOptions(root, provider, [miniprogram]),
-    ctx: { cwd: root, execution },
-  });
-
-  assert.equal(report.outcome, "not_ready");
-  assert.deepEqual(provider.requests, []);
-  assert.equal(report.readinessErrors[0]?.id, "hostLocal.mp.smoke.devtools");
-  assert.match(report.readinessErrors[0]?.message ?? "", /not logged in|DevTools|微信开发者工具/);
 });
 
 test("loopback HTTP remote contract does not block Gate network", async () => {

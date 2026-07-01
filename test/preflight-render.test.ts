@@ -28,9 +28,9 @@ function reportFixture(): GatePreflightReport {
         stderr: "",
       },
     ],
-    selectedContracts: ["command.smoke", "ui.local"],
+    selectedContracts: ["command.smoke"],
     remoteContracts: ["command.smoke"],
-    hostLocalContracts: ["ui.local"],
+    hostLocalContracts: [],
     readinessErrors: [
       {
         id: "contract.command.smoke.runtime",
@@ -54,23 +54,23 @@ test("renderGatePreflightJson emits stable formatted report JSON", () => {
   const parsed = JSON.parse(rendered) as GatePreflightReport;
 
   assert.equal(parsed.outcome, "not_ready");
-  assert.deepEqual(parsed.selectedContracts, ["command.smoke", "ui.local"]);
+  assert.deepEqual(parsed.selectedContracts, ["command.smoke"]);
   assert.equal(parsed.sandbox?.retained, true);
   assert.match(rendered, /\n  "outcome": "not_ready"/);
 });
 
-test("renderGatePreflightPretty summarizes readiness, setup, product, and host-local details", () => {
+test("renderGatePreflightPretty summarizes readiness, setup, and product details", () => {
   const rendered = renderGatePreflightPretty(reportFixture());
 
   assert.match(rendered, /Harness Gate Preflight/);
-  assert.match(rendered, /selected 2 contracts; remote 1; host-local 1/);
+  assert.match(rendered, /selected 1 contracts; remote 1/);
   assert.match(rendered, /outcome: not_ready/);
   assert.match(rendered, /sandbox: sandbox-123 snapshot=gate-snapshot retained=true/);
   assert.match(rendered, /\[error\] gateSetup\.1\.nvm: Gate setup uses bare nvm\./);
   assert.match(rendered, /\[setup\] gateSetup\.1 exit=0: npm ci/);
   assert.match(rendered, /\[readiness\] contract\.command\.smoke\.runtime: node: command not found/);
   assert.match(rendered, /\[product-red\] domain\.regression/);
-  assert.match(rendered, /host-local contracts use host readiness checks and do not run inside the Gate sandbox: ui\.local/);
+  assert.doesNotMatch(rendered, /host-local/);
 });
 
 test("gatePreflightRunBlocker blocks readiness errors with actionable details", () => {

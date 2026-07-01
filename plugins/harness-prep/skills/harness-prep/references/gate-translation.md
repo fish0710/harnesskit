@@ -14,7 +14,7 @@ For every user-described gate, write a gate draft before writing YAML:
 |---|---|
 | Requirement | What must be true? |
 | Observable evidence | What command, HTTP response, static analysis output, property, or human decision proves it? |
-| Contract type | `command`, `http`, `structure`, `boot`, `invariant`, `miniprogram`, or `review` |
+| Contract type | `command`, `http`, `structure`, `boot`, `invariant`, or `review` |
 | Required setup | Does Agent or Gate need install, build, service start, fixture, devtool, database, or env? |
 | Pass condition | Exact exit code, response, status/body/header, lint result, or review option |
 | Fail condition | What means the implementation is wrong? |
@@ -31,7 +31,7 @@ If evidence or setup is unclear, ask the user. Do not guess contract fields.
 - "Service starts quickly" -> `boot` only for simple startup checks; prefer `gateSetup` + `http` for readiness.
 - "No forbidden imports/layers/dependencies" -> `structure` with an existing analyzer, or `command` if the project already has a script.
 - "Property must hold for generated samples" -> `invariant` only if a host properties module exists and can be passed with `--properties`.
-- "WeChat mini-program user flow" -> `miniprogram`; read `miniprogram-gates.md` and use a host-local DevTools contract against the compiled artifact.
+- "WeChat mini-program user flow" -> use an external CI or device-lab check, then represent its result with a `command` contract when it is remotely executable; otherwise use `review`.
 - "Product owner must approve", "UX feels right", "migration risk acceptable", "is this intentional behavior change?" -> `review`.
 - "Agent should decide if this is okay" -> usually `review`; do not encode subjective approval as `cmd: true`.
 
@@ -42,7 +42,6 @@ If evidence or setup is unclear, ask the user. Do not guess contract fields.
 - Include `ref` to the spec or decision doc when possible.
 - Use `timeoutMs` for commands or external tools that can hang.
 - Keep gate runner files protected if they are trusted judging assets.
-- For mini-program gates, keep runners host-owned and assert visible UI behavior instead of framework internals.
 - For HTTP gates, `trigger.baseUrl` points inside the Gate sandbox. Start the service there.
 - For review gates, include at least one pass option and one fail option.
 

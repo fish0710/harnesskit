@@ -24,7 +24,6 @@ import { bootPlugin } from "./plugins/boot.js";
 import { reviewPlugin } from "./plugins/review.js";
 import { httpPlugin } from "./plugins/http.js";
 import { structurePlugin } from "./plugins/structure.js";
-import { miniprogramPlugin } from "./plugins/miniprogram.js";
 import { createInvariantPlugin, type Property } from "./plugins/invariant.js";
 import { renderPretty, renderJson } from "./reporter.js";
 import { loadContracts, freezeContract, verifyFrozen, validateContract } from "./contracts.js";
@@ -73,7 +72,6 @@ import {
 import { createProject } from "./harness/scaffold.js";
 import { writePlan } from "./harness/plan.js";
 import { gatherStatus } from "./harness/status.js";
-import { isHostLocalContract } from "./harness/host-gate.js";
 import {
   createDiagnosticLogger,
   type DiagnosticLogger,
@@ -231,8 +229,7 @@ async function buildGate(propertiesPath?: string): Promise<GateCore> {
     .use(bootPlugin)
     .use(reviewPlugin)
     .use(httpPlugin)
-    .use(structurePlugin)
-    .use(miniprogramPlugin);
+    .use(structurePlugin);
   const properties = await loadProperties(propertiesPath);
   if (Object.keys(properties).length > 0) gate.use(createInvariantPlugin(properties));
   return gate;
@@ -340,10 +337,8 @@ function staticGatePreflightReport(
   const staticErrors = staticFindings.filter((finding) =>
     finding.severity === "error"
   );
-  const remoteContracts = contracts.filter((contract) =>
-    !isHostLocalContract(contract)
-  );
-  const hostLocalContracts = contracts.filter(isHostLocalContract);
+  const remoteContracts = contracts;
+  const hostLocalContracts: Contract[] = [];
   return {
     outcome: staticErrors.length > 0 ? "not_ready" : "ready",
     staticFindings,

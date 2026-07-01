@@ -20,7 +20,6 @@ During execution, keep the user oriented around the real Harness state: host man
 - Before choosing `agentSetup`, `gateSetup`, package-manager commands, shell wrappers, or Daytona snapshot overrides: read `references/sandbox-snapshots.md`.
 - When translating natural-language gates into contracts: read `references/gate-translation.md`.
 - When writing contracts or `harness.config.json`: read `references/contracts-and-config.md`.
-- When preparing WeChat mini-program gates or runners: read `references/miniprogram-gates.md`.
 - Before starting or supervising `harness run`: read `references/run-supervision.md`.
 - When the user asks "where is it now?", a run blocks, or a gate needs human review: read `references/observability-and-review.md`.
 - When reading persisted run records or explaining RunStore state: read `references/runstore-observability.md`.

@@ -22,8 +22,13 @@ const REQUIRED_BY_TYPE: Record<string, string[]> = {
   http: ["trigger"],
   structure: ["tool"],
   invariant: ["property"],
-  miniprogram: ["projectPath", "runner"],
   review: [], // review 宽松:缺省给通用裁决
+};
+
+const REMOVED_TYPE_MESSAGES: Record<string, string> = {
+  miniprogram:
+    'type="miniprogram" has been removed from Harness. Use an external CI check, ' +
+    'type="command" for remote-executable checks, or type="review" for manual approval.',
 };
 
 /** 校验单个契约的外壳 + type 专属必填。返回问题列表(空=通过)。 */
@@ -38,6 +43,11 @@ export function validateContract(c: unknown, file?: string): ValidationIssue[] {
   const type = typeof obj.type === "string" ? obj.type : undefined;
   if (!type) {
     issues.push({ file, contractId: id, message: "缺少 type(字符串)" });
+    return issues;
+  }
+  const removedMessage = REMOVED_TYPE_MESSAGES[type];
+  if (removedMessage) {
+    issues.push({ file, contractId: id, message: removedMessage });
     return issues;
   }
   const required = REQUIRED_BY_TYPE[type];

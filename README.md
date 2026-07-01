@@ -11,7 +11,6 @@ The default production model is:
 host control plane
   -> persistent Daytona Agent sandbox runs Claude or a custom command agent
   -> fresh Daytona Gate sandbox validates every candidate attempt
-  -> optional host-local gates validate resources that only exist on the host
   -> host GateCore classifies evidence, records runs, and publishes exact bytes
 ```
 
@@ -26,7 +25,6 @@ The main safety invariant is:
 - Daytona credentials for `--driver claude`, `--driver command`, Gate preflight,
   runtime snapshots, and real integration tests.
 - Anthropic-compatible model credentials for `--driver claude`.
-- WeChat DevTools on macOS only when using `type: miniprogram` host-local gates.
 
 Install and verify the source checkout:
 
@@ -95,7 +93,6 @@ Built-in contract types:
 | `http` | Send an HTTP request and assert status/body. |
 | `structure` | Run a static analysis tool such as eslint or dependency-cruiser. |
 | `invariant` | Run host-provided property tests. |
-| `miniprogram` | Run a WeChat mini-program automation runner on the host. |
 | `review` | Stop for a structured human decision. |
 
 Plugin results distinguish:
@@ -268,7 +265,6 @@ Each run:
 - runs Gate readiness preflight before agent work;
 - feeds Gate diagnostics back to the same Agent sandbox;
 - uses a fresh Gate sandbox per remote Gate attempt;
-- runs host-local contracts such as `miniprogram` in a host temp candidate;
 - publishes only the exact candidate bytes evaluated by the passing Gate.
 
 Use `--verbose` or `HARNESS_VERBOSE=1` for live structured diagnostics:
@@ -384,46 +380,6 @@ harness runs resume <runId> --allow-harness-dirty-source --max-attempts 2
 That flag still rejects product source, package, app page/component, and build
 output changes.
 
-### Mini-Program Gates
-
-`type: miniprogram` is host-local. The Agent may run in Daytona, but Harness
-materializes the evaluated candidate into a host temp directory and runs the
-trusted runner against local WeChat DevTools.
-
-```yaml
-id: mp.smoke
-type: miniprogram
-scenario: 小程序首页应能打开并响应点击
-projectPath: dist/dev/mp-weixin
-runner: test/gates/miniprogram-smoke-runner.js
-devtools:
-  mode: managed
-  cliPath: /Applications/wechatwebdevtools.app/Contents/MacOS/cli
-  autoPort: 9420
-  trustProject: true
-timeoutMs: 120000
-expectExit: 0
-```
-
-Before a Daytona-backed agent run, check host DevTools readiness:
-
-```bash
-harness preflight gate --dir contracts --json
-```
-
-Mini-program defaults are artifact-first: the Agent or project workflow should
-build and publish `projectPath`; the mini-program gate opens that artifact and
-checks user-visible behavior. Clean rebuild/source reproducibility should be a
-separate `type: command` contract or a final task-series step.
-
-Harness provides `miniprogram-automator@0.12.1` to trusted runners via
-`NODE_PATH`. ESM runners should load it with:
-
-```js
-import { createRequire } from "node:module";
-const automator = createRequire(import.meta.url)("miniprogram-automator");
-```
-
 ## Daytona Runtime Snapshots
 
 Default snapshots:
@@ -489,7 +445,6 @@ as an audit directory, not as public telemetry.
 | [examples/resume-health-port](examples/resume-health-port/README.md) | Daytona Claude feedback retry and strong resume against an HTTP contract. |
 | [examples/daytona-cli-tdd](examples/daytona-cli-tdd/README.md) | Daytona Claude implementation of a CLI through protected command tests. |
 | [examples/daytona-task-series](examples/daytona-task-series/README.md) | Daytona Claude configured task series with parent/child run records. |
-| [examples/miniprogram](examples/miniprogram/README.md) | Host-local mini-program contract and runner templates. |
 
 The Daytona examples are intentionally checked in as product-red baselines. Run
 them in a disposable copy or branch if you want to preserve the initial state.
@@ -523,10 +478,6 @@ export NO_PROXY="localhost,127.0.0.1,proxy.localhost,.localhost"
   Agent and Gate setup should agree on the same project root.
 - `readOnlyPaths` are visible context, not publishable outputs. Use
   `protectedPaths` for hidden host-owned assets.
-- Mini-program gates should be `type: miniprogram`, not generic `command`
-  contracts that invoke local WeChat DevTools automation.
-- Do not run preflight and a real mini-program gate concurrently on the same
-  `autoPort`.
 - Harness does not merge, push, approve pull requests, or bypass CI.
 
 ## Current Documentation Map

@@ -535,35 +535,7 @@ npm run test:daytona:pty
 npm run check
 ```
 
-## 11. 小程序门禁
-
-`type: miniprogram` 是 host-local gate：agent 仍在 Daytona 沙箱里工作，但小程序
-runner 在宿主临时目录执行，用于连接本机微信开发者工具。
-
-契约示例：
-
-```yaml
-id: mp.smoke
-type: miniprogram
-scenario: 小程序首页应能打开并响应点击
-projectPath: dist/dev/mp-weixin
-runner: test/gates/miniprogram-smoke-runner.js
-devtools:
-  mode: managed
-  cliPath: /Applications/wechatwebdevtools.app/Contents/MacOS/cli
-  autoPort: 9420
-  trustProject: true
-timeoutMs: 120000
-expectExit: 0
-```
-
-模板在：
-
-```text
-examples/miniprogram/
-```
-
-## 12. 常见卡点
+## 11. 常见卡点
 
 `harness run` 没有改代码：
 

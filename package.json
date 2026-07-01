@@ -14,7 +14,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); for (const p of ['dist/src/cli.js','dist/demo/run-demo.js']) if (fs.existsSync(p)) fs.chmodSync(p, 0o755)\"",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); for (const p of ['dist/src/cli.js','dist/demo/run-demo.js']) if (fs.existsSync(p)) fs.chmodSync(p, 0o755)\"",
     "demo": "node dist/demo/run-demo.js",
     "test": "node --test \"dist/test/**/*.test.js\"",
     "test:daytona": "npm run build && RUN_DAYTONA_INTEGRATION=1 node dist/test/daytona-claude.js",
@@ -36,7 +36,6 @@
     "@daytona/sdk": "^0.186.0",
     "@langfuse/otel": "5.4.1",
     "@opentelemetry/sdk-node": "0.218.0",
-    "js-yaml": "^4.2.0",
-    "miniprogram-automator": "0.12.1"
+    "js-yaml": "^4.2.0"
   }
 }

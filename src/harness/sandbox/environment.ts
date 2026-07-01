@@ -8,10 +8,6 @@ import type {
 import { runWithCommandHeartbeat } from "../command-heartbeat.js";
 import { tailClaudeStreamDuring } from "../claude-stream.js";
 import {
-  isHostLocalContract,
-  runHostLocalGate,
-} from "../host-gate.js";
-import {
   claudeObservabilityVolumeSubpath,
   mountedClaudeObservabilityPaths,
   type DaytonaObservabilityConfig,
@@ -779,163 +775,135 @@ export function createDaytonaRunEnvironment(
         );
       }
 
-      const hostContracts = contracts.filter(isHostLocalContract);
-      const remoteContracts = contracts.filter((contract) =>
-        !isHostLocalContract(contract)
-      );
-      const combinedResults: CheckResult[] = [];
+      const remoteContracts = contracts;
       let gateHandle: SandboxHandle | undefined;
       let report: GateReport | undefined;
       let cleanupError: unknown;
-      if (remoteContracts.length > 0) {
-        try {
-          observe("gate.create.start", { attempt });
-          const gateCreateStartedAt = Date.now();
-          gateHandle = await options.provider.create({
-            role: "gate",
-            snapshot: gateSnapshot,
-            envVars: {},
-            ephemeral: true,
-          });
-          observe("gate.create.end", {
-            id: gateHandle.id,
-            role: "gate",
-            attempt,
-            durationMs: durationSince(gateCreateStartedAt),
-          });
-          observe("gate.upload.start", { id: gateHandle.id });
-          const initialUploadStartedAt = Date.now();
-          await gateHandle.upload(
-            [...baseline.files.values()],
-            REMOTE_ROOT,
-          );
-          observe("gate.upload.end", {
-            id: gateHandle.id,
-            files: baseline.files.size,
-            durationMs: durationSince(initialUploadStartedAt),
-          });
-          const mutableFiles = mutableCandidateFiles(
-            baseline,
-            options.policy,
-          );
-          const baselineMutablePaths = mutableFiles.map((file) => file.path);
-          observe("gate.upload.start", { id: gateHandle.id });
-          const candidateUploadStartedAt = Date.now();
-          await gateHandle.remove(baselineMutablePaths, REMOTE_ROOT);
-          await gateHandle.upload(
-            [...pendingCandidate.files.values()],
-            REMOTE_ROOT,
-          );
-          const mutablePaths = new Set(mutableFiles.map((file) => file.path));
-          const protectedFiles = [...baseline.files.values()].filter((file) =>
-            !mutablePaths.has(file.path)
-          );
-          await gateHandle.upload(protectedFiles, REMOTE_ROOT);
-          await gateHandle.verify(protectedFiles, REMOTE_ROOT);
-          observe("gate.upload.end", {
-            id: gateHandle.id,
-            files: pendingCandidate.files.size + protectedFiles.length,
-            removed: baselineMutablePaths.length,
-            verified: protectedFiles.length,
-            durationMs: durationSince(candidateUploadStartedAt),
-          });
-          observe("gate.setup.start", { id: gateHandle.id });
-          const gateSetupStartedAt = Date.now();
-          await runSetup(gateHandle, options.policy.gateSetup, "gate setup");
-          observe("gate.setup.end", {
-            id: gateHandle.id,
-            commands: options.policy.gateSetup.length,
-            durationMs: durationSince(gateSetupStartedAt),
-          });
-          const blockGateNetwork = shouldBlockGateNetwork(remoteContracts);
-          observe("gate.network.start", { id: gateHandle.id });
-          const networkStartedAt = Date.now();
-          if (blockGateNetwork) {
-            await gateHandle.setNetworkBlocked(true);
-          }
-          observe("gate.network.end", {
-            id: gateHandle.id,
-            blocked: blockGateNetwork,
-            ...(!blockGateNetwork ? { reason: "loopback-http" } : {}),
-            durationMs: durationSince(networkStartedAt),
-          });
-          observe("gate.run.start", { id: gateHandle.id, attempt });
-          const gateRunStartedAt = Date.now();
-          report = await gate.run(remoteContracts, {
-            ...ctx,
-            cwd: REMOTE_ROOT,
-            execution: createDaytonaExecutionTarget(gateHandle, REMOTE_ROOT),
-          });
-          observe("gate.run.end", {
-            id: gateHandle.id,
-            attempt,
-            outcome: report.outcome,
-            results: report.results.length,
-            durationMs: durationSince(gateRunStartedAt),
-          });
-          await gateHandle.verify(protectedFiles, REMOTE_ROOT);
-          observe("gate.result", {
-            id: gateHandle.id,
-            outcome: report.outcome,
-          });
-        } catch (error) {
-          report = integrityReport(
-            error instanceof Error ? error.message : String(error),
-          );
-        } finally {
-          if (gateHandle) {
-            observe("gate.cleanup.start", { id: gateHandle.id, attempt });
-            const cleanupStartedAt = Date.now();
-            try {
-              await gateHandle.delete();
-              observe("gate.cleanup.end", {
-                id: gateHandle.id,
-                attempt,
-                outcome: "deleted",
-                durationMs: durationSince(cleanupStartedAt),
-              });
-            } catch (error) {
-              cleanupError = error;
-              observe("gate.cleanup.end", {
-                id: gateHandle.id,
-                attempt,
-                outcome: "error",
-                durationMs: durationSince(cleanupStartedAt),
-              });
-            }
+      if (remoteContracts.length === 0) {
+        const emptyReport = aggregate([]);
+        if (emptyReport.outcome === "pass") approvedCandidate = pendingCandidate;
+        return emptyReport;
+      }
+      try {
+        observe("gate.create.start", { attempt });
+        const gateCreateStartedAt = Date.now();
+        gateHandle = await options.provider.create({
+          role: "gate",
+          snapshot: gateSnapshot,
+          envVars: {},
+          ephemeral: true,
+        });
+        observe("gate.create.end", {
+          id: gateHandle.id,
+          role: "gate",
+          attempt,
+          durationMs: durationSince(gateCreateStartedAt),
+        });
+        observe("gate.upload.start", { id: gateHandle.id });
+        const initialUploadStartedAt = Date.now();
+        await gateHandle.upload(
+          [...baseline.files.values()],
+          REMOTE_ROOT,
+        );
+        observe("gate.upload.end", {
+          id: gateHandle.id,
+          files: baseline.files.size,
+          durationMs: durationSince(initialUploadStartedAt),
+        });
+        const mutableFiles = mutableCandidateFiles(
+          baseline,
+          options.policy,
+        );
+        const baselineMutablePaths = mutableFiles.map((file) => file.path);
+        observe("gate.upload.start", { id: gateHandle.id });
+        const candidateUploadStartedAt = Date.now();
+        await gateHandle.remove(baselineMutablePaths, REMOTE_ROOT);
+        await gateHandle.upload(
+          [...pendingCandidate.files.values()],
+          REMOTE_ROOT,
+        );
+        const mutablePaths = new Set(mutableFiles.map((file) => file.path));
+        const protectedFiles = [...baseline.files.values()].filter((file) =>
+          !mutablePaths.has(file.path)
+        );
+        await gateHandle.upload(protectedFiles, REMOTE_ROOT);
+        await gateHandle.verify(protectedFiles, REMOTE_ROOT);
+        observe("gate.upload.end", {
+          id: gateHandle.id,
+          files: pendingCandidate.files.size + protectedFiles.length,
+          removed: baselineMutablePaths.length,
+          verified: protectedFiles.length,
+          durationMs: durationSince(candidateUploadStartedAt),
+        });
+        observe("gate.setup.start", { id: gateHandle.id });
+        const gateSetupStartedAt = Date.now();
+        await runSetup(gateHandle, options.policy.gateSetup, "gate setup");
+        observe("gate.setup.end", {
+          id: gateHandle.id,
+          commands: options.policy.gateSetup.length,
+          durationMs: durationSince(gateSetupStartedAt),
+        });
+        const blockGateNetwork = shouldBlockGateNetwork(remoteContracts);
+        observe("gate.network.start", { id: gateHandle.id });
+        const networkStartedAt = Date.now();
+        if (blockGateNetwork) {
+          await gateHandle.setNetworkBlocked(true);
+        }
+        observe("gate.network.end", {
+          id: gateHandle.id,
+          blocked: blockGateNetwork,
+          ...(!blockGateNetwork ? { reason: "loopback-http" } : {}),
+          durationMs: durationSince(networkStartedAt),
+        });
+        observe("gate.run.start", { id: gateHandle.id, attempt });
+        const gateRunStartedAt = Date.now();
+        report = await gate.run(remoteContracts, {
+          ...ctx,
+          cwd: REMOTE_ROOT,
+          execution: createDaytonaExecutionTarget(gateHandle, REMOTE_ROOT),
+        });
+        observe("gate.run.end", {
+          id: gateHandle.id,
+          attempt,
+          outcome: report.outcome,
+          results: report.results.length,
+          durationMs: durationSince(gateRunStartedAt),
+        });
+        await gateHandle.verify(protectedFiles, REMOTE_ROOT);
+        observe("gate.result", {
+          id: gateHandle.id,
+          outcome: report.outcome,
+        });
+      } catch (error) {
+        report = integrityReport(
+          error instanceof Error ? error.message : String(error),
+        );
+      } finally {
+        if (gateHandle) {
+          observe("gate.cleanup.start", { id: gateHandle.id, attempt });
+          const cleanupStartedAt = Date.now();
+          try {
+            await gateHandle.delete();
+            observe("gate.cleanup.end", {
+              id: gateHandle.id,
+              attempt,
+              outcome: "deleted",
+              durationMs: durationSince(cleanupStartedAt),
+            });
+          } catch (error) {
+            cleanupError = error;
+            observe("gate.cleanup.end", {
+              id: gateHandle.id,
+              attempt,
+              outcome: "error",
+              durationMs: durationSince(cleanupStartedAt),
+            });
           }
         }
       }
 
-      if (!report && remoteContracts.length > 0) {
+      if (!report) {
         return integrityReport("Gate did not produce a report");
-      }
-      if (report) combinedResults.push(...report.results);
-      if (hostContracts.length > 0) {
-        observe("host-gate.run.start", { contracts: hostContracts.length });
-        const hostStartedAt = Date.now();
-        try {
-          const hostReport = await runHostLocalGate({
-            contracts: hostContracts,
-            gate,
-            ctx,
-            baseline,
-            candidate: pendingCandidate,
-            policy: options.policy,
-          });
-          combinedResults.push(...hostReport.results);
-          observe("host-gate.run.end", {
-            outcome: hostReport.outcome,
-            results: hostReport.results.length,
-            durationMs: durationSince(hostStartedAt),
-          });
-        } catch (error) {
-          return integrityReport(
-            `Host-local gate failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
       }
       if (cleanupError) {
         return integrityReport(
@@ -946,9 +914,8 @@ export function createDaytonaRunEnvironment(
           }`,
         );
       }
-      const finalReport = aggregate(combinedResults);
-      if (finalReport.outcome === "pass") approvedCandidate = pendingCandidate;
-      return finalReport;
+      if (report.outcome === "pass") approvedCandidate = pendingCandidate;
+      return report;
     },
 
     async publish() {

@@ -149,16 +149,6 @@ If a selected remote HTTP contract targets loopback, Harness leaves network open
 so the sandbox-local service can be checked. 127.0.0.1 means the Gate sandbox,
 not the developer host.
 
-## Mini-program Artifacts
-
-WeChat DevTools runs on the macOS host. Mini-program behavior gates should
-consume an already-built artifact such as \`dist/build/mp-weixin\`; they should
-not reinstall dependencies or rebuild framework output by default.
-
-Clean rebuilds are source-reproducibility gates. Configure them explicitly,
-usually as the final task in a series, when the requirement is that a fresh Gate
-runtime can run commands such as \`npm ci && npm run build:mp-weixin\` from the
-published source and lockfiles.
 `,
     },
     {

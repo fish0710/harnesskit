@@ -1,7 +1,5 @@
 import type { GateCore } from "../gate.js";
-import { checkMiniProgramHostReadiness } from "../plugins/miniprogram.js";
 import type { GateReport, Contract, RunContext } from "../types.js";
-import { isHostLocalContract } from "./host-gate.js";
 import { createDaytonaExecutionTarget } from "./sandbox/daytona.js";
 import { getGateSnapshot } from "./sandbox/toolchain.js";
 import type {
@@ -643,45 +641,6 @@ function finding(
   };
 }
 
-const MINI_PROGRAM_COMMAND_TEXT =
-  /miniprogram-automator|wechatwebdevtools|WeChatDevTools|HARNESS_MINIPROGRAM_/i;
-
-function commandContractMiniProgramSignals(contract: Contract): string[] {
-  if (contract.type !== "command") return [];
-  const signals: string[] = [];
-  for (const field of ["projectPath", "runner", "devtools"] as const) {
-    if (Object.prototype.hasOwnProperty.call(contract, field)) {
-      signals.push(field);
-    }
-  }
-  const commandText = [
-    typeof contract.cmd === "string" ? contract.cmd : "",
-    ...(Array.isArray(contract.args) ? contract.args.map(String) : []),
-  ].filter(Boolean).join(" ");
-  if (MINI_PROGRAM_COMMAND_TEXT.test(commandText)) {
-    signals.push("command text");
-  }
-  return signals;
-}
-
-function lintCommandContractModeling(contracts: Contract[]): PreflightFinding[] {
-  const findings: PreflightFinding[] = [];
-  for (const contract of contracts) {
-    const signals = commandContractMiniProgramSignals(contract);
-    if (signals.length === 0) continue;
-    findings.push(finding(
-      `contract.${contract.id}.miniprogramModel`,
-      "error",
-      `契约 ${contract.id} 是 type="command"，但包含小程序自动化信号(${signals.join(", ")}). ` +
-        `微信小程序真实自动化必须建模为 type="miniprogram"，使用 projectPath、runner、devtools；` +
-        `type="command" 仅用于可在远端 Gate sandbox 执行的构建、测试、lint 或源码可复现检查。`,
-      "contract",
-      contract.id,
-    ));
-  }
-  return findings;
-}
-
 export function lintGateReadiness(input: GateReadinessLintInput): PreflightFinding[] {
   const findings: PreflightFinding[] = [];
   const gateSetupBootstrappedTools = new Set<string>();
@@ -902,27 +861,6 @@ function cleanupFailure(error: unknown): PreflightFinding {
   );
 }
 
-async function runHostLocalPreflight(
-  contracts: Contract[],
-  ctx: RunContext,
-): Promise<PreflightFinding[]> {
-  const readinessErrors: PreflightFinding[] = [];
-  for (const contract of contracts) {
-    if (contract.type !== "miniprogram") continue;
-    const errorReason = await checkMiniProgramHostReadiness(contract, ctx);
-    if (errorReason) {
-      readinessErrors.push(finding(
-        `hostLocal.${contract.id}.devtools`,
-        "error",
-        errorReason,
-        "contract",
-        contract.id,
-      ));
-    }
-  }
-  return readinessErrors;
-}
-
 function finalOutcome(
   readinessErrors: PreflightFinding[],
   productFailures: string[],
@@ -940,19 +878,14 @@ export async function runGatePreflight(
 ): Promise<GatePreflightReport> {
   const environment = options.environment ?? process.env;
   const baseUrl = (options.ctx as { baseUrl?: string }).baseUrl;
-  const staticFindings = [
-    ...lintGateReadiness({
-      contracts: options.contracts,
-      policy: options.policy,
-      baseUrl,
-    }),
-    ...lintCommandContractModeling(options.contracts),
-  ];
+  const staticFindings = lintGateReadiness({
+    contracts: options.contracts,
+    policy: options.policy,
+    baseUrl,
+  });
   const selectedContracts = options.contracts.map((contract) => contract.id);
-  const remoteContracts = options.contracts.filter((contract) =>
-    !isHostLocalContract(contract)
-  );
-  const hostLocalContracts = options.contracts.filter(isHostLocalContract);
+  const remoteContracts = options.contracts;
+  const hostLocalContracts: Contract[] = [];
   const staticErrors = staticFindings.filter((finding) =>
     finding.severity === "error"
   );
@@ -966,20 +899,6 @@ export async function runGatePreflight(
       remoteContracts: remoteContracts.map((contract) => contract.id),
       hostLocalContracts: hostLocalContracts.map((contract) => contract.id),
       readinessErrors: staticErrors,
-      productFailures: [],
-    };
-  }
-
-  const hostLocalReadinessErrors = await runHostLocalPreflight(hostLocalContracts, options.ctx);
-  if (hostLocalReadinessErrors.length > 0) {
-    return {
-      outcome: "not_ready",
-      staticFindings,
-      setup: [],
-      selectedContracts,
-      remoteContracts: remoteContracts.map((contract) => contract.id),
-      hostLocalContracts: hostLocalContracts.map((contract) => contract.id),
-      readinessErrors: hostLocalReadinessErrors,
       productFailures: [],
     };
   }
@@ -1105,8 +1024,7 @@ export function renderGatePreflightPretty(report: GatePreflightReport): string {
   lines.push("Harness Gate Preflight");
   lines.push(
     `selected ${report.selectedContracts.length} contracts; ` +
-      `remote ${report.remoteContracts.length}; ` +
-      `host-local ${report.hostLocalContracts.length}`,
+      `remote ${report.remoteContracts.length}`,
   );
   lines.push(`outcome: ${report.outcome}`);
   if (report.sandbox) {
@@ -1127,12 +1045,6 @@ export function renderGatePreflightPretty(report: GatePreflightReport): string {
   }
   for (const id of report.productFailures) {
     lines.push(`[product-red] ${id}`);
-  }
-  if (report.hostLocalContracts.length > 0) {
-    lines.push(
-      "[info] host-local contracts use host readiness checks and do not run inside the Gate sandbox: " +
-        report.hostLocalContracts.join(", "),
-    );
   }
   lines.push("");
   return lines.join("\n");

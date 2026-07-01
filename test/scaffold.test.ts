@@ -73,7 +73,7 @@ test("create writes runtime reference for agent-visible Gate environment facts",
   assert.match(runtime, /source \/usr\/local\/nvm\/nvm\.sh/);
   assert.match(runtime, /Gate network is blocked after `gateSetup`/);
   assert.match(runtime, /127\.0\.0\.1 means the Gate sandbox/);
-  assert.match(runtime, /Clean rebuilds are source-reproducibility gates/);
+  assert.doesNotMatch(runtime, /Mini-program|WeChat DevTools|Clean rebuilds/);
 });
 
 test("create initializes git when target is not inside a repository", () => {
