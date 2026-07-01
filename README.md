@@ -525,3 +525,4 @@ when they describe the same subsystem.
 | 2026-06-25 | [Preflight Host-Local Review Ledger](docs/archive/2026-06-25-preflight-hostlocal-review-ledger/README.md) | Static detection of mini-program automation mis-modeled as command contracts and blocked-review series resume after verdicts. |
 | 2026-06-30 | [Claude Live Summary](docs/archive/2026-06-30-claude-live-summary/README.md) | Readable non-verbose live summaries for Claude stream text, tool, progress, and result events. |
 | 2026-06-30 | [Retained Sandbox Resume](docs/archive/2026-06-30-retained-sandbox-resume/README.md) | Explicit retained Daytona Agent sandbox resume, Gate-first recovery, stream session recovery, and Harness-only dirty-source rescue. |
+| 2026-07-01 | [Remove MiniProgram Host Gate](docs/archive/2026-07-01-remove-miniprogram-host-gate/README.md) | Removal of the unstable host-local mini-program gate, DevTools runtime, dependency, examples, and live guidance. |
